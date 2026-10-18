@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../services/GregService.php';
 require_once __DIR__ . '/../services/GregJournal.php';
+require_once __DIR__ . '/../services/AnamService.php';
 
 /**
  * /ai-voip-engineer — AI → AI VoIP Engineer (admin only): the Greg entity.
@@ -23,6 +24,10 @@ class AiVoipEngineerController extends BaseController
                 try {
                     if (isset($_POST['save_greg'])) {
                         $message = GregService::save($_POST)['message'];
+                    } elseif (isset($_POST['save_greg_anam'])) {
+                        $message = AnamService::save($_POST)['message'];
+                    } elseif (isset($_POST['join_anam_meeting'])) {
+                        $message = AnamService::joinMeeting($_POST)['message'];
                     } elseif (isset($_POST['save_greg_notes'])) {
                         GregJournal::saveAgents((string) ($_POST['greg_agents'] ?? ''));
                         $message = t('ai_voip_engineer.notes_saved');
@@ -48,6 +53,7 @@ class AiVoipEngineerController extends BaseController
 
         static::renderPage('ai_voip_engineer/index', [
             'greg' => GregService::settings(),
+            'anam' => AnamService::settings(),
             'month_tokens' => GregService::monthTokens(),
             'unread' => GregService::unreadCount(),
             'agents' => GregJournal::agents(),

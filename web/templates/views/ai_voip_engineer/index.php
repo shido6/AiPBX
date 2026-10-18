@@ -1,5 +1,5 @@
 <?php
-/** @var array $greg @var int $month_tokens @var int $unread @var string $csrf_token */
+/** @var array $greg @var array $anam @var int $month_tokens @var int $unread @var string $csrf_token */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 $sources = [
     'bigpickle' => t('ai_voip_engineer.source_bigpickle'),
@@ -82,6 +82,146 @@ $sources = [
         <div class="u-muted u-fs-12 u-mt-6" style="color: var(--warning);"><i class="fas fa-triangle-exclamation"></i> <?php echo t('ai_voip_engineer.limits_warning'); ?></div>
     </div>
 </div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-video u-primary"></i> <?php echo t('ai_voip_engineer.anam_title'); ?></div>
+        <span class="badge <?php echo $anam['enabled'] && $anam['configured'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
+            <?php
+            echo $anam['enabled'] && $anam['configured']
+                ? t('ai_voip_engineer.anam_status_on')
+                : ($anam['configured'] ? t('ai_voip_engineer.anam_status_off') : t('ai_voip_engineer.anam_status_unset'));
+            ?>
+        </span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 14px;">
+            <?php echo t('ai_voip_engineer.anam_intro'); ?>
+            <a href="<?php echo htmlspecialchars(\AnamService::HOWTO, ENT_QUOTES); ?>" target="_blank" rel="noopener noreferrer"><?php echo t('ai_voip_engineer.anam_howto'); ?> <i class="fas fa-arrow-up-right-from-square u-fs-10"></i></a>
+        </div>
+        <div class="u-fs-12" style="margin: -8px 0 14px; padding: 8px 10px; border-radius: 6px; background: var(--bg-main); border: 1px solid var(--border-color);">
+            <i class="fas fa-scale-balanced u-muted"></i> <?php echo t('ai_voip_engineer.anam_pricing_note'); ?>
+            <a href="<?php echo htmlspecialchars(\AnamService::PRICING, ENT_QUOTES); ?>" target="_blank" rel="noopener noreferrer">anam.ai/pricing <i class="fas fa-arrow-up-right-from-square u-fs-10"></i></a>
+            <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_pricing_how'); ?></div>
+        </div>
+
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="u-grid-2" style="gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.anam_persona_label'); ?></label>
+                    <input type="text" class="form-control" name="anam_persona_id" maxlength="64"
+                           value="<?php echo $h($anam['persona_id']); ?>"
+                           placeholder="<?php echo $h(t('ai_voip_engineer.anam_persona_ph')); ?>"
+                           spellcheck="false" style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;">
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_persona_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.anam_key_label'); ?></label>
+                    <input type="password" class="form-control" name="anam_api_key" autocomplete="new-password"
+                           placeholder="<?php echo $h($anam['key_set'] ? $anam['key_masked'] : t('ai_voip_engineer.anam_key_ph')); ?>">
+                    <div class="u-muted u-fs-11 u-mt-4">
+                        <?php echo t('ai_voip_engineer.anam_key_help'); ?>
+                        <?php if ($anam['key_set']): ?>
+                            <label class="u-check-label u-fs-11" style="display: inline-flex; margin-left: 8px;">
+                                <input type="checkbox" class="u-accent" name="anam_key_clear" value="1"> <?php echo t('ai_voip_engineer.anam_key_clear'); ?>
+                            </label>
+                        <?php endif; ?>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.anam_limit_label'); ?></label>
+                    <input type="number" class="form-control" name="anam_max_seconds"
+                           value="<?php echo (int) $anam['limit']; ?>"
+                           min="<?php echo \AnamService::MIN_SECONDS; ?>" max="<?php echo \AnamService::MAX_SECONDS; ?>" step="30">
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_limit_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="u-check-label"><input type="checkbox" class="u-accent" name="anam_enabled" value="1" <?php echo $anam['enabled'] ? 'checked' : ''; ?>> <?php echo t('ai_voip_engineer.anam_enable'); ?></label>
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_enable_help'); ?></div>
+                    <label class="u-check-label u-mt-6"><input type="checkbox" class="u-accent" name="anam_listen" value="1" <?php echo $anam['listen'] ? 'checked' : ''; ?>> <?php echo t('ai_voip_engineer.anam_listen'); ?></label>
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_listen_help'); ?></div>
+                </div>
+            </div>
+
+            <div style="margin-top: 6px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <button type="submit" name="save_greg_anam" value="1" class="btn btn-primary"><i class="fas fa-save"></i> <?php echo t('common.save'); ?></button>
+                <button type="button" class="btn btn-secondary btn-sm" id="anam-test" onclick="anamTest()"><i class="fas fa-vial"></i> <?php echo t('ai_voip_engineer.anam_test'); ?></button>
+                <span id="anam-test-result" class="u-fs-12 u-muted"></span>
+            </div>
+        </form>
+
+        <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 12px;">
+            <div class="u-strong u-fs-13" style="margin-bottom: 6px;"><i class="fas fa-users u-primary"></i> <?php echo t('ai_voip_engineer.anam_meeting_title'); ?></div>
+            <div class="u-muted u-fs-12" style="margin-bottom: 10px;"><?php echo t('ai_voip_engineer.anam_meeting_intro'); ?></div>
+            <form method="POST">
+                <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+                <div class="u-grid-2" style="gap: 16px;">
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_voip_engineer.anam_meeting_url'); ?></label>
+                        <input type="url" class="form-control" name="meeting_url" maxlength="500"
+                               placeholder="https://meet.google.com/…" spellcheck="false">
+                        <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_meeting_hosts'); ?></div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_voip_engineer.anam_meeting_when'); ?></label>
+                        <input type="datetime-local" class="form-control" name="meeting_at">
+                        <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.anam_meeting_when_help'); ?></div>
+                    </div>
+                </div>
+                <label class="u-check-label u-fs-12"><input type="checkbox" class="u-accent" name="meeting_group" value="1" checked> <?php echo t('ai_voip_engineer.anam_meeting_group'); ?></label>
+                <div style="margin-top: 10px;">
+                    <button type="submit" name="join_anam_meeting" value="1" class="btn btn-secondary btn-sm"
+                            <?php echo $anam['configured'] ? '' : 'disabled'; ?>>
+                        <i class="fas fa-right-to-bracket"></i> <?php echo t('ai_voip_engineer.anam_meeting_send'); ?>
+                    </button>
+                    <?php if (!$anam['configured']): ?>
+                        <span class="u-muted u-fs-11"><?php echo t('ai_voip_engineer.anam_not_configured'); ?></span>
+                    <?php endif; ?>
+                </div>
+            </form>
+        </div>
+
+        <div class="u-muted u-fs-11" style="margin-top: 12px; border-top: 1px solid var(--border-color); padding-top: 10px;">
+            <i class="fas fa-lock"></i> <?php echo t('ai_voip_engineer.anam_secure'); ?>
+        </div>
+    </div>
+</div>
+
+<script>
+function anamTest() {
+    var btn = document.getElementById('anam-test');
+    var out = document.getElementById('anam-test-result');
+    var csrf = (document.querySelector('input[name="csrf_token"]') || {}).value || '';
+    if (!btn || !out) return;
+    btn.disabled = true;
+    out.className = 'u-fs-12 u-muted';
+    out.textContent = '…';
+    var fd = new FormData();
+    fd.append('action', 'test');
+    fd.append('csrf_token', csrf);
+    fetch('<?php echo htmlspecialchars((defined("WEBROOT") ? WEBROOT : "") . "/api/anam.php", ENT_QUOTES); ?>', { method: 'POST', body: fd, credentials: 'same-origin' })
+        .then(function (r) { return r.json(); })
+        .then(function (r) {
+            btn.disabled = false;
+            if (r && r.success) {
+                out.className = 'u-fs-12';
+                out.style.color = 'var(--success)';
+                out.textContent = '✔ ' + (r.name || 'OK');
+            } else {
+                out.className = 'u-fs-12';
+                out.style.color = 'var(--danger)';
+                out.textContent = '✖ ' + ((r && r.error) || '—');
+            }
+        })
+        .catch(function () {
+            btn.disabled = false;
+            out.className = 'u-fs-12';
+            out.style.color = 'var(--danger)';
+            out.textContent = '✖';
+        });
+}
+</script>
 
 <div class="card" style="margin-top: 16px;">
     <div class="card-header">

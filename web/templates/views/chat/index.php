@@ -88,11 +88,42 @@ $delete_window = (int) ($delete_window ?? 0);
             <!-- Greg, the AI VoIP Engineer: his status lives in the top bar,
                  the conversation lives here. -->
             <div data-greg-widget data-csrf="<?php echo getCSRFToken(); ?>" style="margin:8px 10px 4px;">
+                <?php if (\AnamService::active()): ?>
+                <!-- The face, when the administrator has configured an Anam
+                     persona. Hidden until somebody asks for it: a persona is
+                     billed by the minute. -->
+                <div data-greg-avatar
+                     data-csrf="<?php echo getCSRFToken(); ?>"
+                     data-listen="<?php echo \AnamService::listens() ? '1' : '0'; ?>"
+                     data-strings="<?php echo htmlspecialchars(json_encode([
+                         'start'      => t('greg.avatar_start'),
+                         'hint'       => t('greg.avatar_start_hint'),
+                         'stop'       => t('greg.avatar_stop'),
+                         'connecting' => t('greg.avatar_connecting'),
+                         'ready'      => t('greg.avatar_ready'),
+                         'listening'  => t('greg.avatar_listening'),
+                         'left'       => t('greg.avatar_left'),
+                         'ended'      => t('greg.avatar_ended'),
+                         'limit'      => t('greg.avatar_limit'),
+                         'failed'     => t('greg.avatar_failed'),
+                     ], JSON_UNESCAPED_UNICODE), ENT_QUOTES); ?>">
+                    <div id="greg-face-stage" hidden style="position: relative; border-radius: 10px; overflow: hidden; background: #0b0b14; margin-bottom: 6px;">
+                        <video id="greg-face-video" autoplay playsinline style="display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0b0b14;"></video>
+                        <div style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px 8px; background: linear-gradient(transparent, rgba(0,0,0,.72)); color: #fff; font-size: 11px;">
+                            <span data-greg-face-state></span>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="var b=document.querySelector('[data-greg-face-btn]');if(b)b.click();" title="<?php echo htmlspecialchars(t('greg.avatar_stop'), ENT_QUOTES); ?>"><i class="fas fa-stop"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
                 <div id="greg-log" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 2px;">
                     <div class="greg-row greg-greg"><div class="greg-bubble"><?php echo htmlspecialchars(sprintf(t('greg.welcome'), GregService::displayName()), ENT_QUOTES); ?></div></div>
                 </div>
                 <div style="display:flex;gap:6px;margin-top:6px;">
                     <input type="text" id="greg-input" class="form-control" style="flex:1;" placeholder="<?php echo htmlspecialchars(t('greg.chat_placeholder'), ENT_QUOTES); ?>" onkeydown="if(event.key==='Enter'){gregSend();}">
+                    <?php if (\AnamService::active()): ?>
+                    <button type="button" class="btn btn-secondary btn-sm" data-greg-face-btn title="<?php echo htmlspecialchars(t('greg.avatar_start_hint'), ENT_QUOTES); ?>"><i class="fas fa-user-tie"></i></button>
+                    <?php endif; ?>
                     <button type="button" class="btn btn-primary btn-sm" id="greg-send" onclick="gregSend()"><i class="fas fa-paper-plane"></i></button>
                 </div>
             </div>
@@ -104,9 +135,13 @@ $delete_window = (int) ($delete_window ?? 0);
              function swap(reply){var log=document.getElementById('greg-log');if(log&&log.lastChild)log.lastChild.remove();gregAppend('greg',reply);}
              fetch((window.WEBROOT||'')+'/api/greg.php',{method:'POST',body:fd,credentials:'same-origin'})
               .then(function(r){return r.json();})
-              .then(function(r){btn.disabled=false;swap(r&&r.success?r.reply:(r&&r.error?r.error:'…'));})
+              .then(function(r){btn.disabled=false;var reply=r&&r.success?r.reply:(r&&r.error?r.error:'…');swap(reply);if(window.gregAvatarSay){try{window.gregAvatarSay(reply);}catch(e){}}})
               .catch(function(){btn.disabled=false;swap('…');});}
             </script>
+            <?php if (\AnamService::active()): ?>
+            <script src="<?php echo asset('/assets/vendor/anam/anam.js'); ?>"></script>
+            <script src="<?php echo asset('/assets/js/greg_avatar.js'); ?>"></script>
+            <?php endif; ?>
             <?php endif; ?>
 
             <!-- List: conversations / directory -->

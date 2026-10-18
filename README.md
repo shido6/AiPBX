@@ -33,6 +33,7 @@
   <a href="#architecture">Architecture</a> •
   <a href="CHANGELOG.md">Changelog</a> •
   <a href="docs/roadmap.md">Roadmap</a> •
+  <a href="howtos/README.md">Howtos</a> •
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -288,6 +289,11 @@ and testing.
 4. Push the branch and open a Pull Request
 
 Code comments, commit messages and documentation are written in English.
+
+Optional extensions that need an account elsewhere live in [howtos/](howtos/README.md) — for
+example [giving Greg an Anam.ai face and voice](howtos/greg-anam-avatar.md). They are
+community howtos, not supported defaults, and they never carry ids or keys: every
+installation uses its own.
 
 ---
 

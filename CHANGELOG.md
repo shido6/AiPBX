@@ -17,6 +17,18 @@ Remote monitoring and operations:
   audit-log record as pressing **Apply**; `module_reload` accepts `core` and `pjsip` only and refuses
   FreePBX-only module names (`ivr`, `queues`, …) with a reason instead of reporting success. No
   sudoers entry and no new privileged helper. Off until `/etc/aipbx/agent.conf` is written.
+- **Greg's optional face and voice (Anam.ai)** ([howtos/greg-anam-avatar.md](howtos/greg-anam-avatar.md)):
+  an administrator can create a persona in Anam and give Greg a video avatar that speaks his
+  answers in the chat. Off, and without a persona, until one is configured — none ships with the
+  code and the API key is stored encrypted with the installation's settings key. The browser only
+  ever receives a short-lived session token minted by `web/api/anam.php`; each session carries a
+  hard length (`maxSessionLengthSeconds`, 180 s by default, 30–3600), the face starts only on a
+  click, and leaving the page ends it. The Anam JavaScript SDK is vendored, so no CDN is needed on
+  an on-premise server. An optional listening mode opens the microphone for a two-way conversation
+  (the persona then answers with its own model), and the same card can send the persona into a
+  Google Meet, Zoom or Teams call through Anam's Meetings API — now or up to seven days ahead,
+  group calls waiting to be addressed by name. The card links to anam.ai/pricing and states how a
+  minute is counted, because the avatar is billed separately from the PBX.
 - **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
   `pbx_signaling_events` and can forward them to the same portal. Off by default.
 
