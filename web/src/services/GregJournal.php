@@ -103,7 +103,13 @@ class GregJournal
         }
         $body = ($new ? '# ' . t('ai_voip_engineer.notes_log_heading') . ' — ' . gmdate('Y-m-d') . "\n\n" : '')
             . $entry;
-        @file_put_contents($path, $body, FILE_APPEND | LOCK_EX);
+        if (@file_put_contents($path, $body, FILE_APPEND | LOCK_EX) === false) {
+            // Never break the action being logged, but never lose the memory
+            // silently either: a root-owned log file once stopped Greg's journal
+            // without a trace.
+            error_log('aipbx: Greg captain\'s log is not writable: ' . $path);
+            return;
+        }
         @chmod($path, 0640);
     }
 

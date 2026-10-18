@@ -17,16 +17,20 @@ require_once __DIR__ . '/../../src/services/GregJournal.php';
 final class GregJournalTest extends TestCase
 {
     private string $dir;
+    private string $previous;
 
     protected function setUp(): void
     {
+        // Remember the bootstrap's directory: unsetting it here would send the
+        // tests that run after this one into the live /var/lib/aipbx/greg.
+        $this->previous = (string) (getenv('AIPBX_GREG_DIR') ?: '');
         $this->dir = sys_get_temp_dir() . '/greg-journal-' . bin2hex(random_bytes(4));
         putenv('AIPBX_GREG_DIR=' . $this->dir);
     }
 
     protected function tearDown(): void
     {
-        putenv('AIPBX_GREG_DIR');
+        putenv('AIPBX_GREG_DIR=' . $this->previous);
         $this->remove($this->dir);
     }
 

@@ -11,6 +11,9 @@
  * They run as root from bin/aipbx_health.php (cron, `aipbx-selftest`), so they
  * may read anything; none of them changes anything.
  */
+require_once __DIR__ . '/../SipProbeService.php';
+require_once __DIR__ . '/../ai/SipfrontClient.php';
+
 final class HealthChecks
 {
     public const STATUSES = ['ok', 'warn', 'fail', 'info', 'off', 'unknown'];
@@ -22,6 +25,7 @@ final class HealthChecks
         'web' => 5,
         'chat' => 5,
         'trunks' => 5,
+        'sip_calltest' => 60,
         'disk' => 60,
         'memory' => 15,
         'mail' => 60,
@@ -49,6 +53,7 @@ final class HealthChecks
                 'web' => self::web(),
                 'chat' => self::service('aipbx-chat'),
                 'trunks' => self::trunks(),
+                'sip_calltest' => self::sipCalltest(),
                 'disk' => self::disk(),
                 'memory' => self::memory(),
                 'mail' => self::mail(),
@@ -104,6 +109,41 @@ final class HealthChecks
         return $state === 'active'
             ? ['ok', sprintf(t('health.msg_service_ok'), $unit)]
             : ['fail', sprintf(t('health.msg_service_down'), $unit, $state ?: 'unknown')];
+    }
+
+    /**
+     * An independent SIP test of this server: Sipfront when it has keys,
+     * otherwise SIPp — or the built-in OPTIONS probe — on loopback, with a
+     * tcpdump capture of the exchange. This check runs as root from cron, so
+     * the capture is allowed; what it tests is the PBX itself, not the carrier.
+     */
+    private static function sipCalltest(): array
+    {
+        if (SipfrontClient::configured()) {
+            return ['ok', t('health.msg_sip_calltest_sipfront')];
+        }
+        $r = SipProbeService::run(6);
+        if (!$r['ran']) {
+            return ['warn', t('health.msg_sip_calltest_failed')];
+        }
+        $engine = t('health.probe_engine_' . ($r['engine'] ?? 'builtin'));
+        $code = (int) ($r['code'] ?? 0);
+        $cap = $r['capture'] ?? [];
+        $captured = sprintf(
+            t('health.msg_sip_calltest_capture'),
+            (int) ($cap['sip_messages'] ?? 0),
+            (string) ($cap['source'] ?? 'none')
+        );
+        if ($code >= 200 && $code < 300) {
+            return ['ok', sprintf(t('health.msg_sip_calltest_ok'), $engine, $code, $captured)];
+        }
+        if ($code === 401 || $code === 407) {
+            return ['ok', sprintf(t('health.msg_sip_calltest_auth'), $engine, $code, $captured)];
+        }
+        if ($code === 0) {
+            return ['warn', sprintf(t('health.msg_sip_calltest_noanswer'), $engine, $captured)];
+        }
+        return ['warn', sprintf(t('health.msg_sip_calltest_code'), $engine, $code, $captured)];
     }
 
     private static function trunks(): array

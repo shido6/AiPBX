@@ -29,6 +29,7 @@ require_once __DIR__ . '/ai/EchoService.php';
 require_once __DIR__ . '/ai/ResearchService.php';
 require_once __DIR__ . '/ai/OpencodeService.php';
 require_once __DIR__ . '/GregJournal.php';
+require_once __DIR__ . '/GregHealthService.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
 require_once __DIR__ . '/tts/TtsProviders.php';
 require_once __DIR__ . '/MailTemplateService.php';
@@ -173,6 +174,16 @@ class GregService
         $hist = $_SESSION['greg_chat'] ?? [];
         $hist[] = ['role' => 'user', 'content' => $q];
         $hist = array_slice($hist, -self::CHAT_HISTORY_MAX);
+
+        // A health check in progress owns the conversation: every message is
+        // an answer to the question Greg just asked, and the state machine —
+        // not the model — decides what happens next.
+        $healthReply = GregHealthService::handle($q);
+        if ($healthReply !== null) {
+            $hist[] = ['role' => 'assistant', 'content' => $healthReply];
+            $_SESSION['greg_chat'] = array_slice($hist, -self::CHAT_HISTORY_MAX);
+            return ['success' => true, 'message' => $healthReply];
+        }
 
         // Greg's workshop: when the question is plainly "add a tool" (or
         // "research this"), opencode drafts the plan and it is stored for

@@ -22,12 +22,30 @@ managers: yesterday's calls and faxes and the state of every check.
 | Server address | 60 min | a stored address (server, phones, coturn, mDNS) is not this server's any more: see [Network settings](network-settings.md#when-the-servers-ip-address-changed) |
 | Local AI service | 15 min | installed and enabled, but not running |
 | TLS certificate | daily | warning 14 days before it ends, failed 3 days before |
+| SIP call test | 1 h | With Sipfront keys, its latest test run is quoted instead of this check. Otherwise this server sends a real SIP OPTIONS to itself (SIPp when installed, otherwise a built-in probe): OK on 200, 401 or 407, warning when nothing answers. `tcpdump` records the exchange and the capture is parsed — methods, status codes and RTP — and the result says which source it used (`capture: pcap` or the engine's own output). |
 | Daily backup | daily | the newest file in `/var/backups/aipbx-daily` is older than 26 h |
 | Installation | daily | something `install.sh` sets up is missing or has the wrong owner/rights (helper, sudo rule, cron, TFTP folder, voicemail folders, masked vsftpd unit) |
 | AiPBX version | daily | a newer release is out — information only, never an alarm |
 
 Each check's **interval** can be changed on the page (off, 5 or 15 minutes, 1 or 6 hours, daily).
 A check that does not apply to the server (no trunks, FTP switched off) shows *Not used*.
+
+## Greg runs the checks with you
+
+Type **health check** in the chat (or say *sağlık kontrolü*). Greg asks five short questions a
+machine cannot answer — what is not working, which extensions or numbers, since when, whether audio
+actually flows, and whether it happens on every call — and fills in the rest himself: the state of
+every check above plus the independent SIP call test. He quotes the last Sipfront run when keys are
+entered; without an account he reads the SIP call test, which sends a real OPTIONS from this server
+and has `tcpdump` record the exchange, so the answer does not come from the PBX's own opinion alone.
+
+The finished report is saved as it was at that moment (answers, check results, call test), written to
+Greg's captain's log, and listed under the checks on this page. A user who is not an administrator
+sees their own answers and the verdict, without the server's technical messages. Type `cancel` (or
+*iptal*) to stop — nothing is saved.
+
+Without Sipfront and without `tcpdump`, the same test still runs and reports what SIPp or the
+built-in probe saw, naming that source instead of a capture.
 
 ## Alarms
 
