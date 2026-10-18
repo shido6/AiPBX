@@ -190,10 +190,40 @@ class OpencodeService
     }
 
     /**
+     * One opencode process at a time per install.
+     *
+     * A chat is a 10–30 s subprocess, and the free tier is easy to trip. Two
+     * administrators (or one impatient double-click) would otherwise fork
+     * several of them, each waiting on the same rate limit. The lock is
+     * advisory and non-blocking: the second caller gets an honest "busy"
+     * instead of a queue that looks like a hang.
+     *
      * @return array{output:string, exit:int, timed_out:bool}
      * @throws CloudAiException
      */
     private static function run(array $s, string $ws, string $prompt): array
+    {
+        $lockPath = rtrim($s['workspace'], '/') . '/.run.lock';
+        $lock = @fopen($lockPath, 'c');
+        if ($lock !== false && !flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
+            throw new CloudAiException(t('ai_echo.oc_err_busy'));
+        }
+        try {
+            return self::runOnce($s, $ws, $prompt);
+        } finally {
+            if ($lock !== false) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
+    }
+
+    /**
+     * @return array{output:string, exit:int, timed_out:bool}
+     * @throws CloudAiException
+     */
+    private static function runOnce(array $s, string $ws, string $prompt): array
     {
         $cmd = [
             $s['bin'], 'run',

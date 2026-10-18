@@ -4946,5 +4946,6 @@ Your phone will ring.',
     'ai_echo.oc_err_empty' => 'opencode returned nothing.',
     'ai_echo.oc_err_decision' => 'That proposal was already decided.',
     'ai_echo.oc_err_provider' => 'opencode refused the request (free-tier limit or provider error). Try again in a moment.',
+    'ai_echo.oc_err_busy' => 'Greg is already working on something — wait for that answer, then ask again.',
 
 ];

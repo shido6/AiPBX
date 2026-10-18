@@ -4948,5 +4948,6 @@ Telefonunuz çaldırılacak.',
     'ai_echo.oc_err_empty' => 'opencode hiçbir çıktı vermedi.',
     'ai_echo.oc_err_decision' => 'Bu öneri zaten karara bağlanmış.',
     'ai_echo.oc_err_provider' => 'opencode isteği reddetti (ücretsiz katman sınırı veya sağlayıcı hatası). Biraz sonra tekrar deneyin.',
+    'ai_echo.oc_err_busy' => 'Greg şu anda başka bir iş üzerinde çalışıyor — o yanıtı bekleyip tekrar sorun.',
 
 ];

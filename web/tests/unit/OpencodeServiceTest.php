@@ -233,6 +233,31 @@ SH;
         $this->assertNull(OpencodeService::extractError('plain text'));
     }
 
+    public function testASecondJobIsRefusedInsteadOfForkingAnotherProcess(): void
+    {
+        $ws = sys_get_temp_dir() . '/oc-lock-' . bin2hex(random_bytes(3));
+        mkdir($ws, 0700, true);
+        $stub = __DIR__ . '/.oc-stub-' . bin2hex(random_bytes(3)) . '.sh';
+        file_put_contents($stub, "#!/bin/sh\nprintf '{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"ok\"}}\\n'\n");
+        chmod($stub, 0755);
+        $this->set('opencode_bin', $stub);
+        $this->set('opencode_workspace', $ws);
+        $held = fopen($ws . '/.run.lock', 'c');
+        $this->assertTrue(flock($held, LOCK_EX | LOCK_NB), 'test could not take the lock');
+        try {
+            OpencodeService::chat('hello');
+            $this->fail('a concurrent job must not start a second process');
+        } catch (CloudAiException $e) {
+            $this->assertNotSame('', $e->getMessage());
+        } finally {
+            flock($held, LOCK_UN);
+            fclose($held);
+            @unlink($stub);
+            @unlink($ws . '/.run.lock');
+            @rmdir($ws);
+        }
+    }
+
     // ------------------------------------------------------------ Greg intent
 
     public function testIntentIsSilentForNonAdminsAndWhenSwitchedOff(): void
