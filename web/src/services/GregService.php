@@ -28,6 +28,7 @@ require_once __DIR__ . '/ai/AssistantModel.php';
 require_once __DIR__ . '/ai/EchoService.php';
 require_once __DIR__ . '/ai/ResearchService.php';
 require_once __DIR__ . '/ai/OpencodeService.php';
+require_once __DIR__ . '/GregJournal.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
 require_once __DIR__ . '/tts/TtsProviders.php';
 require_once __DIR__ . '/MailTemplateService.php';
@@ -111,6 +112,11 @@ class GregService
         writeAuditLog('greg', 'settings', 'greg',
             $name . ' settings saved (' . ($values['greg.enabled'] === '1' ? 'active' : 'disabled') . ')',
             'update', $_SESSION['user_id'] ?? null);
+        GregJournal::append('Greg settings saved', [
+            'brain: ' . $source,
+            'notifications: ' . ($values['greg.notice_email'] === '1' ? 'e-mail for warn/critical' : 'in-app only'),
+            'state: ' . ($values['greg.enabled'] === '1' ? 'active' : 'disabled'),
+        ]);
         return ['message' => t('ai_voip_engineer.msg_saved')];
     }
 
@@ -184,6 +190,13 @@ class GregService
         }
 
         $prompt = self::persona() . "\n\n";
+        // Greg's own memory: AGENTS.md and the latest captain's-log entries.
+        // Empty on a fresh install, so the prompt is unchanged until he learns
+        // something or an administrator writes it down.
+        $journal = GregJournal::context();
+        if ($journal !== '') {
+            $prompt .= $journal . "\n\n";
+        }
         if (OpencodeService::settings()['enabled']) {
             $prompt .= t('greg.oc_capability') . "\n\n";
         }

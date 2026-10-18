@@ -18,6 +18,7 @@
  */
 
 require_once __DIR__ . '/../../secret_box.php';
+require_once __DIR__ . '/../GregJournal.php';
 require_once __DIR__ . '/../../asterisk_helper.php';
 require_once __DIR__ . '/../../audit_log.php';
 
@@ -144,6 +145,10 @@ class HepSettingsService
         writeAuditLog('echo', 'hep_settings', 'hep',
             'HEP capture target: ' . self::describe($settings),
             'update', $_SESSION['user_id'] ?? null);
+        GregJournal::append('HEP capture target applied', array_filter([
+            self::describe($settings),
+            $settings['homer_url'] !== '' ? 'HOMER UI: ' . $settings['homer_url'] : '',
+        ]));
         return ['message' => t('ai_echo.hep_saved')];
     }
 

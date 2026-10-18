@@ -17,6 +17,7 @@
 
 require_once __DIR__ . '/CloudAiService.php';
 require_once __DIR__ . '/../../audit_log.php';
+require_once __DIR__ . '/../GregJournal.php';
 
 class OpencodeService
 {
@@ -142,6 +143,10 @@ class OpencodeService
             . "is, where it comes from (GitHub URL or MCP server package), what it would need (env vars, ports, "
             . "commands), the risks, and the exact configuration to add. Do not claim anything was installed.\n\n"
             . "Task: " . $task;
+        $notes = GregJournal::context();
+        if ($notes !== '') {
+            $prompt .= "\n\n" . $notes;
+        }
 
         $res = self::run($s, $ws, $prompt);
         $output = $res['output'];
@@ -167,6 +172,7 @@ class OpencodeService
     public static function decide(int $id, bool $approve): void
     {
         $db = getDB();
+        $task = (string) $db->query('SELECT task FROM pbx_greg_proposals WHERE id = ' . $id)->fetchColumn();
         $st = $db->prepare(
             'UPDATE pbx_greg_proposals
              SET status = ?, decided_at = NOW(), decided_by = ?
@@ -177,6 +183,10 @@ class OpencodeService
             throw new CloudAiException(t('ai_echo.oc_err_decision'));
         }
         writeAuditLog('greg', 'proposal', $id, 'proposal #' . $id, $approve ? 'approve' : 'reject', $_SESSION['user_id'] ?? null);
+        GregJournal::append(
+            'Tool proposal #' . $id . ($approve ? ' approved' : ' rejected'),
+            [$task !== '' ? 'task: ' . $task : '', $approve ? 'plan accepted; installation stays manual' : 'plan declined']
+        );
     }
 
     /** @return array<int, array> newest first */

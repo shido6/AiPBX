@@ -16,6 +16,7 @@
 require_once __DIR__ . '/SipfrontClient.php';
 require_once __DIR__ . '/EchoReporter.php';
 require_once __DIR__ . '/../../audit_log.php';
+require_once __DIR__ . '/../GregJournal.php';
 
 class EchoService
 {
@@ -72,6 +73,11 @@ class EchoService
             'Echo (Sipfront) settings saved (' . ($s['configured'] ? 'keys set' : 'no keys')
                 . ', ' . ($s['enabled'] ? 'on' : 'off') . ')',
             'update', $_SESSION['user_id'] ?? null);
+        GregJournal::append('Echo (Sipfront) settings saved', [
+            'keys: ' . ($s['configured'] ? 'set' : 'not set'),
+            'state: ' . ($s['enabled'] ? 'on' : 'off'),
+            $s['test_id'] > 0 ? 'watch test #' . $s['test_id'] : '',
+        ]);
         return ['message' => t('ai_voip_engineer.msg_saved')];
     }
 

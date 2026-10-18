@@ -46,6 +46,9 @@ foreach (['sounds', 'tts'] as $d) {
 }
 putenv('SOUNDS_CUSTOM_DIR=' . $tmpConf . '/sounds');
 putenv('AI_TTS_DIR=' . $tmpConf . '/tts');
+// Greg's notes and captain's log: a temp directory, so a test that saves
+// settings (which appends a journal entry) never writes into the live one.
+putenv('AIPBX_GREG_DIR=' . $tmpConf . '/greg');
 putenv('AIPBX_SETTINGS_KEY=test-settings-key');
 
 // LOCK 3 — no CLI command may reach the live Asterisk.

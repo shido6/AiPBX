@@ -452,6 +452,33 @@ mkdir -p /var/lib/aipbx/chat_files /var/lib/aipbx/tts
 # www-data so the portal can create them; opencode itself is installed by the
 # operator (AI → Echo shows "opencode not installed" until it is).
 install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/opencode
+# Greg's memory: AGENTS.md plus one captain's-log file per day. Outside the
+# git checkout on purpose — an update must never overwrite what Greg learned,
+# and an operator can read or edit these with cat and vi.
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/greg /var/lib/aipbx/greg/captains-logs
+if [[ ! -e /var/lib/aipbx/greg/AGENTS.md ]]; then
+    cat > /var/lib/aipbx/greg/AGENTS.md <<'GREGNOTES'
+# Greg — notes about this installation
+
+Greg reads this file, and the latest entries from
+/var/lib/aipbx/greg/captains-logs/YYYY-MM-DD.md, before answering. AiPBX's
+database already records calls, settings and audit rows; this is for what no
+table knows — the network around the PBX, carrier quirks, why something was
+decided. Write facts, not wishes. Never put passwords or API keys here.
+
+## Known by default
+
+- The brain is Big Pickle, the free model that ships with the opencode CLI:
+  no API key and no account. Other sources are on AI → VoIP Engineer.
+- opencode is allowed to read and plan, never to write, run a shell or reach
+  outside its throwaway workspace. Tool proposals wait for an administrator
+  on AI → Echo → Greg's workshop; approving one installs nothing.
+- The HEP capture target lives on AI → Echo; /etc/asterisk/hep.conf is the
+  generated truth. HEP is plain UDP with a shared password, not encryption.
+GREGNOTES
+    chown www-data:www-data /var/lib/aipbx/greg/AGENTS.md
+    chmod 0640 /var/lib/aipbx/greg/AGENTS.md
+fi
 # Key that encrypts cloud credentials stored in the database (AI → Cloud TTS).
 # Created here so it belongs to the web server: one made by root would lock it out.
 [[ -s /var/lib/aipbx/settings.key ]] || head -c 32 /dev/urandom > /var/lib/aipbx/settings.key

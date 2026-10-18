@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../services/GregService.php';
+require_once __DIR__ . '/../services/GregJournal.php';
 
 /**
  * /ai-voip-engineer — AI → AI VoIP Engineer (admin only): the Greg entity.
@@ -22,6 +23,22 @@ class AiVoipEngineerController extends BaseController
                 try {
                     if (isset($_POST['save_greg'])) {
                         $message = GregService::save($_POST)['message'];
+                    } elseif (isset($_POST['save_greg_notes'])) {
+                        GregJournal::saveAgents((string) ($_POST['greg_agents'] ?? ''));
+                        $message = t('ai_voip_engineer.notes_saved');
+                    } elseif (isset($_POST['append_greg_note'])) {
+                        $title = trim((string) ($_POST['note_title'] ?? ''));
+                        $body = trim((string) ($_POST['note_body'] ?? ''));
+                        if ($title === '' && $body === '') {
+                            throw new CloudAiException(t('ai_voip_engineer.err_note_empty'));
+                        }
+                        // A body without a title is the entry's title; both on
+                        // one line, flattened, so the log stays a log.
+                        GregJournal::append(
+                            $title !== '' ? $title : mb_substr($body, 0, 60),
+                            $title !== '' && $body !== '' ? [$body] : []
+                        );
+                        $message = t('ai_voip_engineer.notes_added');
                     }
                 } catch (\Throwable $e) {
                     $error = $e->getMessage();
@@ -33,6 +50,10 @@ class AiVoipEngineerController extends BaseController
             'greg' => GregService::settings(),
             'month_tokens' => GregService::monthTokens(),
             'unread' => GregService::unreadCount(),
+            'agents' => GregJournal::agents(),
+            'journal_recent' => GregJournal::recentText(18),
+            'journal_dir' => GregJournal::baseDir(),
+            'journal_agents_path' => GregJournal::agentsPath(),
             'csrf_token' => getCSRFToken(),
         ], ['title' => t('ai_voip_engineer.title'), 'message' => $message, 'error' => $error]);
     }

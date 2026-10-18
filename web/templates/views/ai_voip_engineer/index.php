@@ -81,3 +81,58 @@ $sources = [
         <div class="u-muted u-fs-12 u-mt-6" style="color: var(--warning);"><i class="fas fa-triangle-exclamation"></i> <?php echo t('ai_voip_engineer.limits_warning'); ?></div>
     </div>
 </div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-book u-primary"></i> <?php echo t('ai_voip_engineer.notes_title'); ?></div>
+        <span class="badge badge-secondary u-fs-11" style="font-family: monospace; font-size: 10px;"><?php echo $h($journal_agents_path); ?></span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 14px;"><?php echo t('ai_voip_engineer.notes_intro'); ?></div>
+
+        <form method="POST" style="margin-bottom: 18px;">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="form-group">
+                <label class="form-label"><?php echo t('ai_voip_engineer.notes_agents_label'); ?></label>
+                <textarea class="form-control" name="greg_agents" rows="10" maxlength="20000" spellcheck="false"
+                          style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;"
+                          placeholder="<?php echo $h(t('ai_voip_engineer.notes_agents_placeholder')); ?>"><?php echo $h($agents); ?></textarea>
+            </div>
+            <button type="submit" name="save_greg_notes" value="1" class="btn btn-primary">
+                <i class="fas fa-save"></i> <?php echo t('ai_voip_engineer.notes_save'); ?>
+            </button>
+        </form>
+
+        <form method="POST" style="border-top: 1px solid var(--border-color); padding-top: 14px;">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="u-grid-2" style="gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.notes_add_title'); ?></label>
+                    <input type="text" class="form-control" name="note_title" maxlength="120"
+                           placeholder="<?php echo $h(t('ai_voip_engineer.notes_add_title_ph')); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.notes_add_body'); ?></label>
+                    <input type="text" class="form-control" name="note_body" maxlength="300"
+                           placeholder="<?php echo $h(t('ai_voip_engineer.notes_add_body_ph')); ?>">
+                </div>
+            </div>
+            <button type="submit" name="append_greg_note" value="1" class="btn btn-secondary">
+                <i class="fas fa-pen"></i> <?php echo t('ai_voip_engineer.notes_add'); ?>
+            </button>
+        </form>
+
+        <div style="margin-top: 16px;">
+            <div class="u-strong u-fs-12" style="margin-bottom: 8px;"><?php echo t('ai_voip_engineer.notes_recent'); ?></div>
+            <?php if (trim($journal_recent) === ''): ?>
+                <div class="u-muted u-fs-12"><?php echo t('ai_voip_engineer.notes_empty'); ?></div>
+            <?php else: ?>
+                <pre style="background: var(--bg-main); padding: 12px; border-radius: 6px; white-space: pre-wrap; font-size: 12px; margin: 0; max-height: 260px; overflow: auto;"><?php echo $h($journal_recent); ?></pre>
+            <?php endif; ?>
+        </div>
+
+        <div class="u-muted u-fs-11" style="margin-top: 12px;">
+            <i class="fas fa-folder-open"></i> <?php echo $h(sprintf(t('ai_voip_engineer.notes_where'), $journal_dir)); ?>
+        </div>
+    </div>
+</div>
