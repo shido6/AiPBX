@@ -244,5 +244,13 @@ final class GregServiceTest extends TestCase
         $this->assertStringContainsString('plain language', $p);
         $this->assertStringContainsString('never invent numbers', $p);
         $this->assertStringContainsString('do not nag', $p);
+
+        // The identity the user asked for: the assistant, and a VoIP engineer
+        // with twenty-plus years of production telephony behind him.
+        $this->assertStringContainsString('the assistant of this AiPBX phone system', $p);
+        $this->assertStringContainsString('twenty-plus years', $p);
+        $this->assertStringContainsString('Evidence before theory', $p);
+        $this->assertStringContainsString('most likely cause, then the runner-up', $p);
+        $this->assertStringContainsString('what you cannot know', $p);
     }
 }

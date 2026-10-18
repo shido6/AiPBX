@@ -58,7 +58,7 @@ class AiVoipEngineerController extends BaseController
         ], [
             // One name everywhere: the tab follows the name in settings, and
             // the role is stated once rather than spelled out in each string.
-            'title' => GregService::displayName() . ' — ' . t('ai_voip_engineer.role'),
+            'title' => GregService::displayName() . ' — ' . t('ai_voip_engineer.role_short'),
             'message' => $message,
             'error' => $error,
         ]);
