@@ -25,6 +25,7 @@
  */
 
 require_once __DIR__ . '/ai/AssistantModel.php';
+require_once __DIR__ . '/ai/EchoService.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
 require_once __DIR__ . '/tts/TtsProviders.php';
 require_once __DIR__ . '/MailTemplateService.php';
@@ -164,6 +165,13 @@ class GregService
         $hist = array_slice($hist, -self::CHAT_HISTORY_MAX);
 
         $prompt = self::persona() . "\n\n";
+        // Echo: this server's own counts plus Sipfront's runs, when the
+        // administrator enabled it. Empty string when Echo is off, so Greg
+        // behaves exactly as before.
+        $echo = EchoService::promptContext();
+        if ($echo !== '') {
+            $prompt .= $echo . "\n\n";
+        }
         foreach ($hist as $m) {
             $prompt .= ($m['role'] === 'user' ? 'User' : $s['name']) . ': ' . $m['content'] . "\n";
         }

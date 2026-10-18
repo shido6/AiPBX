@@ -94,6 +94,7 @@ return [
             ['href' => '/ai-tts', 'icon' => 'fas fa-comment-dots', 'label' => 'sidebar.item_ai_tts', 'show' => $can('ai_tts'), 'pages' => ['ai_tts.php']],
             ['href' => '/assistant', 'icon' => 'fas fa-wand-magic-sparkles', 'label' => 'sidebar.item_assistant', 'show' => $isAdmin, 'pages' => ['assistant.php']],
             ['href' => '/ai-voip-engineer', 'icon' => 'fas fa-user-astronaut', 'label' => 'sidebar.item_ai_voip_engineer', 'show' => $isAdmin, 'pages' => ['ai_voip_engineer.php']],
+            ['href' => '/ai-echo', 'icon' => 'fas fa-wave-square', 'label' => 'sidebar.item_ai_echo', 'show' => $isAdmin, 'pages' => ['ai_echo.php']],
             ['href' => '/ai-apps', 'icon' => 'fas fa-robot', 'label' => 'sidebar.item_ai_apps', 'show' => $isAdmin, 'pages' => ['ai_apps.php']],
             ['href' => '/ai-models', 'icon' => 'fas fa-microchip', 'label' => 'sidebar.item_ai_models', 'show' => $isAdmin, 'pages' => ['ai_models.php']],
             ['href' => '/ai-cloud', 'icon' => 'fas fa-cloud', 'label' => 'sidebar.item_ai_cloud', 'show' => $isAdmin, 'pages' => ['ai_cloud.php']],

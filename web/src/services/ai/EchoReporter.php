@@ -161,6 +161,36 @@ class EchoReporter
     }
 
     /**
+     * Deterministic facts for Greg's prompt: the numbers, no model, no prose.
+     * A failure is skipped rather than thrown — Greg must still answer when
+     * one table is missing or the capture is switched off.
+     *
+     * @return array<string,string> calls_today, minutes_today, sip_errors_24h
+     */
+    public static function facts(): array
+    {
+        $out = [];
+        try {
+            $rows = self::run('calls.today');
+            if (!empty($rows[0])) {
+                $out['calls_today'] = (string) ($rows[0]['calls'] ?? '0');
+                $out['minutes_today'] = (string) ($rows[0]['minutes'] ?? '0');
+            }
+        } catch (\Throwable $e) {
+        }
+        try {
+            $rows = self::run('signaling.errors');
+            $parts = [];
+            foreach ($rows as $r) {
+                $parts[] = (string) ($r['status_code'] ?? '?') . '×' . (string) ($r['seen'] ?? '0');
+            }
+            $out['sip_errors_24h'] = $parts ? implode(', ', $parts) : 'none';
+        } catch (\Throwable $e) {
+        }
+        return $out;
+    }
+
+    /**
      * One short narration of the rows, by one model (same chain as the
      * assistant), or null when none is configured. The rows carry the truth;
      * the model only words it. This is deliberately the only "model" call in
