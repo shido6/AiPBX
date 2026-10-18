@@ -471,7 +471,7 @@ class GregHealthService
         foreach ($checks as $c) {
             $counts[$c['status']] = ($counts[$c['status']] ?? 0) + 1;
         }
-        $out .= "\n\n" . t('health.greg_checks_title') . "\n"
+        $out .= ($out !== '' ? "\n\n" : '') . t('health.greg_checks_title') . "\n"
             . sprintf(t('health.greg_checks_counts'), $counts['ok'], $counts['warn'], $counts['fail'], $counts['unknown']);
         foreach ($checks as $key => $c) {
             if (!in_array($c['status'], ['warn', 'fail'], true)) {
@@ -486,7 +486,7 @@ class GregHealthService
             $out .= "\n" . sprintf(t('health.greg_checks_unknown'), $counts['unknown']);
         }
 
-        $out .= "\n\n" . t('health.greg_calltest_title');
+        $out .= "\n\n" . t('health.greg_calltest_title');  // always after the counts
         if (($test['source'] ?? '') === 'sipfront') {
             if ($test['error']) {
                 $out .= "\n" . sprintf(t('health.greg_sipfront_error'), mb_substr((string) $test['error'], 0, 160));

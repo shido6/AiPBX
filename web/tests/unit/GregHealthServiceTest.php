@@ -268,6 +268,7 @@ final class GregHealthServiceTest extends TestCase
         $this->assertStringContainsString(t('health.greg_fixed_title'), $out);
         $this->assertStringContainsString(t('health.greg_fix_worked'), $out);
         $this->assertStringContainsString(t('health.greg_verdict_ok'), $out);
+        $this->assertStringStartsWith(t('health.greg_fixed_title'), $out, 'no leading blank lines');
     }
 
     // ------------------------------------------------------------- the form
