@@ -240,6 +240,7 @@ final class GregServiceTest extends TestCase
         $this->set(['name' => 'Ada']);
         $p = GregService::persona();
         $this->assertStringContainsString('Ada (VoIPMonk)', $p);
+        $this->assertStringContainsString('built-in VoIP Engineer', $p);
         $this->assertStringContainsString('plain language', $p);
         $this->assertStringContainsString('never invent numbers', $p);
         $this->assertStringContainsString('do not nag', $p);

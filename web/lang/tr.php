@@ -4805,8 +4805,9 @@ Telefonunuz çaldırılacak.',
 
 // Keys in sync with en.php (web/bin/lint_lang.php): English fallback
 // where this language has no translation yet.
-    'sidebar.item_ai_voip_engineer' => 'AI VoIP Engineer',
-    'ai_voip_engineer.title' => 'AI VoIP Engineer',
+    'sidebar.item_ai_voip_engineer' => 'Greg — VoIP Mühendisi',
+    'ai_voip_engineer.title' => 'Greg — yerleşik VoIP Mühendisi',
+    'ai_voip_engineer.role' => 'yerleşik VoIP Mühendisi',
     'ai_voip_engineer.help_title' => 'Sisteminizi izleyen VoIP mühendisi Greg',
     'ai_voip_engineer.help_body' => 'Greg’i burada açın; avatarı her ekranın sağ üstünde görünür (AiPBX logosu solda, Greg sağda). Sohbet’te soruları yanıtlar, bildirimlerini avatarının yanındaki panelde tutar ve yöneticilere uyarılarla ilgili e-postalar gönderir — sessiz saatler içinde asla, aynı sorun için asla iki kez. Avatarının yanındaki token kullanımı buradan kapatılabilir.',
     'ai_voip_engineer.msg_saved' => 'Ayarlar kaydedildi.',

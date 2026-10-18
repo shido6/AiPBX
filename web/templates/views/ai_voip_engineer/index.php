@@ -26,6 +26,7 @@ $sources = [
                 <div style="width: 54px; height: 54px; border-radius: 50%; background: linear-gradient(135deg, #7c3aed, #4c1d95); display: flex; align-items: center; justify-content: center; font-size: 24px; color: #fff; box-shadow: 0 2px 8px rgba(124,58,237,.45); flex-shrink: 0;">&#127913;</div>
                 <div>
                     <div class="u-strong u-fs-15"><?php echo $h($greg['name']); ?> <span class="u-muted u-fw-400">(VoIPMonk)</span></div>
+                    <div class="u-muted u-fs-11"><?php echo t('ai_voip_engineer.role'); ?></div>
                     <span class="badge <?php echo $greg['enabled'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
                         <?php echo t($greg['enabled'] ? 'ai_voip_engineer.status_active' : 'ai_voip_engineer.status_disabled'); ?>
                     </span>

@@ -55,6 +55,12 @@ class AiVoipEngineerController extends BaseController
             'journal_dir' => GregJournal::baseDir(),
             'journal_agents_path' => GregJournal::agentsPath(),
             'csrf_token' => getCSRFToken(),
-        ], ['title' => t('ai_voip_engineer.title'), 'message' => $message, 'error' => $error]);
+        ], [
+            // One name everywhere: the tab follows the name in settings, and
+            // the role is stated once rather than spelled out in each string.
+            'title' => GregService::displayName() . ' — ' . t('ai_voip_engineer.role'),
+            'message' => $message,
+            'error' => $error,
+        ]);
     }
 }
