@@ -17,7 +17,7 @@ Remote monitoring and operations:
   audit-log record as pressing **Apply**; `module_reload` accepts `core` and `pjsip` only and refuses
   FreePBX-only module names (`ivr`, `queues`, …) with a reason instead of reporting success. No
   sudoers entry and no new privileged helper. Off until `/etc/aipbx/agent.conf` is written.
-- **Greg's optional face and voice (Anam.ai)** ([howtos/greg-anam-avatar.md](howtos/greg-anam-avatar.md)):
+- **Greg: optional add-on — a face and a voice (Anam.ai)** ([howtos/greg-anam-avatar.md](howtos/greg-anam-avatar.md)):
   an administrator can create a persona in Anam and give Greg a video avatar that speaks his
   answers in the chat. Off, and without a persona, until one is configured — none ships with the
   code and the API key is stored encrypted with the installation's settings key. The browser only

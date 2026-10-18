@@ -86,6 +86,7 @@ $sources = [
 <div class="card" style="margin-top: 16px;">
     <div class="card-header">
         <div class="card-title"><i class="fas fa-video u-primary"></i> <?php echo t('ai_voip_engineer.anam_title'); ?></div>
+        <span class="badge badge-info u-fs-10" style="margin-left: 8px;"><?php echo t('ai_voip_engineer.anam_addon'); ?></span>
         <span class="badge <?php echo $anam['enabled'] && $anam['configured'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
             <?php
             echo $anam['enabled'] && $anam['configured']

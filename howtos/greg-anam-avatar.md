@@ -1,9 +1,11 @@
 # Give Greg a face and a voice with Anam.ai
 
-Greg already answers in text, from this server's own data. This howto adds an
-optional **video persona** to his chat — he speaks his answers aloud — and shows
-how the same persona can take part in a real conversation, in a meeting, and
-where the honest limits of "call him on an extension" are today.
+Greg already answers in text, from this server's own data. This howto sets up
+an **optional add-on to his configuration**: a video persona that speaks his
+answers aloud. It also shows how the same persona can hold a real two-way
+conversation, join a meeting, and where the honest limits of "call him on an
+extension" are today. The add-on changes nothing about Greg's answers or the
+PBX — remove the key and he is exactly what he was before.
 
 Tested on AiPBX 1.33 with the Anam JavaScript SDK 4.29 and the
 `/v1/auth/session-token` and `/v1/meetings/invites` APIs (October 2026).
