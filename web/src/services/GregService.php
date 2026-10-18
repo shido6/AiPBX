@@ -48,11 +48,13 @@ class GregService
     /** Greg's stored configuration with defaults; disabled until enabled. */
     public static function settings(): array
     {
+        $stored = trim((string) getSystemSetting('greg.name', ''));
+        $name = self::canonicalName($stored !== '' ? $stored : self::DEFAULT_NAME);
         $source = (string) getSystemSetting('greg.model_source', 'bigpickle');
         $quiet = (string) getSystemSetting('greg.quiet_hours', self::QUIET_DEFAULT);
         return [
             'enabled'      => getSystemSetting('greg.enabled', '0') === '1',
-            'name'         => trim((string) getSystemSetting('greg.name', '')) ?: self::DEFAULT_NAME,
+            'name'         => $name,
             'model_source' => in_array($source, self::SOURCES, true) ? $source : 'bigpickle',
             'show_avatar'  => getSystemSetting('greg.show_avatar', '1') === '1',
             'show_tokens'  => getSystemSetting('greg.show_tokens', '1') === '1',
@@ -81,7 +83,7 @@ class GregService
     public static function save(array $post): array
     {
         $s = self::settings();
-        $name = trim((string) ($post['greg_name'] ?? $s['name']));
+        $name = self::canonicalName((string) ($post['greg_name'] ?? $s['name']));
         if (!preg_match('/^[\p{L}\p{N} .\'_-]{1,30}$/u', $name)) {
             throw new CloudAiException(t('ai_voip_engineer.err_name'));
         }
@@ -396,6 +398,19 @@ class GregService
     public static function displayName(): string
     {
         return self::settings()['name'] ?: t('greg.default_name');
+    }
+
+    /**
+     * Greg is Greg. "greg", "Greg" and "GREG" are the same entity, and the
+     * interface always writes him with a capital G — how someone typed his
+     * name in a settings row does not change who he is. A real rename (anything
+     * that is not his name at all) is left exactly as the administrator typed
+     * it.
+     */
+    public static function canonicalName(string $name): string
+    {
+        $name = trim($name);
+        return mb_strtolower($name) === 'greg' ? self::DEFAULT_NAME : $name;
     }
 
     public static function markAllRead(): void

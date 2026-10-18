@@ -78,6 +78,25 @@ final class GregServiceTest extends TestCase
         $this->assertSame('Ada', GregService::displayName());
     }
 
+    public function testTheSpellingOfHisNameDoesNotMatter(): void
+    {
+        foreach (['greg', 'GREG', 'Greg'] as $spelling) {
+            $this->set(['name' => $spelling]);
+            $this->assertSame('Greg', GregService::settings()['name'], $spelling . ' is still Greg');
+            $this->assertSame('Greg', GregService::displayName());
+        }
+        // A real rename is not touched: only his own name is canonicalised.
+        $this->set(['name' => 'Gregory']);
+        $this->assertSame('Gregory', GregService::settings()['name']);
+        $this->assertSame('Gregory', GregService::canonicalName('  Gregory  '));
+    }
+
+    public function testSavingHisNameInLowerCaseStoresGreg(): void
+    {
+        GregService::save(['greg_name' => 'greg', 'greg_quiet_hours' => '22:00-07:00']);
+        $this->assertSame('Greg', GregService::settings()['name']);
+    }
+
     // ----------------------------------------------------------- settings
 
     public function testSaveRejectsANameAndQuietWindowItCannotUse(): void
