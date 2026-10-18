@@ -101,10 +101,17 @@ click cannot buy two sessions.
 WebRTC; with `disableInputAudio` off it starts capturing the microphone, which
 is exactly what a two-way call is. That is the listening mode above.
 
+**Embeds elsewhere.** Anam publishes an `<anam-agent>` web component and a
+player iframe for pages that only want the face
+(<https://anam.ai/docs/embed/overview>). AiPBX does not use them — the portal
+has its own widget and the SDK — but a dealer page or the intranet can host the
+same persona without touching this code.
+
 **Meetings (built in).** On the same card, *Send him into a meeting* takes a
 Google Meet, Zoom or Microsoft Teams link and an optional join time (empty =
 now; up to seven days ahead — scheduling at least ten minutes ahead reserves a
-place). The request is Anam's documented `POST /v1/meetings/invites` with
+place — <https://anam.ai/docs/api-reference/meetings/create-meeting-invite>).
+The request is Anam's documented `POST /v1/meetings/invites` with
 `meetingUrl`, `personaConfig.personaId`, `groupCall` and `joinAt`. In a group
 call the persona stays quiet until someone addresses it by display name; turn
 the checkbox off for a 1:1 meeting. Anam adds an AI-disclosure suffix to the
