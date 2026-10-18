@@ -1003,6 +1003,14 @@ if [ -d "$INSTALL_DIR/signaling" ]; then
     fi
     if [ -d /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         install -o root -g root -m 0644 "$INSTALL_DIR/conf/systemd/aipbx-signaling.service" /etc/systemd/system/aipbx-signaling.service
+    # hep.conf: never overwrite an operator's target, but make sure the portal
+    # can generate it (AI -> Echo): www-data owns the file, the asterisk group
+    # can still read it for res_hep.
+    if [[ -f "$INSTALL_DIR/asterisk-config/hep.conf" ]]; then
+        [[ -e /etc/asterisk/hep.conf ]] || cp "$INSTALL_DIR/asterisk-config/hep.conf" /etc/asterisk/hep.conf
+        chown www-data:asterisk /etc/asterisk/hep.conf 2>/dev/null || true
+        chmod 664 /etc/asterisk/hep.conf 2>/dev/null || true
+    fi
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl enable --now aipbx-signaling.service >/dev/null 2>&1 || true
     fi

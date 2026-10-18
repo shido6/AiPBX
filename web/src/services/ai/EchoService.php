@@ -106,6 +106,10 @@ class EchoService
         } catch (\Throwable $e) {
             $lines[] = '- Local call data: unavailable right now.';
         }
+        require_once __DIR__ . '/HepSettingsService.php';
+        $hep = HepSettingsService::settings();
+        $lines[] = '- HEP capture: ' . HepSettingsService::describe($hep)
+            . ($hep['homer_url'] !== '' ? ' (HOMER UI: ' . $hep['homer_url'] . ')' : '');
         if (!SipfrontClient::configured()) {
             $lines[] = '- Sipfront is not configured (AI → Echo); no external SIP test data.';
             return implode("\n", $lines);

@@ -124,3 +124,74 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
         <?php endif; ?>
     </div>
 </div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-satellite-dish u-primary"></i> <?php echo t('ai_echo.hep_title'); ?></div>
+        <span class="badge <?php echo $hep['enabled'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
+            <?php echo $h(HepSettingsService::describe($hep)); ?>
+        </span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 14px;"><?php echo t('ai_echo.hep_intro'); ?></div>
+
+        <div class="u-muted u-fs-11" style="margin-bottom: 12px;">
+            <?php if (!$hep_current['exists']): ?>
+                <i class="fas fa-triangle-exclamation" style="color: var(--warning);"></i> <?php echo t('ai_echo.hep_file_missing'); ?>
+            <?php else: ?>
+                <i class="fas fa-file-code"></i> <?php echo t('ai_echo.hep_current'); ?>:
+                <code>enabled = <?php echo $hep_current['enabled'] ? 'yes' : 'no'; ?></code>
+                · <code><?php echo $h($hep_current['capture_address']); ?></code>
+                · <code>capture_id = <?php echo $h($hep_current['capture_id']); ?></code>
+            <?php endif; ?>
+        </div>
+
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="u-grid-2" style="gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_mode'); ?></label>
+                    <select class="form-control" name="hep_mode">
+                        <?php foreach (['builtin', 'homer', 'external', 'off'] as $m): ?>
+                            <option value="<?php echo $m; ?>" <?php echo $hep['mode'] === $m ? 'selected' : ''; ?>>
+                                <?php echo t('ai_echo.hep_mode_' . $m); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_homer_url'); ?></label>
+                    <input type="url" class="form-control" name="hep_homer_url" value="<?php echo $h($hep['homer_url']); ?>" placeholder="http://homer.local:9080">
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_host'); ?></label>
+                    <input type="text" class="form-control" name="hep_host" value="<?php echo $h($hep['host']); ?>" placeholder="127.0.0.1">
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_port'); ?></label>
+                    <input type="text" class="form-control" name="hep_port" inputmode="numeric" value="<?php echo (int) $hep['port']; ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_password'); ?></label>
+                    <input type="password" class="form-control" name="hep_password" autocomplete="new-password" value=""
+                           placeholder="<?php echo $h($hep['password_set'] ? t('ai_tts.keep_secret') : HepSettingsService::DEFAULT_PASSWORD); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.hep_capture_id'); ?></label>
+                    <input type="text" class="form-control" name="hep_capture_id" inputmode="numeric" value="<?php echo (int) $hep['capture_id']; ?>">
+                </div>
+            </div>
+
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
+                <button type="submit" name="save_hep" value="1" class="btn btn-primary"><i class="fas fa-save"></i> <?php echo t('ai_echo.hep_apply'); ?></button>
+                <button type="submit" name="hep_test" value="1" class="btn btn-secondary"><i class="fas fa-plug-circle-check"></i> <?php echo t('ai_echo.hep_test'); ?></button>
+            </div>
+        </form>
+
+        <div class="u-muted u-fs-12" style="margin-top:14px;border-top:1px solid var(--border-color);padding-top:12px;">
+            <div class="u-strong u-fs-12" style="margin-bottom:6px;"><?php echo t('ai_echo.hep_setup_homer'); ?></div>
+            <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($homer_cmd); ?></pre>
+            <div style="color: var(--warning);"><i class="fas fa-shield-halved"></i> <?php echo t('ai_echo.hep_warning_external'); ?></div>
+        </div>
+    </div>
+</div>

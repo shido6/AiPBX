@@ -89,7 +89,7 @@ $delete_window = (int) ($delete_window ?? 0);
                  the conversation lives here. -->
             <div data-greg-widget data-csrf="<?php echo getCSRFToken(); ?>" style="margin:8px 10px 4px;">
                 <div id="greg-log" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 2px;">
-                    <div class="greg-row greg-greg"><div class="greg-bubble"><?php echo htmlspecialchars(t('greg.welcome', [GregService::displayName()]), ENT_QUOTES); ?></div></div>
+                    <div class="greg-row greg-greg"><div class="greg-bubble"><?php echo htmlspecialchars(sprintf(t('greg.welcome'), GregService::displayName()), ENT_QUOTES); ?></div></div>
                 </div>
                 <div style="display:flex;gap:6px;margin-top:6px;">
                     <input type="text" id="greg-input" class="form-control" style="flex:1;" placeholder="<?php echo htmlspecialchars(t('greg.chat_placeholder'), ENT_QUOTES); ?>" onkeydown="if(event.key==='Enter'){gregSend();}">

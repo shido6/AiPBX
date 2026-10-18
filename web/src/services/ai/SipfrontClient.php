@@ -127,11 +127,11 @@ class SipfrontClient
             throw new CloudAiException(t('ai_echo.err_auth'));
         }
         if ($status >= 400) {
-            throw new CloudAiException(t('ai_echo.err_http', [(string) $status]));
+            throw new CloudAiException(sprintf(t('ai_echo.err_http'), (string) $status));
         }
         $json = json_decode((string) $raw, true);
         if (!is_array($json)) {
-            throw new CloudAiException(t('ai_echo.err_http', [(string) $status]));
+            throw new CloudAiException(sprintf(t('ai_echo.err_http'), (string) $status));
         }
         return $json;
     }

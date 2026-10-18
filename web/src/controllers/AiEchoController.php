@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/../services/ai/EchoService.php';
+require_once __DIR__ . '/../services/ai/HepSettingsService.php';
 
 /**
  * /ai-echo — AI → Echo (admin only): the SIP correlation tool, its own section.
@@ -30,7 +31,16 @@ class AiEchoController extends BaseController
                         $message = t('ai_echo.connected') . ' (' . (int) $res['count'] . ')';
                     } elseif (isset($_POST['run_test'])) {
                         $run = EchoService::runTest();
-                        $message = t('ai_echo.test_started', [(string) ($run['session_id'] ?? '—')]);
+                        $message = sprintf(t('ai_echo.test_started'), (string) ($run['session_id'] ?? '—'));
+                    } elseif (isset($_POST['save_hep'])) {
+                        $message = HepSettingsService::save($_POST)['message'];
+                    } elseif (isset($_POST['hep_test'])) {
+                        $probe = HepSettingsService::probe(HepSettingsService::settings());
+                        if ($probe['ok']) {
+                            $message = $probe['message'];
+                        } else {
+                            $error = $probe['message'];
+                        }
                     }
                 } catch (\Throwable $e) {
                     $error = $e->getMessage();
@@ -45,6 +55,9 @@ class AiEchoController extends BaseController
             'runs'        => $recent['runs'],
             'runs_error'  => $recent['error'],
             'last_run'    => $run,
+            'hep'         => HepSettingsService::settings(),
+            'hep_current' => HepSettingsService::currentFile(),
+            'homer_cmd'   => HepSettingsService::homerCommand(),
             'csrf_token'  => getCSRFToken(),
         ], ['title' => t('ai_echo.title'), 'message' => $message, 'error' => $error]);
     }
