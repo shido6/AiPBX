@@ -8,7 +8,7 @@ a third-party service that is billed separately.
 
 | Howto | What it does |
 |-------|--------------|
-| [Give Greg a face and a voice with Anam.ai](greg-anam-avatar.md) | An optional video avatar in Greg's chat; his answers are spoken aloud |
+| [Give Greg a face and a voice with Anam.ai](greg-anam-avatar.md) | An optional video avatar in Greg's chat: answers spoken aloud, an optional two-way listening mode, and meeting invites |
 
 ## Writing one
 
