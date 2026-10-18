@@ -22,16 +22,20 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST' || !verifyCSRFToken($_POST['csrf_token
     echo json_encode(['success' => false, 'error' => t('common.invalid_csrf')]);
     exit;
 }
-session_write_close();
-
 try {
     $action = (string) ($_POST['action'] ?? '');
     if ($action === 'chat') {
-        echo json_encode(GregService::chatSend((string) ($_POST['message'] ?? '')), JSON_UNESCAPED_UNICODE);
+        // The session stays open: chatSend() stores the 12-message history in
+        // it, and a write after session_write_close() would be discarded.
+        $result = GregService::chatSend((string) ($_POST['message'] ?? ''));
+        session_write_close();
+        echo json_encode($result, JSON_UNESCAPED_UNICODE);
     } elseif ($action === 'mark_read') {
+        session_write_close();
         GregService::markAllRead();
         echo json_encode(['success' => true]);
     } else {
+        session_write_close();
         throw new CloudAiException('Unknown action');
     }
 } catch (\Throwable $e) {

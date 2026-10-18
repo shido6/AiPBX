@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../../api/mobile/auth_helper.php';
 require_once __DIR__ . '/../services/ChatSettingsService.php';
+require_once __DIR__ . '/../services/GregService.php';
 
 /**
  * Chat page (/chat).

@@ -84,6 +84,7 @@ $delete_window = (int) ($delete_window ?? 0);
                 </div>
             </div>
 
+            <?php if (GregService::enabled()): ?>
             <!-- Greg, the AI VoIP Engineer: his status lives in the top bar,
                  the conversation lives here. -->
             <div data-greg-widget data-csrf="<?php echo getCSRFToken(); ?>" style="margin:8px 10px 4px;">
@@ -106,6 +107,7 @@ $delete_window = (int) ($delete_window ?? 0);
               .then(function(r){btn.disabled=false;swap(r&&r.success?r.reply:(r&&r.error?r.error:'…'));})
               .catch(function(){btn.disabled=false;swap('…');});}
             </script>
+            <?php endif; ?>
 
             <!-- List: conversations / directory -->
             <div id="chat-list-container" style="flex: 1; overflow-y: auto; padding: 6px;">

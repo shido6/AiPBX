@@ -291,7 +291,7 @@ class GregService
     public static function recentNotices(int $limit = 12): array
     {
         $st = getDB()->prepare(
-            'SELECT id, created_at, severity, title, body, read_at
+            'SELECT id, created_at, severity, title, body, read_at, emailed_at
              FROM pbx_greg_notices ORDER BY id DESC LIMIT ' . max(1, min(50, $limit))
         );
         $st->execute();
@@ -310,7 +310,7 @@ class GregService
     /** The configured display name (renamed on the Greg settings page). */
     public static function displayName(): string
     {
-        return self::setting('name') ?: t('greg.default_name');
+        return self::settings()['name'] ?: t('greg.default_name');
     }
 
     public static function markAllRead(): void

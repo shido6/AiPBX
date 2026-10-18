@@ -385,7 +385,7 @@ ln -sf "$INSTALL_DIR/web" /var/www/html
 # fax processing).
 # A root-only 750 bin/ silently broke *60/*72 because System(... &) logs nothing.
 chmod 755 "$INSTALL_DIR/web/bin"
-for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php aipbx_ops.php; do
+for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php greg_watch.php aipbx_ops.php; do
     if [[ -f "$INSTALL_DIR/web/bin/$script" ]]; then
         ln -sf "$INSTALL_DIR/web/bin/$script" "/usr/local/bin/$script"
         chmod 755 "$INSTALL_DIR/web/bin/$script"
@@ -424,6 +424,9 @@ cat > /etc/cron.d/aipbx << 'CRON'
 
 # Health checks: the checks that are due, alarm e-mails, daily summary (Admin -> Health checks)
 * * * * * root /usr/local/bin/aipbx_health.php >/dev/null 2>&1
+
+# Greg (AI -> AI VoIP Engineer): health results become his notices. Silent when disabled.
+7 * * * * root /usr/local/bin/greg_watch.php >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/aipbx
 
