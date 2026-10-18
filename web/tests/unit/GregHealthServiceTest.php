@@ -27,6 +27,30 @@ final class GregHealthServiceTest extends TestCase
         $this->session = $_SESSION ?? [];
         $_SESSION = ['user_id' => null, 'username' => 'tester', 'user_role' => 'admin'];
         GregHealthService::cancel();
+        // Something is failing, so "health check" asks its questions. disk has
+        // no safe fix, so no privileged action is even attempted.
+        $this->seed(['disk' => 'fail'], true);
+    }
+
+    /**
+     * Stored check results, as the cron run would have left them.
+     *
+     * @param array<string, string> $statuses key => status
+     * @param bool $fillOthers set every other check to ok first
+     */
+    private function seed(array $statuses, bool $fillOthers = false): void
+    {
+        if ($fillOthers) {
+            foreach (array_keys(HealthChecks::DEFAULTS) as $key) {
+                $statuses[$key] = $statuses[$key] ?? 'ok';
+            }
+        }
+        $stmt = getDB()->prepare('INSERT INTO health_checks (check_key, status, message, checked_at)
+            VALUES (?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE status = VALUES(status), message = VALUES(message), checked_at = NOW()');
+        foreach ($statuses as $key => $status) {
+            $stmt->execute([$key, $status, '']);
+        }
     }
 
     protected function tearDown(): void
@@ -148,6 +172,102 @@ final class GregHealthServiceTest extends TestCase
         $this->answer('sağlık kontrolü');
         $this->assertStringContainsString(t('health.greg_cancelled'), $this->answer('iptal edelim'));
         $this->assertFalse(GregHealthService::active());
+    }
+
+    public function testAHealthySystemIsAnsweredWithoutASingleQuestion(): void
+    {
+        $this->seed([], true);   // every check ok
+        $reply = $this->answer('health check');
+
+        $this->assertFalse(GregHealthService::active(), 'nothing to ask');
+        $this->assertStringContainsString(t('health.greg_healthy_no_questions'), $reply);
+        $this->assertStringContainsString(t('health.greg_verdict_ok'), $reply);
+        $this->assertStringNotContainsString(t('health.greg_q_symptom'), $reply, 'no questionnaire');
+        $this->assertSame(1, preg_match('/#(\d+)/', $reply, $m), 'the run is still recorded');
+        $this->rows[] = (int) $m[1];
+    }
+
+    public function testWarningsAreReportedWithoutQuestions(): void
+    {
+        $this->seed(['disk' => 'warn'], true);
+        $reply = $this->answer('health check');
+
+        $this->assertFalse(GregHealthService::active(), 'a warning is not an interrogation');
+        $this->assertStringContainsString(t('health.greg_no_questions_warn'), $reply);
+        $this->assertStringNotContainsString(t('health.greg_q_symptom'), $reply);
+        if (preg_match('/#(\d+)/', $reply, $m)) {
+            $this->rows[] = (int) $m[1];
+        }
+    }
+
+    // ------------------------------------------------------------ the fixes
+
+    public function testOnlyTheSafeFixesArePlanned(): void
+    {
+        $this->assertSame(['service', 'restart', 'aipbx-chat'], GregHealthService::plan('chat', 'fail')['args']);
+        $this->assertSame(['ai', 'restart'], GregHealthService::plan('local_ai', 'fail')['args']);
+        $this->assertSame(['service', 'reload', 'asterisk'], GregHealthService::plan('asterisk', 'fail')['args']);
+        $this->assertSame(['service', 'reload', 'apache2'], GregHealthService::plan('web', 'fail')['args']);
+        $this->assertSame(['service', 'restart', 'postfix'], GregHealthService::plan('mail', 'fail')['args'],
+            'postfix down is a restart');
+        $this->assertSame(['postfix', 'flush'], GregHealthService::plan('mail', 'warn')['args'],
+            'a stuck queue is a flush');
+        $this->assertNull(GregHealthService::plan('disk', 'fail'), 'a full disk is not Greg\'s to fix');
+        $this->assertNull(GregHealthService::plan('backup', 'warn'), 'a missing backup needs a person');
+        $this->assertNull(GregHealthService::plan('trunks', 'fail'), 'a carrier is not a local service');
+        $this->assertNull(GregHealthService::plan('chat', 'ok'), 'nothing to do when the check is fine');
+    }
+
+    public function testThePrefaceSaysWhetherAFixWorkedAndAsksNothingWhenHealthy(): void
+    {
+        $fixes = [
+            ['key' => 'chat', 'label' => 'restart the chat service', 'ok' => true, 'output' => '', 'after' => 'ok'],
+            ['key' => 'local_ai', 'label' => 'restart the local AI service', 'ok' => true, 'output' => '', 'after' => 'fail'],
+        ];
+        $t = GregHealthService::preface(['ran' => true], $fixes, 'fail');
+        $this->assertStringContainsString(t('health.greg_ran_now'), $t);
+        $this->assertStringContainsString(t('health.greg_fix_worked'), $t);
+        $this->assertStringContainsString(t('health.greg_fix_failed'), $t);
+        $this->assertStringNotContainsString(t('health.greg_healthy_no_questions'), $t);
+
+        $ok = GregHealthService::preface(['ran' => false], [], 'ok');
+        $this->assertStringContainsString(t('health.greg_ran_stale'), $ok);
+        $this->assertStringContainsString(t('health.greg_healthy_no_questions'), $ok);
+    }
+
+    public function testQuestionsAreOnlyForActualFailures(): void
+    {
+        $noTest = ['source' => 'none'];
+        $this->assertFalse(GregHealthService::hasFailure(['a' => ['status' => 'ok'], 'b' => ['status' => 'warn']], $noTest),
+            'a warning is reported, not interrogated');
+        $this->assertTrue(GregHealthService::hasFailure(['a' => ['status' => 'fail']], $noTest));
+        $this->assertTrue(GregHealthService::hasFailure([], ['source' => 'check', 'status' => 'fail']),
+            'a failed call test counts');
+        $this->assertFalse(GregHealthService::hasFailure([], ['source' => 'check', 'status' => 'warn']));
+        $this->assertTrue(GregHealthService::hasFailure([], ['source' => 'sipfront', 'latest' => ['is_failed' => 1]]));
+    }
+
+    public function testCancellingAfterAFixSaysWhatWasAlreadyDone(): void
+    {
+        $_SESSION[GregHealthService::SESSION_KEY] = [
+            'step' => 0, 'answers' => [],
+            'fixes' => [['key' => 'chat', 'label' => 'restart the chat service', 'ok' => true, 'output' => '', 'after' => 'ok']],
+        ];
+        $reply = (string) GregHealthService::handle('cancel');
+        $this->assertStringContainsString('restart the chat service', $reply);
+        $this->assertStringNotContainsString(t('health.greg_cancelled'), $reply, 'not "nothing was saved"');
+        $this->assertFalse(GregHealthService::active());
+    }
+
+    public function testASummaryWithNoAnswersSkipsTheFormAndSaysWhatWasDone(): void
+    {
+        $fixes = [['key' => 'chat', 'label' => 'restart the chat service', 'ok' => true, 'output' => '', 'after' => 'ok']];
+        $out = GregHealthService::summary([], ['chat' => ['status' => 'ok', 'message' => '', 'checked_at' => null]],
+            ['source' => 'none'], 'ok', true, $fixes);
+        $this->assertStringNotContainsString(t('health.greg_answers_title'), $out, 'no empty form');
+        $this->assertStringContainsString(t('health.greg_fixed_title'), $out);
+        $this->assertStringContainsString(t('health.greg_fix_worked'), $out);
+        $this->assertStringContainsString(t('health.greg_verdict_ok'), $out);
     }
 
     // ------------------------------------------------------------- the form

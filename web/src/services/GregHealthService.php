@@ -17,6 +17,7 @@
 
 require_once __DIR__ . '/HealthService.php';
 require_once __DIR__ . '/ai/EchoService.php';
+require_once __DIR__ . '/../priv_helper.php';
 require_once __DIR__ . '/GregJournal.php';
 require_once __DIR__ . '/../audit_log.php';
 
@@ -24,6 +25,20 @@ class GregHealthService
 {
     public const SESSION_KEY = 'greg_health_interview';
     public const MAX_TEXT = 300;
+
+    /**
+     * What Greg may do himself, and nothing else: restart a service that is
+     * down, reload one that is up but not answering, flush a stuck mail queue.
+     * Every action is reversible, is audited, and is followed by a fresh check
+     * — after which Greg says whether it worked. Anything not listed here is
+     * reported to a person instead of touched.
+     */
+    private const FIXES = [
+        'chat' => ['service', 'restart', 'aipbx-chat'],
+        'local_ai' => ['ai', 'restart'],
+        'asterisk' => ['service', 'reload', 'asterisk'],
+        'web' => ['service', 'reload', 'apache2'],
+    ];
 
     /** @return array<string, array{type:string, required?:bool, q:string}> */
     public static function questions(): array
@@ -70,7 +85,12 @@ class GregHealthService
         }
         if (self::active()) {
             if (preg_match('/^(cancel|stop|iptal|vazgeç)\b/iu', $q)) {
+                $fixes = (array) ($_SESSION[self::SESSION_KEY]['fixes'] ?? []);
                 unset($_SESSION[self::SESSION_KEY]);
+                if ($fixes) {
+                    return sprintf(t('health.greg_cancelled_fixes'),
+                        implode(', ', array_column($fixes, 'label')));
+                }
                 return t('health.greg_cancelled');
             }
             return self::take($q);
@@ -81,11 +101,136 @@ class GregHealthService
         return null;
     }
 
-    /** Begin a new interview and ask the first question. */
+    /**
+     * "health check" does the work first: a fresh run of every check, then the
+     * fixes that are safe to make without asking, then a fresh run again to
+     * see whether they worked. A healthy system is answered in one message
+     * with no questions at all; only what is still broken costs the user a
+     * question, because only they can say what they were doing when it broke.
+     */
     public static function start(): string
     {
-        $_SESSION[self::SESSION_KEY] = ['step' => 0, 'answers' => [], 'started' => time()];
-        return t('health.greg_intro') . "\n\n" . self::ask(0);
+        $run = self::runNow();
+        $fixes = self::fix();
+        $checks = self::checks();
+        $sip = self::callTest();
+        $verdict = self::verdict($checks, $sip, []);
+        $preface = self::preface($run, $fixes, $verdict);
+
+        // Questions cost the user time, so they are asked only when something
+        // actually failed. Warnings (a filling disk, an old backup) are worth
+        // reporting but not worth an interrogation.
+        if (!self::hasFailure($checks, $sip)) {
+            if ($verdict !== 'ok') {
+                $preface .= "\n" . t('health.greg_no_questions_warn');
+            }
+            return self::finish([], $fixes, $preface);
+        }
+        $_SESSION[self::SESSION_KEY] = [
+            'step' => 0, 'answers' => [], 'started' => time(),
+            'fixes' => $fixes, 'preface' => $preface,
+        ];
+        return $preface . "\n\n" . t('health.greg_need_you') . "\n" . self::ask(0);
+    }
+
+    /** Is anything actually failing (not merely warning)? */
+    public static function hasFailure(array $checks, array $test): bool
+    {
+        foreach ($checks as $c) {
+            if (($c['status'] ?? '') === 'fail') {
+                return true;
+            }
+        }
+        if (($test['source'] ?? '') === 'check' && ($test['status'] ?? '') === 'fail') {
+            return true;
+        }
+        return ($test['source'] ?? '') === 'sipfront' && !empty($test['latest']['is_failed']);
+    }
+
+    /**
+     * Run every check now, as root, and say whether it really ran.
+     * @return array{ran:bool, output:string}
+     */
+    public static function runNow(): array
+    {
+        $r = PrivHelper::run(['health-run']);
+        $out = trim((string) $r['output']);
+        return ['ran' => (bool) $r['success'] && $out !== '', 'output' => mb_substr($out, 0, 2000)];
+    }
+
+    /**
+     * The action for a bad check, or null when a person has to look at it.
+     * @return array{args:string[], label:string}|null
+     */
+    public static function plan(string $key, string $status): ?array
+    {
+        if (!in_array($status, ['fail', 'warn'], true)) {
+            return null;
+        }
+        if ($key === 'mail') {
+            // postfix down is a restart; a stuck queue is a flush.
+            return $status === 'fail'
+                ? ['args' => ['service', 'restart', 'postfix'], 'label' => t('health.fix_restart_postfix')]
+                : ['args' => ['postfix', 'flush'], 'label' => t('health.fix_mail')];
+        }
+        if (!isset(self::FIXES[$key])) {
+            return null;
+        }
+        return ['args' => self::FIXES[$key], 'label' => t('health.fix_' . $key)];
+    }
+
+    /**
+     * Do what can be done, then re-run everything so the report can say
+     * whether it worked. Returns one entry per attempt.
+     *
+     * @return array<int, array{key:string, label:string, ok:bool, output:string, after:string}>
+     */
+    public static function fix(): array
+    {
+        $fixes = [];
+        foreach (self::checks() as $key => $c) {
+            $plan = self::plan((string) $key, (string) $c['status']);
+            if ($plan === null) {
+                continue;
+            }
+            $r = PrivHelper::run($plan['args']);
+            writeAuditLog('health', 'greg_fix', 0, $key . ': ' . implode(' ', $plan['args']),
+                $r['success'] ? 'execute' : 'failed', $_SESSION['user_id'] ?? null);
+            $fixes[] = [
+                'key' => (string) $key,
+                'label' => $plan['label'],
+                'ok' => (bool) $r['success'],
+                'output' => mb_substr(trim((string) $r['output']), 0, 200),
+                'after' => '',
+            ];
+            GregJournal::append('Health check: ' . $plan['label'], [
+                'result: ' . ($r['success'] ? 'ok' : 'failed'),
+                'command: ' . implode(' ', $plan['args']),
+            ]);
+        }
+        if (!$fixes) {
+            return [];
+        }
+        self::runNow(); // fresh results: did it help?
+        $after = self::checks();
+        foreach ($fixes as $i => $f) {
+            $fixes[$i]['after'] = (string) ($after[$f['key']]['status'] ?? '');
+        }
+        return $fixes;
+    }
+
+    /** The short "what I just did" note, above the form. */
+    public static function preface(array $run, array $fixes, string $verdict): string
+    {
+        $out = !empty($run['ran']) ? t('health.greg_ran_now') : t('health.greg_ran_stale');
+        foreach ($fixes as $f) {
+            $worked = ($f['after'] ?? '') === 'ok';
+            $out .= "\n- " . $f['label'] . ': ' . t($worked ? 'health.greg_fix_worked' : 'health.greg_fix_failed');
+        }
+        if ($verdict === 'ok') {
+            $out .= "\n" . t('health.greg_healthy_no_questions');
+        }
+        return $out;
     }
 
     public static function cancel(): void
@@ -117,7 +262,7 @@ class GregHealthService
             return t('health.greg_thanks') . "\n\n" . self::ask($state['step']);
         }
         unset($_SESSION[self::SESSION_KEY]);
-        return self::finish($state['answers']);
+        return self::finish($state['answers'], (array) ($state['fixes'] ?? []), (string) ($state['preface'] ?? ''));
     }
 
     /** @return string|null null means "not a valid answer, ask again" */
@@ -266,13 +411,13 @@ class GregHealthService
     /**
      * Freeze the report, tell the administrators' log, and write Greg's reply.
      */
-    private static function finish(array $answers): string
+    private static function finish(array $answers, array $fixes = [], string $preface = ''): string
     {
         $checks = self::checks();
         $sip = self::callTest();
         $admin = ($_SESSION['user_role'] ?? '') === 'admin';
         $verdict = self::verdict($checks, $sip, $answers);
-        $summary = self::summary($answers, $checks, $sip, $verdict, $admin);
+        $summary = self::summary($answers, $checks, $sip, $verdict, $admin, $fixes);
 
         $db = getDB();
         $ins = $db->prepare(
@@ -290,19 +435,21 @@ class GregHealthService
         ]);
         $id = (int) $db->lastInsertId();
         writeAuditLog('health', 'greg_report', $id, 'health check ' . $verdict, 'create', $_SESSION['user_id'] ?? null);
-        GregJournal::append('Health check', [
-            'verdict: ' . $verdict,
-            'reported: ' . ($answers['symptom'] ?? ''),
-        ]);
-        return sprintf(t('health.greg_saved'), (string) $id) . "\n\n" . $summary;
+        $logged = ['verdict: ' . $verdict];
+        if (($answers['symptom'] ?? '') !== '') {
+            $logged[] = 'reported: ' . $answers['symptom'];
+        }
+        GregJournal::append('Health check', $logged);
+        return sprintf(t('health.greg_saved'), (string) $id) . "\n\n"
+            . ($preface !== '' ? $preface . "\n\n" : '') . $summary;
     }
 
     /** The filled form, in the order the questions were asked. */
-    public static function summary(array $answers, array $checks, array $test, string $verdict, bool $admin): string
+    public static function summary(array $answers, array $checks, array $test, string $verdict, bool $admin, array $fixes = []): string
     {
         $qs = self::questions();
-        $out = t('health.greg_answers_title');
-        foreach ($qs as $key => $def) {
+        $out = $answers ? t('health.greg_answers_title') : '';
+        foreach ($answers ? $qs : [] as $key => $def) {
             $value = $answers[$key] ?? '';
             if ($value === '') {
                 $value = t('health.greg_not_answered');
@@ -310,6 +457,14 @@ class GregHealthService
                 $value = self::choiceLabel($key, (string) $value);
             }
             $out .= "\n- " . $def['q'] . ' ' . $value;
+        }
+
+        if ($fixes) {
+            $out .= ($out !== '' ? "\n" : '') . t('health.greg_fixed_title');
+            foreach ($fixes as $f) {
+                $worked = ($f['after'] ?? '') === 'ok';
+                $out .= "\n- " . $f['label'] . ': ' . t($worked ? 'health.greg_fix_worked' : 'health.greg_fix_failed');
+            }
         }
 
         $counts = ['ok' => 0, 'warn' => 0, 'fail' => 0, 'unknown' => 0, 'info' => 0, 'off' => 0];

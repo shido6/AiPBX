@@ -32,20 +32,40 @@ A check that does not apply to the server (no trunks, FTP switched off) shows *N
 
 ## Greg runs the checks with you
 
-Type **health check** in the chat (or say *sağlık kontrolü*). Greg asks five short questions a
-machine cannot answer — what is not working, which extensions or numbers, since when, whether audio
-actually flows, and whether it happens on every call — and fills in the rest himself: the state of
-every check above plus the independent SIP call test. He quotes the last Sipfront run when keys are
-entered; without an account he reads the SIP call test, which sends a real OPTIONS from this server
-and has `tcpdump` record the exchange, so the answer does not come from the PBX's own opinion alone.
+Type **health check** in the chat (or say *sağlık kontrolü*). Greg does the round of clicking for
+you:
 
-The finished report is saved as it was at that moment (answers, check results, call test), written to
-Greg's captain's log, and listed under the checks on this page. A user who is not an administrator
-sees their own answers and the verdict, without the server's technical messages. Type `cancel` (or
-*iptal*) to stop — nothing is saved.
+1. **Runs every check now**, as root, so the answer comes from this minute rather than from a
+   stored result up to an hour old.
+2. **Fixes what is safe to fix himself** — a service that is down is started again, one that is up
+   but not answering is reloaded, a stuck mail queue is flushed:
 
-Without Sipfront and without `tcpdump`, the same test still runs and reports what SIPp or the
-built-in probe saw, naming that source instead of a capture.
+   | Check | What Greg does |
+   |-------|----------------|
+   | Chat service | restart `aipbx-chat` |
+   | Local AI service | restart `aipbx-ai` |
+   | Asterisk | reload Asterisk |
+   | Web portal | reload Apache |
+   | E-mail | restart postfix when it is down, flush the queue when it is stuck |
+
+   Everything goes through `aipbx-priv` (the only command the portal may run as root), is audited,
+   and is written to Greg's captain's log. Nothing outside that list is touched — a full disk, an
+   old backup, a carrier that drops calls are reported, not "fixed".
+3. **Re-runs the checks** and says whether each attempt worked.
+4. **Asks questions only when something actually failed.** A healthy system, or one with warnings
+   only, is answered in one message. When something is still broken he asks five short questions —
+   what is not working, which extensions or numbers, since when, whether audio flows, every call or
+   some — because that part only a person knows.
+
+The finished report is saved as it was at that moment (answers, check results, the call test and
+what Greg did), listed under the checks on this page. A user who is not an administrator sees their
+own answers and the verdict, without the server's technical messages. Type `cancel` (or *iptal*) to
+stop — Greg still tells you which fixes he had already made.
+
+The independent SIP call test is quoted with its evidence: the last Sipfront run when keys are
+entered, otherwise a real `OPTIONS` from this server (SIPp when installed, a built-in probe when
+not) with `tcpdump` recording the exchange. Without `tcpdump` the same test runs and reports what
+the probe itself saw, naming that source instead of a capture.
 
 ## Alarms
 

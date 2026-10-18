@@ -54,5 +54,9 @@ putenv('AIPBX_SETTINGS_KEY=test-settings-key');
 // LOCK 3 — no CLI command may reach the live Asterisk.
 putenv('AIPBX_NO_ASTERISK=1');
 
+// LOCK 4 — no privileged action (aipbx-priv) either: a test must never
+// restart a real service because a seeded health check said it was down.
+putenv('AIPBX_NO_PRIV=1');
+
 require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/../config.php';

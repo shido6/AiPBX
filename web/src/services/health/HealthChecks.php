@@ -94,13 +94,78 @@ final class HealthChecks
         return ['ok', sprintf(t('health.msg_database_ok'), $tables)];
     }
 
+    /**
+     * The portal's own sign-in page, asked over the loopback interface.
+     *
+     * Done with a socket rather than the curl binary or file_get_contents: a
+     * server without curl, or with allow_url_fopen off (hardened installs),
+     * used to report a working portal as broken — and Greg would then reload
+     * Apache for it on every single health check.
+     *
+     * The HTTPS ports come from Apache's own SSL virtual hosts (443 is only
+     * the usual one; a reverse proxy or a dev box may put it elsewhere), then
+     * plain port 80, which answers with its redirect to HTTPS. A 200 or a
+     * redirect means the portal is serving; anything else is reported as it is.
+     */
     private static function web(): array
     {
-        $code = trim(self::sh('curl -sk -o /dev/null -w "%{http_code}" --max-time 10 https://127.0.0.1/login'));
-        if ($code === '200') {
-            return ['ok', t('health.msg_web_ok')];
+        $last = 0;
+        foreach (self::portalPorts() as [$port, $tls]) {
+            $last = self::httpStatus($port, $tls);
+            if ($last === 200 || ($last >= 300 && $last < 400)) {
+                return ['ok', t('health.msg_web_ok')];
+            }
         }
-        return ['fail', sprintf(t('health.msg_web_fail'), $code !== '' ? $code : '—')];
+        return ['fail', sprintf(t('health.msg_web_fail'), $last ?: '—')];
+    }
+
+    /** @return array<int, array{0:int, 1:bool}> [port, tls]: SSL vhosts, 443, then plain 80 */
+    public static function portalPorts(): array
+    {
+        $ports = [];
+        foreach (glob('/etc/apache2/sites-enabled/*.conf') ?: [] as $file) {
+            $port = 0;
+            foreach ((array) preg_split('/\R/', (string) @file_get_contents($file)) as $line) {
+                if (preg_match('#<VirtualHost\s+[^>]*:(\d{2,5})\s*>#', (string) $line, $m)) {
+                    $port = (int) $m[1];
+                } elseif (preg_match('#^\s*SSLEngine\s+on#i', (string) $line) && $port > 0) {
+                    $ports[$port] = [$port, true];
+                } elseif (stripos((string) $line, '</VirtualHost>') !== false) {
+                    $port = 0;
+                }
+            }
+        }
+        $ports[443] = $ports[443] ?? [443, true];
+        $ports[80] = $ports[80] ?? [80, false];
+        return array_values($ports);
+    }
+
+    /** The status line of GET /login on 127.0.0.1:$port, 0 when nothing answers. */
+    private static function httpStatus(int $port, bool $tls): int
+    {
+        $ctx = stream_context_create(['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
+        $sock = @stream_socket_client(
+            ($tls ? 'ssl' : 'tcp') . '://127.0.0.1:' . $port,
+            $errno,
+            $errstr,
+            10,
+            STREAM_CLIENT_CONNECT,
+            $ctx
+        );
+        if (!is_resource($sock)) {
+            return 0;
+        }
+        stream_set_timeout($sock, 10);
+        @fwrite($sock, "GET /login HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        $head = '';
+        while (!feof($sock) && strlen($head) < 4096) {
+            $head .= (string) fread($sock, 512);
+            if (str_contains($head, "\r\n\r\n")) {
+                break;
+            }
+        }
+        fclose($sock);
+        return preg_match('#^HTTP/\S+\s+(\d{3})#m', $head, $m) ? (int) $m[1] : 0;
     }
 
     private static function service(string $unit): array

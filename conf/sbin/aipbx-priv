@@ -48,8 +48,20 @@ case "$cmd" in
         # service restart|reload UNIT
         [ $# -eq 2 ] || die "usage: service restart|reload UNIT"
         case "$1" in restart|reload) ;; *) die "invalid operation: $1" ;; esac
-        case "$2" in asterisk|apache2|mariadb|postfix|fail2ban|firewalld) ;; *) die "service not allowed: $2" ;; esac
+        # aipbx-chat is AiPBX's own chat service: Greg restarts it when its
+        # health check says it is down, instead of asking someone to.
+        case "$2" in asterisk|apache2|mariadb|postfix|fail2ban|firewalld|aipbx-chat) ;; *) die "service not allowed: $2" ;; esac
         exec systemctl "$1" "$2"
+        ;;
+
+    health-run)
+        # health-run — run every health check now, as root, and print the
+        # one-line results (exit 0 even when a check fails: a failing check is
+        # an answer, not a helper error). Greg uses this so he answers from a
+        # fresh run rather than a stored result from up to an hour ago.
+        [ $# -eq 0 ] || die "usage: health-run"
+        "${HEALTH_BIN:-/usr/local/bin/aipbx_health.php}" --all --no-mail 2>/dev/null || true
+        exit 0
         ;;
 
     postfix)
@@ -88,6 +100,10 @@ case "$cmd" in
             postmap)
                 [ $# -eq 0 ] || die "usage: postfix postmap"
                 exec postmap /etc/postfix/sasl_passwd
+                ;;
+            flush)
+                [ $# -eq 0 ] || die "usage: postfix flush"
+                exec postfix flush
                 ;;
             trace)
                 # postfix trace TOKEN — delivery result of the message whose
