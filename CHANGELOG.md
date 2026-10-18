@@ -29,6 +29,18 @@ Remote monitoring and operations:
   Google Meet, Zoom or Teams call through Anam's Meetings API — now or up to seven days ahead,
   group calls waiting to be addressed by name. The card links to anam.ai/pricing and states how a
   minute is counted, because the avatar is billed separately from the PBX.
+- **Greg: the onboarding brief** (`web/src/services/GregBrief.php`): Greg now asks, once, on the
+  first answer of a conversation, for the one document a VoIP engineer would want on their first
+  morning — what the business does, who calls, which numbers matter, the carriers, the call flows
+  that must not break, who to wake at 3 a.m. — as a **single markdown file**. It is added under
+  *AI → VoIP Engineer*, either uploaded (`.md`, `.markdown`, `.txt`) or pasted, with a template to
+  download that lists the questions. Stored as `/var/lib/aipbx/greg/BRIEF.md`, outside the git
+  checkout, so an update never overwrites it; read before every answer, so the brief's facts are
+  part of what he reasons from. Missing, the ask appears on the first answer and never again until
+  the next conversation; present, he is told to say which of the two looks stale when the file
+  disagrees with live data, and never to quote secrets from it. Admin-only page and downloads, the
+  120,000-character limit refused rather than truncated, and saves and removals audited without
+  the content.
 - **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
   `pbx_signaling_events` and can forward them to the same portal. Off by default.
 

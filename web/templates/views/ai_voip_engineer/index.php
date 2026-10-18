@@ -1,5 +1,5 @@
 <?php
-/** @var array $greg @var array $anam @var int $month_tokens @var int $unread @var string $csrf_token */
+/** @var array $greg @var array $anam @var array $brief @var string $brief_text @var int $month_tokens @var int $unread @var string $csrf_token */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 $sources = [
     'bigpickle' => t('ai_voip_engineer.source_bigpickle'),
@@ -80,6 +80,60 @@ $sources = [
             <i class="fas fa-shield-halved"></i> <?php echo t('ai_voip_engineer.audit_note'); ?>
         </div>
         <div class="u-muted u-fs-12 u-mt-6" style="color: var(--warning);"><i class="fas fa-triangle-exclamation"></i> <?php echo t('ai_voip_engineer.limits_warning'); ?></div>
+    </div>
+</div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-file-lines u-primary"></i> <?php echo t('ai_voip_engineer.brief_title'); ?></div>
+        <span class="badge <?php echo $brief['exists'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
+            <?php echo $brief['exists']
+                ? t('ai_voip_engineer.brief_status_yes') . ' — ' . number_format($brief['chars']) . ' ' . t('ai_voip_engineer.brief_chars')
+                : t('ai_voip_engineer.brief_status_no'); ?>
+        </span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 10px;"><?php echo t('ai_voip_engineer.brief_intro'); ?></div>
+
+        <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 14px;">
+            <a class="btn btn-secondary btn-sm" href="?brief=template"><i class="fas fa-download"></i> <?php echo t('ai_voip_engineer.brief_download_template'); ?></a>
+            <?php if ($brief['exists']): ?>
+                <a class="btn btn-secondary btn-sm" href="?brief=current"><i class="fas fa-download"></i> <?php echo t('ai_voip_engineer.brief_download_current'); ?></a>
+                <span class="u-muted u-fs-11"><?php echo $h(sprintf(t('ai_voip_engineer.brief_updated'), date('Y-m-d H:i', $brief['updated']))); ?></span>
+            <?php endif; ?>
+            <span class="u-muted u-fs-11"><?php echo t('ai_voip_engineer.brief_how'); ?></span>
+        </div>
+
+        <form method="POST" enctype="multipart/form-data">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="u-grid-2" style="gap: 16px;">
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.brief_file'); ?></label>
+                    <input type="file" class="form-control" name="greg_brief_file" accept=".md,.markdown,.txt,text/markdown,text/plain">
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.brief_file_hint'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_voip_engineer.brief_text'); ?></label>
+                    <textarea class="form-control" name="greg_brief" rows="8" maxlength="<?php echo (int) \GregBrief::MAX_CHARS; ?>"
+                              spellcheck="true"
+                              placeholder="<?php echo $h(t('ai_voip_engineer.brief_text_ph')); ?>"
+                              style="font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;"><?php echo $h($brief_text); ?></textarea>
+                </div>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <button type="submit" name="save_greg_brief" value="1" class="btn btn-primary"><i class="fas fa-save"></i> <?php echo t('ai_voip_engineer.brief_save'); ?></button>
+                <?php if ($brief['exists']): ?>
+                    <button type="submit" name="delete_greg_brief" value="1" class="btn btn-secondary btn-sm"
+                            onclick="return confirm(<?php echo $h(json_encode(t('ai_voip_engineer.brief_remove_confirm'))); ?>);">
+                        <i class="fas fa-trash"></i> <?php echo t('ai_voip_engineer.brief_remove'); ?>
+                    </button>
+                <?php endif; ?>
+            </div>
+        </form>
+
+        <div class="u-muted u-fs-11" style="margin-top: 12px; border-top: 1px solid var(--border-color); padding-top: 10px;">
+            <i class="fas fa-shield-halved"></i> <?php echo t('ai_voip_engineer.brief_note'); ?>
+        </div>
     </div>
 </div>
 

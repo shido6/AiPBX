@@ -29,6 +29,7 @@ require_once __DIR__ . '/ai/EchoService.php';
 require_once __DIR__ . '/ai/ResearchService.php';
 require_once __DIR__ . '/ai/OpencodeService.php';
 require_once __DIR__ . '/GregJournal.php';
+require_once __DIR__ . '/GregBrief.php';
 require_once __DIR__ . '/GregHealthService.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
 require_once __DIR__ . '/tts/TtsProviders.php';
@@ -210,34 +211,7 @@ TXT;
             return ['success' => true, 'message' => $reply];
         }
 
-        $prompt = self::persona() . "\n\n";
-        // Greg's own memory: AGENTS.md and the latest captain's-log entries.
-        // Empty on a fresh install, so the prompt is unchanged until he learns
-        // something or an administrator writes it down.
-        $journal = GregJournal::context();
-        if ($journal !== '') {
-            $prompt .= $journal . "\n\n";
-        }
-        if (OpencodeService::settings()['enabled']) {
-            $prompt .= t('greg.oc_capability') . "\n\n";
-        }
-        // ResearchService: a URL in the question becomes quotable text with
-        // its source named. Off by default; unchanged prompt when off.
-        $research = ResearchService::contextFor($q);
-        if ($research !== '') {
-            $prompt .= $research . "\n\n";
-        }
-        // Echo: this server's own counts plus Sipfront's runs, when the
-        // administrator enabled it. Empty string when Echo is off, so Greg
-        // behaves exactly as before.
-        $echo = EchoService::promptContext();
-        if ($echo !== '') {
-            $prompt .= $echo . "\n\n";
-        }
-        foreach ($hist as $m) {
-            $prompt .= ($m['role'] === 'user' ? 'User' : $s['name']) . ': ' . $m['content'] . "\n";
-        }
-        $prompt .= $s['name'] . ':';
+        $prompt = self::promptFor($q, $hist);
 
         try {
             $reply = self::brain($s['model_source'], $prompt);
@@ -287,6 +261,57 @@ TXT;
     public static function history(): array
     {
         return $_SESSION['greg_chat'] ?? [];
+    }
+
+    /**
+     * Everything Greg reads before he answers: who he is, what he remembers,
+     * the onboarding brief, and the conversation so far.
+     *
+     * Public so the assembly can be checked without a model: a test asserts
+     * that the brief reaches the prompt and that the request for one appears
+     * on the first answer of a conversation and never again.
+     *
+     * @param array<int, array{role: string, content: string}> $hist
+     */
+    public static function promptFor(string $q, array $hist): string
+    {
+        $s = self::settings();
+        $prompt = self::persona() . "\n\n";
+        // Greg's own memory: AGENTS.md and the latest captain's-log entries.
+        // Empty on a fresh install, so the prompt is unchanged until he learns
+        // something or an administrator writes it down.
+        $journal = GregJournal::context();
+        if ($journal !== '') {
+            $prompt .= $journal . "\n\n";
+        }
+        // The handover document an administrator wrote: one markdown file about
+        // the business. Missing, Greg asks for it once — on the first answer of
+        // a conversation, never again — and then works without it.
+        $firstAnswer = !in_array('assistant', array_column($hist, 'role'), true);
+        $brief = GregBrief::context($firstAnswer);
+        if ($brief !== '') {
+            $prompt .= $brief . "\n\n";
+        }
+        if (OpencodeService::settings()['enabled']) {
+            $prompt .= t('greg.oc_capability') . "\n\n";
+        }
+        // ResearchService: a URL in the question becomes quotable text with
+        // its source named. Off by default; unchanged prompt when off.
+        $research = ResearchService::contextFor($q);
+        if ($research !== '') {
+            $prompt .= $research . "\n\n";
+        }
+        // Echo: this server's own counts plus Sipfront's runs, when the
+        // administrator enabled it. Empty string when Echo is off, so Greg
+        // behaves exactly as before.
+        $echo = EchoService::promptContext();
+        if ($echo !== '') {
+            $prompt .= $echo . "\n\n";
+        }
+        foreach ($hist as $m) {
+            $prompt .= ($m['role'] === 'user' ? 'User' : $s['name']) . ': ' . $m['content'] . "\n";
+        }
+        return $prompt . $s['name'] . ':';
     }
 
     /** The chosen source's answer; a refused source throws an honest error. */

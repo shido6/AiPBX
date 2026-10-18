@@ -253,4 +253,40 @@ final class GregServiceTest extends TestCase
         $this->assertStringContainsString('most likely cause, then the runner-up', $p);
         $this->assertStringContainsString('what you cannot know', $p);
     }
+
+    public function testThePromptAsksForTheBriefOnceAndUsesItWhenItArrives(): void
+    {
+        $first = [['role' => 'user', 'content' => 'Is the trunk up?']];
+        $later = [
+            ['role' => 'user', 'content' => 'Is the trunk up?'],
+            ['role' => 'assistant', 'content' => 'Yes.'],
+            ['role' => 'user', 'content' => 'And the queue?'],
+        ];
+
+        // No brief yet: he asks once, on the first answer, and then gets on
+        // with the work instead of nagging.
+        $p = GregService::promptFor('Is the trunk up?', $first);
+        $this->assertStringContainsString('do not have an onboarding brief', $p);
+        $this->assertStringContainsString('User: Is the trunk up?', $p);
+        $this->assertStringNotContainsString(
+            'do not have an onboarding brief',
+            GregService::promptFor('And the queue?', $later)
+        );
+
+        // With the file in place it is part of every answer and the ask is gone.
+        GregBrief::save("# Acme Dental\n\nThe emergency line is extension 700.\n");
+        try {
+            $p = GregService::promptFor('Is the trunk up?', $first);
+            $this->assertStringContainsString('ONBOARDING BRIEF', $p);
+            $this->assertStringContainsString('emergency line is extension 700', $p);
+            $this->assertStringNotContainsString('do not have an onboarding brief', $p);
+            $this->assertStringContainsString(
+                'emergency line is extension 700',
+                GregService::promptFor('And the queue?', $later)
+            );
+        } finally {
+            GregBrief::remove();
+        }
+        $this->assertFalse(GregBrief::exists());
+    }
 }
