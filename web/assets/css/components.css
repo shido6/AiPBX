@@ -1747,3 +1747,66 @@ tr.row-dragging { opacity: 0.45; }
 .auth-support-contact { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border-color); font-size: 12.5px; line-height: 1.7; text-align: center; color: var(--text-main); word-break: break-word; }
 .auth-support-contact a { color: var(--primary); text-decoration: none; white-space: nowrap; }
 .auth-support-contact a:hover { text-decoration: underline; }
+
+
+/* ---------------------------------------------------------------- Greg —
+   the AI VoIP Engineer entity: avatar top-right, token chip, notices panel */
+.greg-widget { position: relative; display: inline-flex; align-items: center; gap: 8px; margin-left: 12px; }
+.greg-token-chip {
+    font-size: 11px; font-weight: 700; color: #7c3aed; background: rgba(124, 58, 237, .12);
+    border: 1px solid rgba(124, 58, 237, .35); border-radius: 12px; padding: 3px 9px;
+    white-space: nowrap; cursor: default; letter-spacing: .2px;
+}
+.greg-avatar-btn {
+    position: relative; width: 36px; height: 36px; border-radius: 50%; border: 2px solid #7c3aed;
+    background: linear-gradient(135deg, #8b5cf6, #4c1d95); cursor: pointer; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center; font-size: 17px;
+    box-shadow: 0 1px 6px rgba(124, 58, 237, .45); transition: transform .15s ease;
+}
+.greg-avatar-btn:hover { transform: scale(1.08); }
+.greg-avatar-face { line-height: 1; filter: drop-shadow(0 1px 1px rgba(0,0,0,.35)); }
+.greg-badge {
+    position: absolute; top: -6px; right: -6px; min-width: 17px; height: 17px; border-radius: 9px;
+    background: #ef4444; color: #fff; font-size: 10px; font-weight: 700; line-height: 17px;
+    text-align: center; padding: 0 4px; border: 1px solid #fff;
+}
+.greg-panel {
+    position: absolute; top: calc(100% + 8px); right: 0; width: 340px; max-width: 90vw;
+    background: var(--bg-card, #fff); border: 1px solid var(--border-color, #e5e7eb);
+    border-radius: 12px; box-shadow: 0 12px 32px rgba(0, 0, 0, .18); z-index: 1050; overflow: hidden;
+}
+.greg-panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+    border-bottom: 1px solid var(--border-color, #e5e7eb); background: rgba(124, 58, 237, .07);
+}
+.greg-avatar-face-sm { font-size: 15px; }
+.greg-panel-scroll { max-height: 320px; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.greg-notice {
+    border: 1px solid var(--border-color, #e5e7eb); border-left-width: 3px; border-radius: 8px;
+    padding: 7px 9px; background: var(--bg-input, rgba(0, 0, 0, .02));
+}
+.greg-notice-unread { box-shadow: 0 0 0 1px rgba(124, 58, 237, .35); }
+.greg-sev-info    { border-left-color: #3b82f6; }
+.greg-sev-warn    { border-left-color: #f59e0b; }
+.greg-sev-critical{ border-left-color: #ef4444; }
+.greg-sev-badge { font-size: 10px; padding: 1px 6px; }
+.greg-sev-info    .greg-sev-badge { background: rgba(59, 130, 246, .15); color: #2563eb; }
+.greg-sev-warn    .greg-sev-badge { background: rgba(245, 158, 11, .18); color: #b45309; }
+.greg-sev-critical .greg-sev-badge { background: rgba(239, 68, 68, .15); color: #dc2626; }
+.greg-notice-head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+.greg-notice-title { font-size: 12px; font-weight: 700; }
+.greg-notice-body { font-size: 11px; color: var(--text-muted, #6b7280); line-height: 1.45; }
+.greg-notice-empty { text-align: center; color: var(--text-muted, #6b7280); font-size: 12px; padding: 22px 8px; }
+.greg-panel-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 12px; border-top: 1px solid var(--border-color, #e5e7eb);
+}
+/* Greg chat pane (in /chat) */
+.greg-chat-pane { flex: 1; display: none; flex-direction: column; height: 100%; overflow: hidden; }
+.greg-chat-pane.greg-open { display: flex; }
+.greg-chat-scroll { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.greg-msg { max-width: 78%; padding: 9px 13px; border-radius: 12px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.greg-msg-user { align-self: flex-end; background: #7c3aed; color: #fff; border-bottom-right-radius: 4px; }
+.greg-msg-greg { align-self: flex-start; background: var(--bg-input, rgba(0, 0, 0, .05)); border-bottom-left-radius: 4px; }
+.greg-msg-system { align-self: center; background: none; color: var(--text-muted, #6b7280); font-size: 12px; font-style: italic; max-width: 90%; }
+.greg-chat-input { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border-color, #e5e7eb); background: var(--bg-card, #fff); }

@@ -84,6 +84,29 @@ $delete_window = (int) ($delete_window ?? 0);
                 </div>
             </div>
 
+            <!-- Greg, the AI VoIP Engineer: his status lives in the top bar,
+                 the conversation lives here. -->
+            <div data-greg-widget data-csrf="<?php echo getCSRFToken(); ?>" style="margin:8px 10px 4px;">
+                <div id="greg-log" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 2px;">
+                    <div class="greg-row greg-greg"><div class="greg-bubble"><?php echo htmlspecialchars(t('greg.welcome', [GregService::displayName()]), ENT_QUOTES); ?></div></div>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:6px;">
+                    <input type="text" id="greg-input" class="form-control" style="flex:1;" placeholder="<?php echo htmlspecialchars(t('greg.chat_placeholder'), ENT_QUOTES); ?>" onkeydown="if(event.key==='Enter'){gregSend();}">
+                    <button type="button" class="btn btn-primary btn-sm" id="greg-send" onclick="gregSend()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+            <script>
+            function gregEsc(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+            function gregAppend(kind,text){var log=document.getElementById('greg-log');if(!log)return;var row=document.createElement('div');row.className='greg-row greg-'+kind;var b=document.createElement('div');b.className='greg-bubble';b.textContent=String(text);row.appendChild(b);log.appendChild(row);log.scrollTop=log.scrollHeight;}
+            function gregSend(){var i=document.getElementById('greg-input');var btn=document.getElementById('greg-send');var m=(i&&i.value||'').trim();if(!m||!btn||btn.disabled)return;if(i)i.value='';btn.disabled=true;gregAppend('user',m);gregAppend('greg','…');
+             var fd=new FormData();fd.append('action','chat');fd.append('message',m);var w=document.querySelector('[data-greg-widget]');fd.append('csrf_token',(window.CSRF_TOKEN||(w&&w.dataset.csrf)||''));
+             function swap(reply){var log=document.getElementById('greg-log');if(log&&log.lastChild)log.lastChild.remove();gregAppend('greg',reply);}
+             fetch((window.WEBROOT||'')+'/api/greg.php',{method:'POST',body:fd,credentials:'same-origin'})
+              .then(function(r){return r.json();})
+              .then(function(r){btn.disabled=false;swap(r&&r.success?r.reply:(r&&r.error?r.error:'…'));})
+              .catch(function(){btn.disabled=false;swap('…');});}
+            </script>
+
             <!-- List: conversations / directory -->
             <div id="chat-list-container" style="flex: 1; overflow-y: auto; padding: 6px;">
                 <div id="chat-list-loading" style="text-align: center; padding: 30px; color: var(--text-muted);">

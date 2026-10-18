@@ -123,5 +123,78 @@ $is_collapsed_cookie = $is_collapsed_cookie ?? (isset($_COOKIE['sidebar_collapse
                 </div>
             </div>
         <?php endif; ?>
+        <?php
+        // Greg — the AI VoIP Engineer entity: avatar top-right (the logo
+        // sits top-left), token counter beside it, notices panel under it.
+        require_once __DIR__ . '/../src/services/GregService.php';
+        if (GregService::avatarVisible()):
+            $greg_s = GregService::settings();
+            $greg_unread = GregService::unreadCount();
+            $greg_notices = GregService::recentNotices();
+        ?>
+        <div class="greg-widget" id="greg-widget">
+            <?php if ($greg_s['show_tokens']): ?>
+                <span class="greg-token-chip" id="greg-token-chip" title="<?php echo htmlspecialchars(t('ai_voip_engineer.month_tokens')); ?>">
+                    <i class="fas fa-bolt"></i>&nbsp;<span id="greg-token-count"><?php echo number_format(GregService::monthTokens()); ?></span>
+                </span>
+            <?php endif; ?>
+            <button type="button" class="greg-avatar-btn" id="greg-avatar-btn"
+                    onclick="gregTogglePanel()" title="<?php echo htmlspecialchars($greg_s['name']); ?>"
+                    aria-label="<?php echo htmlspecialchars($greg_s['name']); ?>">
+                <span class="greg-avatar-face" aria-hidden="true">&#127913;</span>
+                <?php if ($greg_unread > 0): ?>
+                    <span class="greg-badge" id="greg-unread-badge"><?php echo $greg_unread; ?></span>
+                <?php endif; ?>
+            </button>
+            <div class="greg-panel" id="greg-panel" style="display: none;">
+                <div class="greg-panel-head">
+                    <span class="greg-avatar-face greg-avatar-face-sm" aria-hidden="true">&#127913;</span>
+                    <span class="u-strong u-fs-13" id="greg-panel-name"><?php echo htmlspecialchars($greg_s['name']); ?></span>
+                    <span class="u-muted u-fs-11">(VoIPMonk)</span>
+                    <a class="u-fs-11" href="/chat" style="margin-left: auto;"><i class="fas fa-comments"></i> <?php echo htmlspecialchars(t('greg.panel_chat')); ?></a>
+                </div>
+                <div class="greg-panel-scroll" id="greg-panel-scroll">
+                    <?php if (!$greg_notices): ?>
+                        <div class="greg-notice-empty"><?php echo htmlspecialchars(t('greg.panel_no_notices')); ?></div>
+                    <?php endif; ?>
+                    <?php foreach ($greg_notices as $n): ?>
+                        <div class="greg-notice greg-sev-<?php echo htmlspecialchars($n['severity']); ?><?php echo $n['read_at'] ? '' : ' greg-notice-unread'; ?>">
+                            <div class="greg-notice-head">
+                                <span class="badge u-fs-10 greg-sev-badge"><?php echo htmlspecialchars(t('ai_voip_engineer.sev_' . $n['severity'])); ?></span>
+                                <span class="u-muted u-fs-10"><?php echo htmlspecialchars(date('d.m H:i', strtotime($n['created_at']))); ?></span>
+                                <?php if ($n['emailed_at']): ?><i class="fas fa-envelope u-muted u-fs-10" title="e-mailed"></i><?php endif; ?>
+                            </div>
+                            <div class="greg-notice-title"><?php echo htmlspecialchars($n['title']); ?></div>
+                            <div class="greg-notice-body"><?php echo htmlspecialchars(mb_substr((string) $n['body'], 0, 260)); ?></div>
+                        </div>
+                    <?php endforeach; ?>
+                </div>
+                <div class="greg-panel-foot">
+                    <button type="button" class="btn btn-sm btn-secondary" onclick="gregMarkRead()"><i class="fas fa-check"></i> <?php echo htmlspecialchars(t('greg.panel_mark_read')); ?></button>
+                    <?php if (($_SESSION['user_role'] ?? '') === 'admin'): ?>
+                        <a class="u-fs-11" href="/ai-voip-engineer"><i class="fas fa-sliders"></i> <?php echo htmlspecialchars(t('greg.panel_settings')); ?></a>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+        <script>
+        var GREG_CSRF = "<?php echo htmlspecialchars(getCSRFToken()); ?>";
+        function gregTogglePanel() {
+            var panel = document.getElementById('greg-panel');
+            if (!panel) return;
+            var show = panel.style.display === 'none';
+            panel.style.display = show ? 'block' : 'none';
+            if (show) gregMarkRead(true);
+        }
+        function gregMarkRead(quiet) {
+            var badge = document.getElementById('greg-unread-badge');
+            var body = new URLSearchParams({ action: 'mark_read', csrf_token: GREG_CSRF });
+            fetch('/api/greg.php', { method: 'POST', body: body })
+                .then(function (r) { return r.json(); })
+                .then(function () { if (badge) badge.remove(); })
+                .catch(function () {});
+        }
+        </script>
+        <?php endif; ?>
     </div>
 </header>

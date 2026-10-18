@@ -82,6 +82,7 @@ return [
     '/ai-models'       => ['controller' => AiModelsController::class, 'action' => 'index', 'module' => 'ai_models.php'],
     '/ai-cloud'        => ['controller' => AiCloudController::class, 'action' => 'index', 'module' => 'ai_cloud.php'],
     '/ai-apps'         => ['controller' => AiAppsController::class, 'action' => 'index', 'module' => 'ai_apps.php'],
+    '/ai-voip-engineer' => ['controller' => AiVoipEngineerController::class, 'action' => 'index', 'module' => 'ai_voip_engineer.php'],
     '/assistant'       => ['controller' => AssistantController::class, 'action' => 'index', 'module' => 'assistant.php'],
     '/ms-teams'        => ['controller' => MsTeamsController::class, 'action' => 'index', 'module' => 'ms_teams.php'],
     '/web-widgets'     => ['controller' => WebWidgetController::class, 'action' => 'index', 'module' => 'web_widgets.php'],
