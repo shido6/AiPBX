@@ -94,8 +94,11 @@ class EchoService
         try {
             $facts = EchoReporter::facts();
             if (isset($facts['calls_today'])) {
+                $minutes = isset($facts['minutes_today'])
+                    ? rtrim(rtrim(number_format((float) $facts['minutes_today'], 1, '.', ''), '0'), '.')
+                    : null;
                 $lines[] = '- Calls today: ' . $facts['calls_today']
-                    . (isset($facts['minutes_today']) ? ' (' . $facts['minutes_today'] . ' talk minutes)' : '');
+                    . ($minutes !== null ? ' (' . ($minutes === '' ? '0' : $minutes) . ' talk minutes)' : '');
             }
             if (isset($facts['sip_errors_24h'])) {
                 $lines[] = '- SIP error responses, last 24 h: ' . $facts['sip_errors_24h'];
