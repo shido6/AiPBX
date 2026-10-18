@@ -195,3 +195,120 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
         </div>
     </div>
 </div>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-brain u-primary"></i> <?php echo t('ai_echo.oc_title'); ?></div>
+        <span class="badge <?php echo !$oc['enabled'] ? 'badge-secondary' : ($oc['available'] ? 'badge-success' : 'badge-warning'); ?> u-fs-11">
+            <?php
+            echo $h(!$oc['enabled'] ? t('ai_echo.oc_state_off')
+                : ($oc['available'] ? t('ai_echo.oc_state_ready') : t('ai_echo.oc_state_missing')));
+            ?>
+        </span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 14px;"><?php echo t('ai_echo.oc_intro'); ?></div>
+
+        <?php if ($oc['enabled'] && !$oc['available']): ?>
+            <div class="u-muted u-fs-11" style="margin-bottom: 12px;">
+                <i class="fas fa-triangle-exclamation" style="color: var(--warning);"></i>
+                <?php echo $h(sprintf(t('ai_echo.oc_missing_hint'), $oc['bin'])); ?>
+            </div>
+        <?php endif; ?>
+
+        <form method="POST" style="margin-bottom: 16px;">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="u-grid-2" style="gap: 16px; align-items: end;">
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('ai_echo.oc_model'); ?></label>
+                    <input type="text" class="form-control" name="opencode_model"
+                           value="<?php echo $h($oc['model']); ?>" placeholder="opencode/big-pickle">
+                </div>
+                <div class="form-group" style="display:flex;gap:10px;align-items:center;">
+                    <label style="display:flex;gap:8px;align-items:center;cursor:pointer;">
+                        <input type="checkbox" name="opencode_enabled" value="1" <?php echo $oc['enabled'] ? 'checked' : ''; ?>>
+                        <span class="u-fs-12"><?php echo t('ai_echo.oc_enabled'); ?></span>
+                    </label>
+                    <button type="submit" name="save_opencode" value="1" class="btn btn-secondary">
+                        <i class="fas fa-save"></i> <?php echo t('ai_echo.oc_save'); ?>
+                    </button>
+                </div>
+            </div>
+        </form>
+
+        <form method="POST">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <div class="form-group">
+                <label class="form-label"><?php echo t('ai_echo.oc_task'); ?></label>
+                <textarea class="form-control" name="opencode_task" rows="2" maxlength="2000"
+                          placeholder="<?php echo $h(t('ai_echo.oc_placeholder')); ?>"></textarea>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                <select class="form-control" name="opencode_kind" style="max-width:220px;">
+                    <option value="tool"><?php echo t('ai_echo.oc_kind_tool'); ?></option>
+                    <option value="research"><?php echo t('ai_echo.oc_kind_research'); ?></option>
+                </select>
+                <button type="submit" name="propose_opencode" value="1" class="btn btn-primary"
+                        <?php echo $oc['enabled'] && $oc['available'] ? '' : 'disabled'; ?>>
+                    <i class="fas fa-flask"></i> <?php echo t('ai_echo.oc_run'); ?>
+                </button>
+                <span class="u-muted u-fs-11"><?php echo t('ai_echo.oc_running'); ?></span>
+            </div>
+        </form>
+
+        <?php if (isset($last_run['proposal'])): ?>
+            <pre style="background:var(--bg-main);padding:12px;border-radius:6px;white-space:pre-wrap;font-size:12px;margin:16px 0 0;max-height:340px;overflow:auto;"><?php echo $h($last_run['proposal']['output']); ?></pre>
+        <?php endif; ?>
+
+        <div style="margin-top:16px;border-top:1px solid var(--border-color);padding-top:12px;">
+            <div class="u-strong u-fs-12" style="margin-bottom:8px;"><?php echo t('ai_echo.oc_recent'); ?></div>
+            <?php if (!$oc_recent): ?>
+                <div class="u-muted u-fs-12"><?php echo t('ai_echo.oc_no_runs'); ?></div>
+            <?php else: ?>
+                <table class="table" style="width:100%;font-size:12px;">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th><?php echo t('ai_echo.oc_kind'); ?></th>
+                            <th><?php echo t('ai_echo.oc_task'); ?></th>
+                            <th><?php echo t('ai_echo.oc_status'); ?></th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($oc_recent as $p): ?>
+                            <tr>
+                                <td>#<?php echo (int) $p['id']; ?></td>
+                                <td><?php echo $h($p['kind'] === 'research' ? t('ai_echo.oc_kind_research') : t('ai_echo.oc_kind_tool')); ?></td>
+                                <td>
+                                    <details>
+                                        <summary style="cursor:pointer;"><?php echo $h(mb_substr($p['task'], 0, 90)); ?></summary>
+                                        <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:8px 0 0;"><?php echo $h($p['output']); ?></pre>
+                                    </details>
+                                </td>
+                                <td>
+                                    <span class="badge <?php echo $p['status'] === 'approved' ? 'badge-success' : ($p['status'] === 'rejected' ? 'badge-danger' : 'badge-secondary'); ?> u-fs-11">
+                                        <?php echo t('ai_echo.oc_status_' . $p['status']); ?>
+                                    </span>
+                                </td>
+                                <td>
+                                    <?php if ($p['status'] === 'pending'): ?>
+                                        <form method="POST" style="display:flex;gap:6px;">
+                                            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+                                            <input type="hidden" name="proposal_id" value="<?php echo (int) $p['id']; ?>">
+                                            <button type="submit" name="decide_proposal" value="approve" class="btn btn-secondary" style="padding:2px 8px;font-size:11px;"><?php echo t('ai_echo.oc_approve'); ?></button>
+                                            <button type="submit" name="decide_proposal" value="reject" class="btn btn-secondary" style="padding:2px 8px;font-size:11px;"><?php echo t('ai_echo.oc_reject'); ?></button>
+                                        </form>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            <?php endif; ?>
+            <div class="u-muted u-fs-11" style="margin-top:10px;">
+                <i class="fas fa-lock"></i> <?php echo t('ai_echo.oc_decision_note'); ?>
+            </div>
+        </div>
+    </div>
+</div>

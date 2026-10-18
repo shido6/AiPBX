@@ -448,6 +448,10 @@ if ! find /var/lib/asterisk/moh -maxdepth 1 \( -type f -o -type l \) | grep -q .
     done
 fi
 mkdir -p /var/lib/aipbx/chat_files /var/lib/aipbx/tts
+# Greg's opencode workspace: throwaway folders, one per proposal. Owned by
+# www-data so the portal can create them; opencode itself is installed by the
+# operator (AI → Echo shows "opencode not installed" until it is).
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/opencode
 # Key that encrypts cloud credentials stored in the database (AI → Cloud TTS).
 # Created here so it belongs to the web server: one made by root would lock it out.
 [[ -s /var/lib/aipbx/settings.key ]] || head -c 32 /dev/urandom > /var/lib/aipbx/settings.key
@@ -1404,6 +1408,31 @@ if ! id -u aipbx-ai >/dev/null 2>&1; then
 fi
 install -d -o aipbx-ai -g aipbx-ai -m 0755 /var/lib/aipbx-ai
 install -d -o root -g root -m 0755 "$AI_BASE"
+# Greg's free brain: the opencode CLI carries Big Pickle, with no API key and
+# no account. Downloaded once, only when absent; the portal stays honest about
+# it either way (AI → Echo shows "opencode not installed" if this failed).
+if ! command -v opencode >/dev/null 2>&1; then
+    case "$(uname -m)" in
+        x86_64|amd64) OC_ARCH=x64 ;;
+        aarch64|arm64) OC_ARCH=arm64 ;;
+        *) OC_ARCH="" ;;
+    esac
+    if [[ -n "$OC_ARCH" && -x "$(command -v curl 2>/dev/null || true)" ]]; then
+        OC_TMP=$(mktemp -d)
+        if curl -fsSL --retry 2 --max-time 180 \
+                -o "$OC_TMP/opencode.tar.gz" \
+                "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OC_ARCH}.tar.gz" \
+            && tar -xzf "$OC_TMP/opencode.tar.gz" -C "$OC_TMP" \
+            && install -m 0755 "$OC_TMP/opencode" /usr/local/bin/opencode; then
+            info "opencode installed — Greg's Big Pickle model needs no key."
+        else
+            warn "Could not download opencode. Greg will say it is not installed; re-run the installer to retry."
+        fi
+        rm -rf "$OC_TMP"
+    else
+        warn "opencode was not installed (no curl, or unsupported CPU). Greg will say so until it is."
+    fi
+fi
 # Code: replaced on every install/upgrade (root-owned; the service only reads it).
 rm -rf "$AI_BASE/app.new"
 mkdir -p "$AI_BASE/app.new"

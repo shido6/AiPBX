@@ -56,7 +56,7 @@ final class GregServiceTest extends TestCase
         $this->assertFalse($s['enabled'], 'Greg must be off by default');
         $this->assertFalse(GregService::avatarVisible());
         $this->assertSame('Greg', $s['name']);
-        $this->assertSame('system', $s['model_source']);
+        $this->assertSame('bigpickle', $s['model_source'], 'Big Pickle is preselected — no key, no setup');
         $this->assertSame(GregService::QUIET_DEFAULT, $s['quiet_hours']);
         $this->assertSame(['skipped' => 'disabled'], GregService::notify('warn', 'x', 'y'));
     }
@@ -125,7 +125,7 @@ final class GregServiceTest extends TestCase
     public function testAnUnknownModelSourceFallsBackToTheSystemChain(): void
     {
         GregService::save(['greg_name' => 'Greg', 'greg_model_source' => 'openai-magic']);
-        $this->assertSame('system', GregService::settings()['model_source']);
+        $this->assertSame('bigpickle', GregService::settings()['model_source']);
     }
 
     // -------------------------------------------------------- quiet hours

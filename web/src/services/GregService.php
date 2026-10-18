@@ -15,9 +15,9 @@
  * Model sources: "system" is the portal's own chain — AssistantModel's
  * local-runtime-then-cloud ladder, i.e. whatever LLM the system is set up
  * for. "ling" is OpenRouter's free Ling model (strict daily request
- * limits, shown next to the selector). "bigpickle" is OpenCode Console's
- * free model and is honestly refused until the opencode engine phase
- * wires it — no pretending, no silent fallback.
+ * limits, shown next to the selector). "bigpickle" is the free model that
+ * ships with the opencode CLI — no key and no account, and the default as
+ * soon as Greg is enabled.
  *
  * Everything Greg does is tracked: settings and notices write the audit
  * log, and PBX changes must go through AssistantPlanService, whose
@@ -26,6 +26,8 @@
 
 require_once __DIR__ . '/ai/AssistantModel.php';
 require_once __DIR__ . '/ai/EchoService.php';
+require_once __DIR__ . '/ai/ResearchService.php';
+require_once __DIR__ . '/ai/OpencodeService.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
 require_once __DIR__ . '/tts/TtsProviders.php';
 require_once __DIR__ . '/MailTemplateService.php';
@@ -34,7 +36,7 @@ require_once __DIR__ . '/../audit_log.php';
 class GregService
 {
     public const DEFAULT_NAME = 'Greg';
-    public const SOURCES = ['system', 'ling', 'bigpickle'];
+    public const SOURCES = ['bigpickle', 'system', 'ling'];
     public const QUIET_DEFAULT = '22:00-07:00';
     public const LING_MODEL = 'inclusionai/ling-3.0-flash:free';
     private const DEDUPE_WINDOW = 21600;   // 6 h — one notice per key per window
@@ -45,12 +47,12 @@ class GregService
     /** Greg's stored configuration with defaults; disabled until enabled. */
     public static function settings(): array
     {
-        $source = (string) getSystemSetting('greg.model_source', 'system');
+        $source = (string) getSystemSetting('greg.model_source', 'bigpickle');
         $quiet = (string) getSystemSetting('greg.quiet_hours', self::QUIET_DEFAULT);
         return [
             'enabled'      => getSystemSetting('greg.enabled', '0') === '1',
             'name'         => trim((string) getSystemSetting('greg.name', '')) ?: self::DEFAULT_NAME,
-            'model_source' => in_array($source, self::SOURCES, true) ? $source : 'system',
+            'model_source' => in_array($source, self::SOURCES, true) ? $source : 'bigpickle',
             'show_avatar'  => getSystemSetting('greg.show_avatar', '1') === '1',
             'show_tokens'  => getSystemSetting('greg.show_tokens', '1') === '1',
             'notice_email' => getSystemSetting('greg.notice_email', '1') === '1',
@@ -88,7 +90,7 @@ class GregService
         }
         $source = (string) ($post['greg_model_source'] ?? $s['model_source']);
         if (!in_array($source, self::SOURCES, true)) {
-            $source = 'system';
+            $source = 'bigpickle';
         }
         $up = getDB()->prepare(
             'INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?)
@@ -164,7 +166,33 @@ class GregService
         $hist[] = ['role' => 'user', 'content' => $q];
         $hist = array_slice($hist, -self::CHAT_HISTORY_MAX);
 
+        // Greg's workshop: when the question is plainly "add a tool" (or
+        // "research this"), opencode drafts the plan and it is stored for
+        // review instead of being answered from memory. Nothing is installed.
+        $workshop = self::workshopIntent($q);
+        if ($workshop !== null) {
+            try {
+                $proposal = OpencodeService::propose($q, $workshop);
+            } catch (\Throwable $e) {
+                return ['success' => false, 'error' => $e->getMessage()];
+            }
+            $reply = sprintf(t('greg.oc_drafted'), (string) $proposal['id'])
+                . "\n\n" . $proposal['output'] . "\n\n" . t('greg.oc_review');
+            $hist[] = ['role' => 'assistant', 'content' => $reply];
+            $_SESSION['greg_chat'] = array_slice($hist, -self::CHAT_HISTORY_MAX);
+            return ['success' => true, 'message' => $reply];
+        }
+
         $prompt = self::persona() . "\n\n";
+        if (OpencodeService::settings()['enabled']) {
+            $prompt .= t('greg.oc_capability') . "\n\n";
+        }
+        // ResearchService: a URL in the question becomes quotable text with
+        // its source named. Off by default; unchanged prompt when off.
+        $research = ResearchService::contextFor($q);
+        if ($research !== '') {
+            $prompt .= $research . "\n\n";
+        }
         // Echo: this server's own counts plus Sipfront's runs, when the
         // administrator enabled it. Empty string when Echo is off, so Greg
         // behaves exactly as before.
@@ -187,6 +215,40 @@ class GregService
         return ['success' => true, 'message' => $reply];
     }
 
+    /**
+     * Does this question ask Greg to reach for opencode? Deliberately narrow:
+     * an explicit "research:" prefix, an explicit "ask opencode", or an
+     * add/install/propose + tool/plugin/MCP sentence. Ordinary questions keep
+     * going to the model exactly as before.
+     *
+     * @return string|null 'tool' | 'research' | null
+     */
+    public static function workshopIntent(string $q): ?string
+    {
+        // Drafting a tool proposal is administrator work: a normal user's
+        // question is answered by the model, never turned into a job.
+        if (($_SESSION['user_role'] ?? '') !== 'admin') {
+            return null;
+        }
+        if (getSystemSetting('greg.opencode_enabled', '1') !== '1') {
+            return null;
+        }
+        $text = trim($q);
+        if ($text === '') {
+            return null;
+        }
+        if (preg_match('/^(research|araştır)\s*[:\-]/iu', $text)) {
+            return 'research';
+        }
+        if (preg_match('/\b(ask|use|with|via)\s+opencode\b/i', $text)) {
+            return 'research';
+        }
+        if (preg_match('/\b(add|install|propose|integrate|wire|set\s*up|hook\s*up)\b.{0,60}?\b(tool|plugin|mcp|integration|connector|skill)\b/is', $text)) {
+            return 'tool';
+        }
+        return null;
+    }
+
     /** @return array<int, array{role: string, content: string}> */
     public static function history(): array
     {
@@ -197,8 +259,10 @@ class GregService
     private static function brain(string $source, string $prompt): string
     {
         if ($source === 'bigpickle') {
-            // OpenCode Console's free model arrives with the opencode phase.
-            throw new CloudAiException(t('greg.err_bigpickle_pending'));
+            // The free model that ships with the opencode CLI: no key, no
+            // account. Read-only and in a throwaway workspace, like everything
+            // else opencode does here.
+            return OpencodeService::chat($prompt);
         }
         if ($source === 'ling') {
             return self::lingChat($prompt);

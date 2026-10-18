@@ -2,9 +2,9 @@
 /** @var array $greg @var int $month_tokens @var int $unread @var string $csrf_token */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 $sources = [
+    'bigpickle' => t('ai_voip_engineer.source_bigpickle'),
     'system'    => t('ai_voip_engineer.source_system'),
     'ling'      => t('ai_voip_engineer.source_ling'),
-    'bigpickle' => t('ai_voip_engineer.source_bigpickle'),
 ];
 ?>
 
