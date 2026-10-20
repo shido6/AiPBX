@@ -1,0 +1,10 @@
+# Funding links for AiPBX. GitHub renders these as the repository's Sponsor
+# button; each entry needs to be a real page a supporter can pay on.
+#
+# `github:` only appears once the account is enrolled in GitHub Sponsors. Until
+# that is approved GitHub ignores the entry and the button opens the custom
+# links below, which are live today.
+github: shido6
+custom:
+  - https://echoguard.ca/support.html
+  - https://echoguard.ca/offers.html

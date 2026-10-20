@@ -23,6 +23,7 @@
   <img src="https://img.shields.io/badge/PHP-8.x-blue?logo=php" alt="PHP 8">
   <img src="https://img.shields.io/badge/MariaDB-11-blue?logo=mariadb" alt="MariaDB">
   <a href="docs/README.md"><img src="https://img.shields.io/badge/docs-GitHub-success?logo=readthedocs&logoColor=white" alt="Docs"></a>
+  <a href="https://github.com/shido6/AiPBX?sponsor=1"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor AiPBX"></a>
 </p>
 
 <p align="center">
@@ -294,6 +295,21 @@ Optional extensions that need an account elsewhere live in [howtos/](howtos/READ
 example [giving Greg an Anam.ai face and voice](howtos/greg-anam-avatar.md). They are
 community howtos, not supported defaults, and they never carry ids or keys: every
 installation uses its own.
+
+---
+
+## Sponsor
+
+AiPBX is MIT-licensed and stays that way: no seat counts, no licence keys, no gated features. If it
+earns a place in your stack and you want to keep it moving, you can fund the work:
+
+- **[Support the build](https://echoguard.ca/support.html)** — voluntary contributions in CAD, by
+  card or PayPal. No membership, nothing gated.
+- **[Paid work, if you would rather not run it yourself](https://echoguard.ca/offers.html)** —
+  install and hand-over, or monthly care. The software stays free either way.
+
+Sponsoring buys time to work on the project. It is not a support contract and it does not buy
+features: everything in the installer is in every copy.
 
 ---
 
