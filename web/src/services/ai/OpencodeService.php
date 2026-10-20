@@ -16,6 +16,7 @@
  */
 
 require_once __DIR__ . '/CloudAiService.php';
+require_once __DIR__ . '/OpencodeTrafficService.php';
 require_once __DIR__ . '/../../audit_log.php';
 require_once __DIR__ . '/../GregJournal.php';
 
@@ -27,6 +28,8 @@ class OpencodeService
     public const MAX_OUTPUT = 12000;
     public const MIN_TASK = 8;
     public const MAX_TASK = 2000;
+    public const LOG_MAX_FILES = 10;
+    public const LOG_MAX_BYTES = 131072; // 128 KB tail per file
 
     /** @return array{enabled:bool, model:string, bin:string, workspace:string, timeout:int, available:bool} */
     public static function settings(): array
@@ -93,6 +96,198 @@ class OpencodeService
     }
 
     /**
+     * What opencode wrote about itself. This is not call evidence: it says
+     * whether the engine ran, which model/provider it selected, and whether a
+     * request was refused or timed out. Only the newest bounded tail of each
+     * log is read, and provider tokens are redacted before anything reaches a
+     * page or a prompt.
+     *
+     * @return array{readable:bool, files:int, runs:int, errors:int, warnings:int,
+     *               parsed:int, updated:int, provider:string, model:string,
+     *               recent:array<int, array{time:string, level:string, message:string}>,
+     *               summary:string}
+     */
+    public static function logReport(?string $workspace = null): array
+    {
+        $ws = $workspace ?? self::settings()['workspace'];
+        $paths = self::logPaths($ws);
+        if (!$paths) {
+            return self::emptyLogReport('opencode logs: none found under ' . $ws . '.');
+        }
+
+        $runs = [];
+        $errors = 0;
+        $warnings = 0;
+        $parsed = 0;
+        $provider = '';
+        $model = '';
+        $recent = [];
+        $updated = 0;
+        foreach ($paths as $path) {
+            $updated = max($updated, (int) @filemtime($path));
+            $text = self::readLogTail($path);
+            foreach (preg_split('/\R/', $text) ?: [] as $line) {
+                if (!preg_match('/^timestamp=(\S+)\s+level=([A-Z]+)\s+(.*)$/', trim($line), $m)) {
+                    continue;
+                }
+                $parsed++;
+                $level = $m[2];
+                $rest = $m[3];
+                if (preg_match('/\brun=(\S+)/', $rest, $rm)) {
+                    $runs[$rm[1]] = true;
+                }
+                if (preg_match('/\bllm\.provider=([^\s]+)/', $rest, $pm)) {
+                    $provider = $pm[1];
+                }
+                if (preg_match('/\bllm\.model=([^\s]+)/', $rest, $mm)) {
+                    $model = $mm[1];
+                }
+                if ($provider === '' && preg_match('/\bproviderID=([^\s]+)/', $rest, $pm)) {
+                    $provider = $pm[1];
+                }
+                if ($model === '' && preg_match('/\bmodelID=([^\s]+)/', $rest, $mm)) {
+                    $model = $mm[1];
+                }
+                if ($level !== 'ERROR' && $level !== 'WARN') {
+                    continue;
+                }
+                $level === 'ERROR' ? $errors++ : $warnings++;
+                $message = self::logMessage($rest);
+                if ($message !== '') {
+                    $recent[] = [
+                        'time'    => self::logTime($m[1]),
+                        'level'   => $level,
+                        'message' => self::sanitizeLogMessage($message),
+                    ];
+                    if (count($recent) > 3) {
+                        array_shift($recent);
+                    }
+                }
+            }
+        }
+
+        $summary = sprintf(
+            'opencode logs: %d file(s), %d run(s), last write %s, %d error(s), %d warning(s)',
+            count($paths),
+            count($runs),
+            $updated > 0 ? gmdate('Y-m-d H:i', $updated) . ' UTC' : 'unknown',
+            $errors,
+            $warnings
+        );
+        if ($provider !== '' || $model !== '') {
+            $summary .= ', model ' . trim($provider . '/' . $model, '/');
+        }
+        if ($recent) {
+            $last = end($recent);
+            $summary .= '; latest ' . strtolower($last['level']) . ': ' . $last['message'];
+        }
+
+        return [
+            'readable' => true,
+            'files'    => count($paths),
+            'runs'     => count($runs),
+            'errors'   => $errors,
+            'warnings' => $warnings,
+            'parsed'   => $parsed,
+            'updated'  => $updated,
+            'provider' => $provider,
+            'model'    => $model,
+            'recent'   => $recent,
+            'summary'  => $summary,
+        ];
+    }
+
+    /** @return array<int, string> newest first, bounded */
+    private static function logPaths(string $workspace): array
+    {
+        $workspace = rtrim($workspace, '/');
+        $real = realpath($workspace);
+        if ($real === false || !is_dir($real)) {
+            return [];
+        }
+        $patterns = [
+            $real . '/.home/.local/share/opencode/log/opencode.log',
+            $real . '/*/.home/.local/share/opencode/log/opencode.log',
+            $real . '/*/.local/share/opencode/log/opencode.log',
+        ];
+        $found = [];
+        foreach ($patterns as $pattern) {
+            foreach (glob($pattern, GLOB_NOSORT) ?: [] as $path) {
+                $file = realpath($path);
+                if ($file === false || !is_file($file) || !is_readable($file)) {
+                    continue;
+                }
+                if (!str_starts_with($file, $real . DIRECTORY_SEPARATOR)) {
+                    continue; // never read a symlink that leaves the workspace
+                }
+                $found[$file] = (int) @filemtime($file);
+            }
+        }
+        arsort($found);
+        return array_slice(array_keys($found), 0, self::LOG_MAX_FILES);
+    }
+
+    private static function readLogTail(string $path): string
+    {
+        $size = @filesize($path);
+        if ($size === false || $size < 1) {
+            return '';
+        }
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return '';
+        }
+        if ($size > self::LOG_MAX_BYTES) {
+            @fseek($fh, $size - self::LOG_MAX_BYTES);
+        }
+        $text = (string) stream_get_contents($fh);
+        fclose($fh);
+        return $text;
+    }
+
+    private static function logMessage(string $rest): string
+    {
+        if (preg_match('/\bmessage="((?:[^"\\\\]|\\\\.)*)"/', $rest, $m)) {
+            return stripcslashes($m[1]);
+        }
+        if (preg_match('/\bmessage=(\S+)/', $rest, $m)) {
+            return $m[1];
+        }
+        return '';
+    }
+
+    /** Flatten and redact anything that looks like a credential. */
+    private static function sanitizeLogMessage(string $message): string
+    {
+        $message = preg_replace('/\s+/', ' ', $message) ?? $message;
+        $message = preg_replace(
+            '/\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/',
+            '***',
+            $message
+        ) ?? $message;
+        $message = preg_replace('/(Bearer\s+)[A-Za-z0-9._~+\/-]+/i', '$1***', $message) ?? $message;
+        return mb_substr(trim($message), 0, 180);
+    }
+
+    private static function logTime(string $timestamp): string
+    {
+        $time = strtotime($timestamp);
+        return $time !== false ? gmdate('Y-m-d H:i', $time) . ' UTC' : $timestamp;
+    }
+
+    /** @return array{readable:bool, files:int, runs:int, errors:int, warnings:int,
+     *               parsed:int, updated:int, provider:string, model:string,
+     *               recent:array, summary:string} */
+    private static function emptyLogReport(string $summary): array
+    {
+        return [
+            'readable' => false, 'files' => 0, 'runs' => 0, 'errors' => 0,
+            'warnings' => 0, 'parsed' => 0, 'updated' => 0, 'provider' => '',
+            'model' => '', 'recent' => [], 'summary' => $summary,
+        ];
+    }
+
+    /**
      * Ask opencode for an answer — Greg's Big Pickle brain.
      *
      * No API key, no account, no extra configuration: the model ships with
@@ -110,7 +305,7 @@ class OpencodeService
         if (!is_dir($ws) && !@mkdir($ws, 0700, true) && !is_dir($ws)) {
             throw new CloudAiException(sprintf(t('ai_echo.oc_err_workspace'), $s['workspace']));
         }
-        $res = self::run($s, $ws, $prompt);
+        $res = self::run($s, $ws, $prompt, 'chat');
         return trim($res['output']);
     }
 
@@ -148,7 +343,7 @@ class OpencodeService
             $prompt .= "\n\n" . $notes;
         }
 
-        $res = self::run($s, $ws, $prompt);
+        $res = self::run($s, $ws, $prompt, 'proposal');
         $output = $res['output'];
         $db = getDB();
         $ins = $db->prepare(
@@ -211,7 +406,7 @@ class OpencodeService
      * @return array{output:string, exit:int, timed_out:bool}
      * @throws CloudAiException
      */
-    private static function run(array $s, string $ws, string $prompt): array
+    private static function run(array $s, string $ws, string $prompt, string $purpose): array
     {
         $lockPath = rtrim($s['workspace'], '/') . '/.run.lock';
         $lock = @fopen($lockPath, 'c');
@@ -219,8 +414,30 @@ class OpencodeService
             fclose($lock);
             throw new CloudAiException(t('ai_echo.oc_err_busy'));
         }
+        $started = hrtime(true);
         try {
-            return self::runOnce($s, $ws, $prompt);
+            $res = self::runOnce($s, $ws, $prompt);
+            OpencodeTrafficService::record(
+                $purpose,
+                (string) $s['model'],
+                $prompt,
+                (string) $res['output'],
+                null,
+                !empty($res['timed_out']) ? 'timeout' : 'ok',
+                (int) round((hrtime(true) - $started) / 1e6)
+            );
+            return $res;
+        } catch (\Throwable $e) {
+            OpencodeTrafficService::record(
+                $purpose,
+                (string) $s['model'],
+                $prompt,
+                null,
+                $e->getMessage(),
+                'error',
+                (int) round((hrtime(true) - $started) / 1e6)
+            );
+            throw $e;
         } finally {
             if ($lock !== false) {
                 flock($lock, LOCK_UN);

@@ -553,7 +553,7 @@ if ($isFaxUser && ($currentTab ?? '') === 'voicemail') {
                         <select id="my_phone_speaker_select" class="form-control" onchange="savePhoneSpeakerDevice(this.value)" style="flex: 1; font-size: 12.5px;">
                             <option value="default"><?php echo t('my_phone.system_default'); ?></option>
                         </select>
-                        <button type="button" class="btn btn-secondary" onclick="testPhoneSpeaker()" title="<?php echo t('phone_settings.test_sound_tooltip'); ?>" style="padding: 0 14px;">
+                        <button type="button" id="my_phone_speaker_test_btn" class="btn btn-secondary" onclick="testPhoneSpeaker()" title="<?php echo t('phone_settings.test_sound_tooltip'); ?>" aria-label="<?php echo t('phone_settings.test_sound_tooltip'); ?>" aria-pressed="false" style="padding: 0 14px;">
                             <i class="fas fa-play"></i>
                         </button>
                     </div>

@@ -219,31 +219,48 @@ function applyPendingSync($user_id = null) {
 
     $results = [];
     foreach ($domains as $domain) {
-        $fn = PENDING_SYNC_DOMAIN_MAP[$domain] ?? null;
-        if (!$fn || !function_exists($fn)) {
-            $results[$domain] = ['success' => false, 'error' => "Unknown domain: {$domain}"];
-            continue;
-        }
-        try {
-            $fn();
-            $del = $db->prepare("DELETE FROM sys_pending_sync WHERE domain = ?");
-            $del->execute([$domain]);
-            $results[$domain] = ['success' => true, 'error' => null];
-            writeAuditLog($domain, 'sync_apply', $domain, $domain, 'apply', $user_id);
-        } catch (\Throwable $e) {
-            $results[$domain] = ['success' => false, 'error' => $e->getMessage()];
-            // 2026-08-25: only the domain name ("queues") used to be written
-            // here — the REAL text of the rollback/reload error (including
-            // writeConfWithRollback()'s "AUTOMATICALLY ROLLED BACK"/"MANUAL
-            // INTERVENTION NEEDED" messages) only appeared in that HTTP
-            // response and was lost from the permanent record.
-            // entity_label is varchar(255) — raw Asterisk output can exceed
-            // it, so it is trimmed safely.
-            $label = "{$domain}: " . mb_substr($e->getMessage(), 0, 230);
-            writeAuditLog($domain, 'sync_apply', $domain, $label, 'apply_failed', $user_id);
-        }
+        $results[$domain] = applyPendingSyncDomain($domain, $user_id);
     }
     return $results;
+}
+
+/**
+ * Apply ONE pending domain: the same regen, the same row cleanup and the same
+ * audit trail as applyPendingSync(), without touching any other domain.
+ *
+ * Needed by a change that must take effect now and cannot wait for a human to
+ * press Apply — Greg's automatic trunk demotion is the first one. Calling the
+ * syncXxx() function directly would skip the pending-sync bookkeeping (and the
+ * smoke convention that forbids it in the service layer); applying every
+ * domain would push another administrator's queued edits as a side effect.
+ *
+ * Returns ['success' => bool, 'error' => string|null], as one entry of
+ * applyPendingSync()'s map. On failure the domain's rows STAY, so the change
+ * is retried on the next Apply rather than being lost.
+ */
+function applyPendingSyncDomain($domain, $user_id = null) {
+    $fn = PENDING_SYNC_DOMAIN_MAP[$domain] ?? null;
+    if (!$fn || !function_exists($fn)) {
+        return ['success' => false, 'error' => "Unknown domain: {$domain}"];
+    }
+    try {
+        $fn();
+        $del = getDB()->prepare("DELETE FROM sys_pending_sync WHERE domain = ?");
+        $del->execute([$domain]);
+        writeAuditLog($domain, 'sync_apply', $domain, $domain, 'apply', $user_id);
+        return ['success' => true, 'error' => null];
+    } catch (\Throwable $e) {
+        // 2026-08-25: only the domain name ("queues") used to be written
+        // here — the REAL text of the rollback/reload error (including
+        // writeConfWithRollback()'s "AUTOMATICALLY ROLLED BACK"/"MANUAL
+        // INTERVENTION NEEDED" messages) only appeared in that HTTP
+        // response and was lost from the permanent record.
+        // entity_label is varchar(255) — raw Asterisk output can exceed
+        // it, so it is trimmed safely.
+        $label = "{$domain}: " . mb_substr($e->getMessage(), 0, 230);
+        writeAuditLog($domain, 'sync_apply', $domain, $label, 'apply_failed', $user_id);
+        return ['success' => false, 'error' => $e->getMessage()];
+    }
 }
 
 // Require Domain Sync Modules

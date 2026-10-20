@@ -9,17 +9,54 @@ the git tag message and the GitHub Release notes, and installations show it as
 
 Remote monitoring and operations:
 
+- **Cloud AI: two providers instead of one point of failure**: *AI → Cloud services* now recommends
+  configuring at least two different language-model providers. When a free tier runs out of tokens, a key is
+  revoked or a provider has an outage, the Assistant and Greg (with the System AI brain) try the
+  next configured provider in list order and only the provider that answers is counted in this
+  month's use; when every account fails the error names the providers rather than one key. The
+  prompt goes to whichever provider answers, so the page says plainly to add only accounts the
+  business is willing to send that data to. Speech engines still switch manually.
+- **Two engineers can split a problem, not only review it**: on a multi-part question, the
+  engineer on duty now divides the work into at most three sections and hands some to the relief
+  engineer. Each investigates their own section, the on-duty engineer writes one answer from both
+  sets of findings, and the chat shows a quiet line naming the split. Simple questions are not split;
+  a broken plan or a colleague with nothing to report falls back to the ordinary single answer. On
+  by default under *AI → VoIP Engineer → Relief engineer*; up to three extra model calls on a
+  question that is actually split.
+- **Several engineers, one AI account — without colliding**: *AI → Cloud services* now shows
+  whether the configured language-model providers allow parallel sessions or only one request at a
+  time. Free plans impose both a rate limit and a concurrency limit, so each free-tier provider gets
+  a per-provider turnstile: a second engineer's request waits up to 15 seconds instead of racing the
+  first into a 429, and then gets a clear busy message. Providers with concurrent sessions are not
+  serialized; the page turns to **Parallel sessions** as soon as one is configured. Each engineer
+  keeps their own Greg conversation, and the Dialplan editor now takes a short per-target lock while
+  it captures the before-value and applies a change, so two engineers editing the same extension,
+  group or queue take turns instead of both capturing the same old state (different targets never
+  wait). Every change keeps its audit row and undo. True parallel work still needs a paid plan — the
+  portal cannot tell a free key from a paid one.
 - **Observability coverage: the more Greg can see, the better he diagnoses**: `/ai-voip-engineer`
   now shows a gauge (0–100, as a pie and a temperature bar) built from what is actually installed —
   HEP capture on this PBX, HOMER, VoIPmonitor, a local heplify-server, Sipfront keys with Echo on,
-  and local RTCP reports. A configured but unreachable collector earns little; a missing one earns
+  local RTCP reports, and opencode's own log for self-diagnosis. A configured but unreachable
+  collector earns little; a missing one earns
   nothing and is named. The same map goes into Greg's prompt, so he cites what he can read, says
   plainly when a collector is configured but not queryable, and asks for a Call-ID instead of
-  inventing a SIP ladder. Detection is passive: saved settings, the last stored health check and
+  inventing a SIP ladder. opencode's log is read only to explain a missing, slow or refused answer —
+  never as call evidence — and tokens are redacted before it reaches a page or the prompt.
+  Detection is passive: saved settings, the last stored health check and
   fixed install paths — no scan, no login, no shell. This gauge is separate from the handover
   temperature: one is what he was told, the other is what he can see. A next-step list under the
   gauge names each source still short of full, the points it would add, and the one action that
   earns them.
+- **opencode traffic ledger (admin only)**: when Greg's opencode brain or the workshop uses a
+  remote model, the exact prompt handed to the CLI, the final answer or error, the provider and
+  model, duration and the administrator who asked are now recorded on AI → Echo. Payloads are
+  encrypted with the installation's settings key before they touch the database, so a dump alone
+  does not reveal what a customer told Greg; only metadata, sizes and hashes stay readable. Local
+  providers (`ollama`, `lmstudio`, `llamacpp`, …) are not recorded because nothing leaves the
+  server. The page is admin-only, states that it records the application-level prompt and final
+  text (not provider TLS), keeps 90 days, and has a deliberate "delete all records" action that is
+  itself written to the audit log.
 - **Greg watches and helps set up HOMER and VoIPmonitor**: the Health page now has a **SIP
   correlation collector** check (every 15 minutes) that follows Echo's target — HOMER, VoIPmonitor,
   an external collector, or both — and asks the collector's own web UI for an answer. A sign-in

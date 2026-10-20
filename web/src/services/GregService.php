@@ -36,6 +36,7 @@ require_once __DIR__ . '/GregSystems.php';
 require_once __DIR__ . '/GregOnboardingService.php';
 require_once __DIR__ . '/GregHandoffService.php';
 require_once __DIR__ . '/GregCouncilService.php';
+require_once __DIR__ . '/GregDelegationService.php';
 require_once __DIR__ . '/GregObservabilityService.php';
 require_once __DIR__ . '/GregHealthService.php';
 require_once __DIR__ . '/ai/CloudAiService.php';
@@ -79,6 +80,10 @@ class GregService
             // default: a second pair of eyes is the point of having a relief
             // engineer, and an administrator can turn the extra model call off.
             'council'      => getSystemSetting('greg.council', '1') === '1',
+            // A multi-part question can be split between the two engineers:
+            // each investigates a section, and the engineer on duty writes
+            // one answer from both sets of findings.
+            'delegate'     => getSystemSetting('greg.delegate', '1') === '1',
             'show_avatar'  => getSystemSetting('greg.show_avatar', '1') === '1',
             'show_tokens'  => getSystemSetting('greg.show_tokens', '1') === '1',
             'notice_email' => getSystemSetting('greg.notice_email', '1') === '1',
@@ -146,6 +151,7 @@ class GregService
             'greg.relief_name'    => $relief,
             'greg.relief_model_source' => $reliefSource,
             'greg.council'        => !empty($post['greg_council']) ? '1' : '0',
+            'greg.delegate'       => !empty($post['greg_delegate']) ? '1' : '0',
         ];
         // Turning the relief engineer off ends any handoff standing in his name.
         if ($values['greg.relief_enabled'] !== '1') {
@@ -161,6 +167,7 @@ class GregService
             'brain: ' . $source,
             'notifications: ' . ($values['greg.notice_email'] === '1' ? 'e-mail for warn/critical' : 'in-app only'),
             'council: ' . ($values['greg.council'] === '1' ? 'the two engineers confer before answering' : 'answers go out unreviewed'),
+            'delegation: ' . ($values['greg.delegate'] === '1' ? 'multi-part questions can be split between the two engineers' : 'each question is answered by one engineer'),
             'state: ' . ($values['greg.enabled'] === '1' ? 'active' : 'disabled'),
         ]);
         return ['message' => t('ai_voip_engineer.msg_saved')];
@@ -340,10 +347,42 @@ TXT;
 
         $prompt = self::promptFor($q, $hist);
 
+        // A multi-part question can be split: the engineer on duty plans the
+        // sections, the other engineer investigates their own, and the answer
+        // is synthesized from both findings. Simple questions never pay for
+        // this; a broken plan falls back to the ordinary single answer.
+        $delegation = null;
+        $reply = null;
+        $other = self::counterpart($duty);
+        if ($s['delegate'] && $s['relief_enabled']) {
+            $delegation = GregDelegationService::run(
+                $q,
+                $prompt,
+                $duty,
+                $other,
+                [self::class, 'askSource']
+            );
+        }
         try {
-            $reply = self::brain($duty['source'], $prompt);
+            if ($delegation !== null && $delegation['used']) {
+                $reply = self::brain($duty['source'], $delegation['prompt']);
+            }
+            if ($reply === null || trim($reply) === '') {
+                $reply = self::brain($duty['source'], $prompt);
+            }
         } catch (\Throwable $e) {
-            return ['success' => false, 'error' => $e->getMessage()];
+            // The synthesis prompt is an optimization, not a new way to fail:
+            // if only it failed, answer normally. If the normal answer fails
+            // too, the human gets the real error.
+            if ($delegation !== null && $delegation['used']) {
+                try {
+                    $reply = self::brain($duty['source'], $prompt);
+                } catch (\Throwable $e2) {
+                    return ['success' => false, 'error' => $e2->getMessage()];
+                }
+            } else {
+                return ['success' => false, 'error' => $e->getMessage()];
+            }
         }
 
         // Before the human hears it: the other engineer reads the draft, and a
@@ -378,6 +417,29 @@ TXT;
         $hist[] = ['role' => 'assistant', 'content' => $reply];
         $_SESSION['greg_chat'] = array_slice($hist, -self::CHAT_HISTORY_MAX);
         $out = ['success' => true, 'message' => $reply];
+        if ($delegation !== null && $delegation['used']) {
+            $sections = array_map(static fn(array $section): array => [
+                'title' => (string) $section['title'],
+                'by' => (string) $section['owner_name'],
+            ], $delegation['sections']);
+            $out['delegation'] = [
+                'used' => true,
+                'sections' => $sections,
+                'with' => $other['name'],
+                // One quiet line, never part of the answer: the human can see
+                // that two engineers shared the work and what each covered.
+                'note' => sprintf(
+                    t('greg.delegation_note'),
+                    $duty['name'],
+                    $other['name'],
+                    count($delegation['sections'])
+                ),
+            ];
+            writeAuditLog('greg', 'delegation', 0,
+                'Delegation: ' . $duty['name'] . ' and ' . $other['name']
+                    . ' shared ' . count($delegation['findings']) . ' section finding(s)',
+                'update', $_SESSION['user_id'] ?? null);
+        }
         if ($council !== null) {
             $out['council'] = [
                 'reviewed' => $council['reviewed'],

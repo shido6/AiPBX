@@ -820,8 +820,13 @@ final class CallQualityService
         foreach ($changed as $route) {
             markPendingSync('outbound_dialplan', 'outbound_route', $route['id'], $route['name'], 'update', null);
         }
+        // Apply only the domain this fix just changed. Calling the sync
+        // function directly would skip the pending-sync bookkeeping; applying
+        // every domain would push another administrator's queued edits to
+        // Asterisk as a side effect of a trunk demotion.
         try {
-            $ok = syncOutboundDialplan();
+            $applied = applyPendingSyncDomain('outbound_dialplan');
+            $ok = !empty($applied['success']);
         } catch (\Throwable $e) {
             $ok = false;
         }
@@ -849,7 +854,7 @@ final class CallQualityService
             );
             return $out;
         }
-        $db->exec("DELETE FROM sys_pending_sync WHERE domain = 'outbound_dialplan'");
+        // applyPendingSyncDomain() deletes this domain's rows on success.
         self::remember('call_quality.fix.' . $trunkName, (string) time());
         $names = array_column($changed, 'name');
         writeAuditLog(

@@ -22,6 +22,7 @@ final class OpencodeServiceTest extends TestCase
         $this->db = getDB();
         $this->db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'greg.%'");
         $this->db->exec('DELETE FROM pbx_greg_proposals');
+        $this->db->exec('DELETE FROM pbx_opencode_exchanges');
     }
 
     protected function tearDown(): void
@@ -29,6 +30,7 @@ final class OpencodeServiceTest extends TestCase
         unset($_SESSION['user_role']);
         $this->db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'greg.%'");
         $this->db->exec('DELETE FROM pbx_greg_proposals');
+        $this->db->exec('DELETE FROM pbx_opencode_exchanges');
     }
 
     private function set(string $key, string $value): void
@@ -203,6 +205,44 @@ SH;
             $this->assertSame('deny', $perm['bash']);
             $this->assertSame('deny', $perm['external_directory']);
             $this->assertSame('allow', $perm['read']);
+        } finally {
+            @unlink($stub);
+            foreach (glob($ws . '/chat-*/.home/*') ?: [] as $f) {
+                @unlink($f);
+            }
+            foreach (glob($ws . '/chat-*/.home') ?: [] as $d) {
+                @rmdir($d);
+            }
+            foreach (glob($ws . '/chat-*') ?: [] as $d) {
+                @rmdir($d);
+            }
+            @rmdir($ws);
+        }
+    }
+
+    public function testChatRecordsRemoteTrafficAndSkipsLocalModels(): void
+    {
+        $ws = sys_get_temp_dir() . '/oc-traffic-' . bin2hex(random_bytes(3));
+        $stub = __DIR__ . '/.oc-stub-' . bin2hex(random_bytes(3)) . '.sh';
+        file_put_contents($stub, "#!/bin/sh\nprintf '{\"type\":\"text\",\"part\":{\"type\":\"text\",\"text\":\"stub answer\"}}\\n'\n");
+        chmod($stub, 0755);
+        try {
+            $this->set('opencode_bin', $stub);
+            $this->set('opencode_workspace', $ws);
+            $this->set('opencode_model', 'opencode/test-model');
+            $this->assertSame('stub answer', OpencodeService::chat('what leaves the box?'));
+
+            $recent = OpencodeTrafficService::recent(5);
+            $this->assertCount(1, $recent, 'a remote model is recorded');
+            $this->assertSame('chat', $recent[0]['purpose']);
+            $this->assertSame('opencode', $recent[0]['provider']);
+            $found = OpencodeTrafficService::find((int) $recent[0]['id']);
+            $this->assertSame('what leaves the box?', $found['request']);
+            $this->assertSame('stub answer', $found['response']);
+
+            $this->set('opencode_model', 'ollama/qwen2.5:7b');
+            OpencodeService::chat('this one stays local');
+            $this->assertCount(1, OpencodeTrafficService::recent(5), 'a local model is not egress');
         } finally {
             @unlink($stub);
             foreach (glob($ws . '/chat-*/.home/*') ?: [] as $f) {

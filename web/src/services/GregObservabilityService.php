@@ -6,12 +6,13 @@
  * he can read does. This service turns that into one number the administrator
  * can act on and one context block the model reads before it answers:
  *
- *   capture      15  Asterisk sends HEP from this PBX (built-in or fan-out)
- *   HOMER        20  a HOMER target is configured and its last check passed
- *   VoIPmonitor  20  a VoIPmonitor target is configured and checked
- *   heplify      15  a heplify-server install is visible on this host
- *   Sipfront     15  keys are set and Echo is on, so test runs are readable
- *   RTCP         15  local RTCP reports exist for the quality window
+ *   capture      14  Asterisk sends HEP from this PBX (built-in or fan-out)
+ *   HOMER        18  a HOMER target is configured and its last check passed
+ *   VoIPmonitor  18  a VoIPmonitor target is configured and checked
+ *   heplify      14  a heplify-server install is visible on this host
+ *   Sipfront     14  keys are set and Echo is on, so test runs are readable
+ *   RTCP         14  local RTCP reports exist for the quality window
+ *   opencode      8  the engine's own logs are readable, for self-diagnosis
  *
  * Detection is deliberately passive: settings, the last stored health check,
  * fixed install paths, and one bounded RTCP query. No port scan, no login, no
@@ -26,17 +27,19 @@
 
 require_once __DIR__ . '/ai/HepSettingsService.php';
 require_once __DIR__ . '/ai/EchoService.php';
+require_once __DIR__ . '/ai/OpencodeService.php';
 require_once __DIR__ . '/CallQualityService.php';
 require_once __DIR__ . '/GregReadinessService.php';
 
 final class GregObservabilityService
 {
-    public const CAPTURE_MAX = 15;
-    public const HOMER_MAX = 20;
-    public const VOIPMONITOR_MAX = 20;
-    public const HEPLIFY_MAX = 15;
-    public const SIPFRONT_MAX = 15;
-    public const RTCP_MAX = 15;
+    public const CAPTURE_MAX = 14;
+    public const HOMER_MAX = 18;
+    public const VOIPMONITOR_MAX = 18;
+    public const HEPLIFY_MAX = 14;
+    public const SIPFRONT_MAX = 14;
+    public const RTCP_MAX = 14;
+    public const OPENCODE_MAX = 8;
 
     /** Fixed, read-only paths: never search the disk or run `command -v`. */
     private const HEPLIFY_BINARIES = [
@@ -75,6 +78,7 @@ final class GregObservabilityService
             'heplify'     => self::heplify(),
             'sipfront'    => self::sipfront(),
             'rtcp'        => self::rtcp(),
+            'opencode'    => self::opencode(),
         ];
     }
 
@@ -94,6 +98,7 @@ final class GregObservabilityService
             'heplify'     => [self::HEPLIFY_MAX, 'ai_voip_engineer.obs_part_heplify', 'fa-server'],
             'sipfront'    => [self::SIPFRONT_MAX, 'ai_voip_engineer.obs_part_sipfront', 'fa-vial-circle-check'],
             'rtcp'        => [self::RTCP_MAX, 'ai_voip_engineer.obs_part_rtcp', 'fa-wave-square'],
+            'opencode'    => [self::OPENCODE_MAX, 'ai_voip_engineer.obs_part_opencode', 'fa-brain'],
         ];
         $factor = ['on' => 1.0, 'limited' => 0.6, 'down' => 0.2, 'off' => 0.0];
 
@@ -113,8 +118,8 @@ final class GregObservabilityService
                 'points' => $points,
                 'max'    => $max,
                 'state'  => $sig['state'],
-                'detail' => (string) ($sig['detail'] ?? ''),
-                'note'   => (string) ($sig['note'] ?? ''),
+                'detail' => $sig['detail'],
+                'note'   => $sig['note'],
                 'url'    => (string) ($sig['url'] ?? ''),
             ];
             if ($sig['state'] === 'off') {
@@ -178,7 +183,8 @@ final class GregObservabilityService
         }
         $lines[] = '- Evidence order: any local counters/CDRs/RTCP in this prompt for what happened,'
             . ' Sipfront runs for an independent test, HOMER for the SIP ladder,'
-            . ' VoIPmonitor for RTP and packet detail.'
+            . ' VoIPmonitor for RTP and packet detail. opencode logs explain only your own'
+            . ' missing, slow or refused answers — never call evidence.'
             . ' When sources disagree, say which one is closest to the media path and why.';
         $lines[] = '- Never claim to have opened a collector UI, run a packet capture, or heard audio.'
             . ' A configured collector you cannot query is something you point the administrator to,'
@@ -218,7 +224,8 @@ final class GregObservabilityService
                     . ' Asterisk is not sending yet. Do not claim captured SIP.');
         }
 
-        $captured = $file['capture_address'] !== '' ? $file['capture_address'] : $address;
+        // The guard above already returned when capture_address was empty.
+        $captured = (string) $file['capture_address'];
         return self::signal('on',
             sprintf(t('ai_voip_engineer.obs_capture_on'), $captured),
             'HEP capture is live at ' . $captured . '. SIP signalling, RTP/RTCP counters and CDRs are captured'
@@ -395,8 +402,53 @@ final class GregObservabilityService
                 return [$state === 'off'
                     ? t('ai_voip_engineer.obs_next_rtcp_off')
                     : t('ai_voip_engineer.obs_next_rtcp_none'), '/ai-echo'];
+            case 'opencode':
+                return [$state === 'off'
+                    ? t('ai_voip_engineer.obs_next_opencode_run')
+                    : t('ai_voip_engineer.obs_next_opencode_check'), '/ai-echo'];
         }
         return ['', ''];
+    }
+
+    /** @return array{state:string, detail:string, note:string, url:string} */
+    private static function opencode(): array
+    {
+        try {
+            $log = OpencodeService::logReport();
+        } catch (\Throwable $e) {
+            return self::signal('limited',
+                t('ai_voip_engineer.obs_opencode_unreadable'),
+                'opencode logs could not be read just now; do not claim the engine ran.');
+        }
+        if (!$log['readable']) {
+            return self::signal('off',
+                t('ai_voip_engineer.obs_opencode_none'),
+                'opencode logs: none found under the workshop workspace. The CLI has not run,'
+                    . ' or its HOME is elsewhere; do not claim the engine ran.');
+        }
+
+        $when = (int) $log['updated'] > 0
+            ? gmdate('Y-m-d H:i', (int) $log['updated']) . ' UTC'
+            : t('ai_voip_engineer.obs_opencode_never');
+        $stale = (int) $log['updated'] > 0 && (int) $log['updated'] < time() - 7 * 86400;
+        $state = ($log['errors'] > 0 || $log['warnings'] > 0 || $log['parsed'] === 0 || $stale)
+            ? 'limited' : 'on';
+        $detail = (int) $log['parsed'] > 0
+            ? sprintf(t('ai_voip_engineer.obs_opencode_detail'), $when, (int) $log['runs'],
+                (int) $log['errors'], (int) $log['warnings'])
+            : t('ai_voip_engineer.obs_opencode_unparsed');
+        if ($stale) {
+            $detail .= ' · ' . t('ai_voip_engineer.obs_opencode_stale');
+        }
+
+        $note = $log['summary'];
+        if ((int) $log['parsed'] === 0) {
+            $note = 'opencode logs exist but no runs could be parsed; the format may have changed.';
+        }
+        $note .= ' These are your own engine logs; use them to explain a missing, slow or refused'
+            . ' answer, never as call evidence.';
+
+        return self::signal($state, $detail, $note, '/ai-echo');
     }
 
     /** @return array{state:string, detail:string, note:string, url:string} */

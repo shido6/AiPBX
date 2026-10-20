@@ -161,7 +161,7 @@ $greg_readiness = $greg_readiness ?? null;
              function swap(reply,note){var log=document.getElementById('greg-log');if(log&&log.lastChild)log.lastChild.remove();gregAppend('greg',reply,note);}
              fetch((window.WEBROOT||'')+'/api/greg.php',{method:'POST',body:fd,credentials:'same-origin'})
               .then(function(r){return r.json();})
-              .then(function(r){btn.disabled=false;var reply=r&&r.success?(r.message||r.reply||'…'):(r&&r.error?r.error:'…');var note=(r&&r.council&&r.council.note)||'';swap(reply,note);if(window.gregAvatarSay){try{window.gregAvatarSay(reply);}catch(e){}}})
+              .then(function(r){btn.disabled=false;var reply=r&&r.success?(r.message||r.reply||'…'):(r&&r.error?r.error:'…');var notes=[];if(r&&r.delegation&&r.delegation.note)notes.push(r.delegation.note);if(r&&r.council&&r.council.note)notes.push(r.council.note);swap(reply,notes.join(' · '));if(window.gregAvatarSay){try{window.gregAvatarSay(reply);}catch(e){}}})
               .catch(function(){btn.disabled=false;swap('…');});}
             </script>
             <?php if (\AnamService::active()): ?>

@@ -65,6 +65,19 @@ final class GregServiceTest extends TestCase
         $this->assertTrue($s['relief_enabled'], 'quiet hours are covered by default');
         $this->assertSame('system', $s['relief_model_source'], 'and he starts on the system chain, not Greg\'s free model');
         $this->assertSame(['skipped' => 'disabled'], GregService::notify('warn', 'x', 'y'));
+        $this->assertTrue($s['delegate'], 'splitting a complex question is available by default');
+    }
+
+    public function testDelegationCanBeTurnedOffAndBackOn(): void
+    {
+        $this->set(['delegate' => '1']);
+        $this->assertTrue(GregService::settings()['delegate']);
+
+        GregService::save(['greg_name' => 'Greg', 'greg_delegate' => '']);
+        $this->assertFalse(GregService::settings()['delegate'], 'an unchecked box turns delegation off');
+
+        GregService::save(['greg_name' => 'Greg', 'greg_delegate' => '1']);
+        $this->assertTrue(GregService::settings()['delegate']);
     }
 
     public function testAvatarNeedsBothEnabledAndShown(): void
@@ -358,13 +371,23 @@ final class GregServiceTest extends TestCase
     {
         $this->db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'hep.%'");
         $this->db->exec("INSERT INTO sys_settings (setting_key, setting_value) VALUES ('hep.mode', 'off')");
-        $prompt = GregService::promptFor('Why did the call drop?', [
-            ['role' => 'user', 'content' => 'Why did the call drop?'],
-        ]);
-        $this->assertStringContainsString('Observability coverage on this PBX:', $prompt);
-        $this->assertStringContainsString('Nothing is captured or queryable', $prompt,
-            'with no source, Greg is told to ask for the evidence instead of inventing it');
-        $this->db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'hep.%'");
+        // No opencode logs either: the engine's own diary is not call evidence.
+        $emptyWorkspace = sys_get_temp_dir() . '/aipbx-no-opencode-' . bin2hex(random_bytes(6));
+        $st = $this->db->prepare("INSERT INTO sys_settings (setting_key, setting_value)
+            VALUES ('greg.opencode_workspace', ?)
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        $st->execute([$emptyWorkspace]);
+        try {
+            $prompt = GregService::promptFor('Why did the call drop?', [
+                ['role' => 'user', 'content' => 'Why did the call drop?'],
+            ]);
+            $this->assertStringContainsString('Observability coverage on this PBX:', $prompt);
+            $this->assertStringContainsString('Nothing is captured or queryable', $prompt,
+                'with no source, Greg is told to ask for the evidence instead of inventing it');
+        } finally {
+            $this->db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'hep.%'");
+            $this->db->exec("DELETE FROM sys_settings WHERE setting_key = 'greg.opencode_workspace'");
+        }
     }
 
     public function testThePromptUsesTheDownloadedAsteriskReferenceOnlyWhenItFits(): void

@@ -47,6 +47,7 @@ class AiCloudController extends BaseController
         }
         static::renderPage('ai_cloud/index', [
             'providers' => CloudAiService::forPage(),
+            'team' => CloudAiService::teamStatus(),
             'engines' => $engines,
             'vm_transcribe' => VoicemailAiService::transcribeOn(),
             'vm_summary' => getSystemSetting('ai_vm_summary', '0') === '1',

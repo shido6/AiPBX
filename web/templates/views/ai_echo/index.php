@@ -1,6 +1,8 @@
 <?php
 /** @var array $echo @var string $setup_steps @var array $runs @var ?string $runs_error
- *  @var ?array $last_run @var string $csrf_token @var array $hep_compute */
+ *  @var ?array $last_run @var string $csrf_token @var array $hep_compute
+ *  @var array $traffic @var array $traffic_stats @var ?array $traffic_detail @var int $traffic_id
+ *  @var int $traffic_page @var int $traffic_pages */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 ?>
 <div class="card">
@@ -453,5 +455,119 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
                 <i class="fas fa-lock"></i> <?php echo t('ai_echo.oc_decision_note'); ?>
             </div>
         </div>
+    </div>
+</div>
+
+<div class="card" id="oc-traffic" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-right-left u-primary"></i> <?php echo t('ai_echo.traffic_title'); ?></div>
+        <span class="badge badge-warning u-fs-11"><i class="fas fa-lock"></i> <?php echo t('ai_echo.traffic_admin_only'); ?></span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <div class="u-muted u-fs-12" style="margin-bottom: 10px;"><?php echo t('ai_echo.traffic_intro'); ?></div>
+        <div class="u-muted u-fs-11" style="margin-bottom: 14px;">
+            <i class="fas fa-circle-info"></i> <?php echo t('ai_echo.traffic_scope'); ?>
+            <?php echo sprintf(t('ai_echo.traffic_retention'), OpencodeTrafficService::RETENTION_DAYS); ?>
+        </div>
+
+        <div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:14px;padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-main);">
+            <div><div class="u-muted u-fs-10"><?php echo t('ai_echo.traffic_total'); ?></div><div class="u-strong u-fs-13"><?php echo (int) $traffic_stats['total']; ?></div></div>
+            <div><div class="u-muted u-fs-10"><?php echo t('ai_echo.traffic_last_day'); ?></div><div class="u-strong u-fs-13"><?php echo (int) $traffic_stats['last_day']; ?></div></div>
+            <div><div class="u-muted u-fs-10"><?php echo t('ai_echo.traffic_sent'); ?></div><div class="u-strong u-fs-13"><?php echo number_format((int) $traffic_stats['request_bytes']); ?> B</div></div>
+            <div><div class="u-muted u-fs-10"><?php echo t('ai_echo.traffic_received'); ?></div><div class="u-strong u-fs-13"><?php echo number_format((int) $traffic_stats['response_bytes']); ?> B</div></div>
+            <div><div class="u-muted u-fs-10"><?php echo t('ai_echo.traffic_last'); ?></div><div class="u-strong u-fs-13"><?php echo $h($traffic_stats['last_at'] !== '' ? $traffic_stats['last_at'] : '—'); ?></div></div>
+        </div>
+
+        <?php if ($traffic_detail): ?>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+                <a class="btn btn-secondary btn-sm" href="/ai-echo?oc_page=<?php echo (int) $traffic_page; ?>#oc-traffic"><i class="fas fa-arrow-left"></i> <?php echo t('ai_echo.traffic_back'); ?></a>
+                <span class="u-strong u-fs-13">#<?php echo (int) $traffic_detail['id']; ?></span>
+                <span class="badge <?php echo $traffic_detail['status'] === 'ok' ? 'badge-success' : ($traffic_detail['status'] === 'timeout' ? 'badge-warning' : 'badge-danger'); ?> u-fs-10">
+                    <?php echo t('ai_echo.traffic_status_' . $traffic_detail['status']); ?>
+                </span>
+                <span class="u-muted u-fs-11"><?php echo $h($traffic_detail['created_at']); ?></span>
+            </div>
+            <div class="u-grid-2" style="gap:12px;margin-bottom:12px;">
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_model'); ?>:</span> <code><?php echo $h($traffic_detail['model']); ?></code></div>
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_provider'); ?>:</span> <?php echo $h($traffic_detail['provider']); ?></div>
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_purpose'); ?>:</span> <?php echo t('ai_echo.traffic_purpose_' . $traffic_detail['purpose']); ?></div>
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_user'); ?>:</span> <?php echo $h($traffic_detail['user_name'] !== '' ? $traffic_detail['user_name'] : ((int) $traffic_detail['created_by'] > 0 ? '#' . (int) $traffic_detail['created_by'] : t('ai_echo.traffic_system'))); ?></div>
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_duration'); ?>:</span> <?php echo (int) $traffic_detail['duration_ms']; ?> ms</div>
+                <div class="u-fs-12"><span class="u-muted"><?php echo t('ai_echo.traffic_bytes'); ?>:</span> <?php echo (int) $traffic_detail['request_bytes']; ?> B → <?php echo (int) $traffic_detail['response_bytes']; ?> B</div>
+            </div>
+            <?php if ($traffic_detail['error'] !== ''): ?>
+                <div class="u-fs-12" style="color:var(--danger);margin-bottom:10px;"><i class="fas fa-triangle-exclamation"></i> <?php echo $h($traffic_detail['error']); ?></div>
+            <?php endif; ?>
+            <div class="u-strong u-fs-12" style="margin-bottom:4px;"><?php echo t('ai_echo.traffic_request'); ?></div>
+            <?php if ((int) $traffic_detail['request_bytes'] > 0 && $traffic_detail['request'] === ''): ?>
+                <div class="u-muted u-fs-12"><?php echo t('ai_echo.traffic_payload_missing'); ?></div>
+            <?php else: ?>
+                <pre style="background:var(--bg-main);padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:360px;overflow:auto;"><?php echo $h($traffic_detail['request']); ?></pre>
+            <?php endif; ?>
+            <div class="u-strong u-fs-12" style="margin:12px 0 4px;"><?php echo t('ai_echo.traffic_response'); ?></div>
+            <?php if ((int) $traffic_detail['response_bytes'] === 0): ?>
+                <div class="u-muted u-fs-12"><?php echo t('ai_echo.traffic_no_response'); ?></div>
+            <?php elseif ($traffic_detail['response'] === ''): ?>
+                <div class="u-muted u-fs-12"><?php echo t('ai_echo.traffic_payload_missing'); ?></div>
+            <?php else: ?>
+                <pre style="background:var(--bg-main);padding:12px;border-radius:6px;white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:360px;overflow:auto;"><?php echo $h($traffic_detail['response']); ?></pre>
+            <?php endif; ?>
+            <div class="u-muted u-fs-11" style="margin-top:10px;">
+                sha256 request <code><?php echo $h(substr((string) $traffic_detail['request_sha256'], 0, 16)); ?></code>
+                · response <code><?php echo $h(substr((string) $traffic_detail['response_sha256'], 0, 16)); ?></code>
+            </div>
+        <?php elseif (!$traffic): ?>
+            <div class="u-muted u-fs-12"><?php echo t('ai_echo.traffic_empty'); ?></div>
+        <?php else: ?>
+            <div class="table-responsive">
+                <table class="table" style="width:100%;font-size:12px;">
+                    <thead>
+                        <tr>
+                            <th><?php echo t('ai_echo.traffic_time'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_purpose'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_model'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_status'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_duration'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_bytes'); ?></th>
+                            <th><?php echo t('ai_echo.traffic_user'); ?></th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($traffic as $row): ?>
+                            <tr>
+                                <td class="u-fs-11"><?php echo $h($row['created_at']); ?></td>
+                                <td><?php echo t('ai_echo.traffic_purpose_' . $row['purpose']); ?></td>
+                                <td><code><?php echo $h($row['model']); ?></code><div class="u-muted u-fs-10"><?php echo $h($row['provider']); ?></div></td>
+                                <td><span class="badge <?php echo $row['status'] === 'ok' ? 'badge-success' : ($row['status'] === 'timeout' ? 'badge-warning' : 'badge-danger'); ?> u-fs-10"><?php echo t('ai_echo.traffic_status_' . $row['status']); ?></span></td>
+                                <td><?php echo (int) $row['duration_ms']; ?> ms</td>
+                                <td class="u-fs-11"><?php echo (int) $row['request_bytes']; ?> → <?php echo (int) $row['response_bytes']; ?> B</td>
+                                <td class="u-fs-11"><?php echo $h($row['user_name'] !== '' ? $row['user_name'] : ((int) $row['created_by'] > 0 ? '#' . (int) $row['created_by'] : t('ai_echo.traffic_system'))); ?></td>
+                                <td><a class="btn btn-secondary btn-sm" href="/ai-echo?oc_traffic=<?php echo (int) $row['id']; ?>&oc_page=<?php echo (int) $traffic_page; ?>#oc-traffic"><?php echo t('ai_echo.traffic_view'); ?></a></td>
+                            </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+            <?php if ($traffic_pages > 1): ?>
+                <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;">
+                    <?php if ($traffic_page > 1): ?>
+                        <a class="btn btn-secondary btn-sm" href="/ai-echo?oc_page=<?php echo $traffic_page - 1; ?>#oc-traffic"><i class="fas fa-chevron-left"></i></a>
+                    <?php endif; ?>
+                    <span class="u-muted u-fs-11"><?php echo sprintf(t('ai_echo.traffic_page'), $traffic_page, $traffic_pages); ?></span>
+                    <?php if ($traffic_page < $traffic_pages): ?>
+                        <a class="btn btn-secondary btn-sm" href="/ai-echo?oc_page=<?php echo $traffic_page + 1; ?>#oc-traffic"><i class="fas fa-chevron-right"></i></a>
+                    <?php endif; ?>
+                </div>
+            <?php endif; ?>
+        <?php endif; ?>
+
+        <form method="POST" action="/ai-echo" style="margin-top:14px;border-top:1px solid var(--border-color);padding-top:10px;" onsubmit="return confirm('<?php echo $h(t('ai_echo.traffic_purge_confirm')); ?>');">
+            <input type="hidden" name="csrf_token" value="<?php echo $h($csrf_token); ?>">
+            <button type="submit" name="purge_opencode_traffic" value="1" class="btn btn-secondary btn-sm" <?php echo $traffic_stats['total'] > 0 ? '' : 'disabled'; ?>>
+                <i class="fas fa-trash-can"></i> <?php echo t('ai_echo.traffic_purge'); ?>
+            </button>
+            <span class="u-muted u-fs-11" style="margin-left:8px;"><?php echo t('ai_echo.traffic_purge_note'); ?></span>
+        </form>
     </div>
 </div>

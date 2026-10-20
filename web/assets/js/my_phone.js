@@ -16,6 +16,11 @@ function switchMyPhoneTab(tabName) {
         }
     });
 
+    // Leaving the device card must silence a test sound that is still playing.
+    if (tabName !== "settings" && typeof stopPhoneSpeakerTest === "function") {
+        stopPhoneSpeakerTest();
+    }
+
     const urlParams = new URLSearchParams(window.location.search);
     if (tabName === "history") urlParams.delete("tab"); else urlParams.set("tab", tabName);
     const queryStr = urlParams.toString();

@@ -68,7 +68,11 @@ func testExtensions(t *testing.T) (string, string) {
 	if err := InitDB(cfg); err != nil {
 		t.Skip("Cannot connect to DB for test:", err)
 	}
-	rows, err := db.Query("SELECT extension FROM sys_users WHERE is_active = 1 AND extension IS NOT NULL AND extension != '' AND role != 'fax_user' ORDER BY id ASC LIMIT 2")
+	// DISTINCT: an installation may have two users on one extension (a shared
+	// desk phone). Chat identity is the extension, so two rows for it are one
+	// participant, and a "two participant" test that picked both would insert
+	// the same primary key twice instead of exercising anything.
+	rows, err := db.Query("SELECT DISTINCT extension FROM sys_users WHERE is_active = 1 AND extension IS NOT NULL AND extension != '' AND role != 'fax_user' ORDER BY extension ASC LIMIT 2")
 	if err != nil {
 		t.Skip("Cannot query sys_users:", err)
 	}
@@ -126,6 +130,62 @@ func TestDirectChatIsNotAGroup(t *testing.T) {
 	}
 	if _, _, err := AddGroupMembers(convID, b, []string{a}); err == nil {
 		t.Fatal("members must not be added to a direct chat")
+	}
+}
+
+// Two accounts on one extension — a shared desk phone, or a second
+// administrator sitting on the first extension — are one chat identity. The
+// user join used to return the same message once per account, so the list
+// showed every message twice and the contact list showed the phone twice.
+func TestSharedExtensionDoesNotDuplicateMessagesOrContacts(t *testing.T) {
+	a, b := testExtensions(t)
+
+	res, err := db.Exec(`INSERT INTO sys_users (username, password_hash, full_name, extension, role, is_active)
+		VALUES (?, '', 'Second account on the same phone', ?, 'user', 1)`,
+		fmt.Sprintf("dup-%d", time.Now().UnixNano()), a)
+	if err != nil {
+		t.Fatalf("insert second account on extension %s: %v", a, err)
+	}
+	dupID, _ := res.LastInsertId()
+	defer func() { _, _ = db.Exec("DELETE FROM sys_users WHERE id = ?", dupID) }()
+
+	res, err = db.Exec(`INSERT INTO chat_conversations (type, direct_key, created_by, created_at, updated_at, is_deleted)
+		VALUES ('direct', ?, ?, NOW(), NOW(), 0)`, fmt.Sprintf("test-dup-%d", time.Now().UnixNano()), a)
+	if err != nil {
+		t.Fatalf("create test conversation: %v", err)
+	}
+	id64, _ := res.LastInsertId()
+	convID := int(id64)
+	defer removeTestConversation(convID)
+	if _, err := db.Exec(`INSERT INTO chat_participants (conversation_id, extension, role, joined_at)
+		VALUES (?, ?, 'member', NOW()), (?, ?, 'member', NOW())`, convID, a, convID, b); err != nil {
+		t.Fatalf("add participants: %v", err)
+	}
+	msg, err := SaveMessage(convID, a, "text", "one message", "", "", 0, "")
+	if err != nil {
+		t.Fatalf("SaveMessage: %v", err)
+	}
+
+	msgs, err := GetMessages(convID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != msg.ID {
+		t.Fatalf("one extension must yield one message row, got %+v", msgs)
+	}
+
+	contacts, err := GetContacts(b)
+	if err != nil {
+		t.Fatalf("GetContacts: %v", err)
+	}
+	seen := 0
+	for _, c := range contacts {
+		if c.Extension == a {
+			seen++
+		}
+	}
+	if seen != 1 {
+		t.Fatalf("extension %s must appear once in the contact list, got %d", a, seen)
 	}
 }
 

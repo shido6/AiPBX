@@ -86,6 +86,18 @@ Ubuntu's `apache2.service` is hardened with systemd sandboxing. The installer's 
   stays read-only);
 - `/root`, `/boot`, `/etc/ssh`, `/etc/apt` stay inaccessible.
 
+## AI egress (opencode)
+
+Greg's opencode brain and the workshop can use a remote model. Every exchange with a remote provider is
+recorded on **AI → Echo → opencode traffic**, admin only: the exact prompt handed to the CLI, the final
+answer or error, the provider/model, duration, and who asked. Local providers (`ollama`, `lmstudio`,
+`llamacpp`, …) are not recorded. Payloads are encrypted with `SecretBox` — the installation key in
+`/etc/ai-pbx.env` or `/var/lib/aipbx/settings.key` — so a database dump alone does not reveal them;
+metadata, sizes and hashes stay readable. Records expire after 90 days, and **Delete all records** is
+itself written to the audit log. This is an application-level record, not a TLS intercept: opencode
+adds its own system prompt and tools before calling the provider, and that provider traffic is not
+decrypted by the PBX.
+
 ## Other measures
 
 TOTP two-factor authentication, passkeys, account/IP lockout with CAPTCHA, CSRF tokens on every form

@@ -142,9 +142,10 @@ $is_collapsed_cookie = $is_collapsed_cookie ?? (isset($_COOKIE['sidebar_collapse
                     onclick="gregTogglePanel()" title="<?php echo htmlspecialchars($greg_s['name']); ?>"
                     aria-label="<?php echo htmlspecialchars($greg_s['name']); ?>">
                 <span class="greg-avatar-face" aria-hidden="true">&#127913;</span>
-                <?php if ($greg_unread > 0): ?>
-                    <span class="greg-badge" id="greg-unread-badge"><?php echo $greg_unread; ?></span>
-                <?php endif; ?>
+                <!-- Always present: the panel's mark-read script looks it up. A null
+                     lookup is a smoke failure and a silent JS stop, even though the
+                     script guards it; hidden when there is nothing to show. -->
+                <span class="greg-badge" id="greg-unread-badge"<?php echo $greg_unread > 0 ? '' : ' style="display: none;"'; ?>><?php echo $greg_unread; ?></span>
             </button>
             <div class="greg-panel" id="greg-panel" style="display: none;">
                 <div class="greg-panel-head">

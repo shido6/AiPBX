@@ -14,6 +14,7 @@ require_once __DIR__ . '/../../src/services/GregObservabilityService.php';
 final class GregObservabilityServiceTest extends TestCase
 {
     private array $session = [];
+    private string $workspace;
 
     protected function setUp(): void
     {
@@ -22,13 +23,30 @@ final class GregObservabilityServiceTest extends TestCase
         getDB()->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'hep.%' OR setting_key LIKE 'echo.%'");
         getDB()->exec("DELETE FROM health_checks WHERE check_key = 'hep_collector'");
         @unlink(HepSettingsService::confPath());
+        // No opencode logs by default, so the gauge is the same on a developer
+        // machine and on a PBX that has run the engine. Tests that need logs
+        // create them in this workspace.
+        $this->workspace = sys_get_temp_dir() . '/aipbx-obs-' . getmypid() . '-' . bin2hex(random_bytes(4));
+        mkdir($this->workspace, 0777, true);
+        $this->setting('greg.opencode_workspace', $this->workspace);
     }
 
     protected function tearDown(): void
     {
         @unlink(HepSettingsService::confPath());
         getDB()->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'hep.%' OR setting_key LIKE 'echo.%'");
+        getDB()->exec("DELETE FROM sys_settings WHERE setting_key = 'greg.opencode_workspace'");
         getDB()->exec("DELETE FROM health_checks WHERE check_key = 'hep_collector'");
+        if (is_dir($this->workspace . '/.home')) {
+            $it = new RecursiveIteratorIterator(
+                new RecursiveDirectoryIterator($this->workspace, FilesystemIterator::SKIP_DOTS),
+                RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($it as $file) {
+                $file->isDir() ? @rmdir($file->getPathname()) : @unlink($file->getPathname());
+            }
+        }
+        @rmdir($this->workspace);
         $_SESSION = $this->session;
     }
 
@@ -66,11 +84,11 @@ final class GregObservabilityServiceTest extends TestCase
         $this->assertSame(0, $r['score']);
         $this->assertSame('cold', $r['temperature']);
         $this->assertSame(
-            ['capture', 'homer', 'voipmonitor', 'heplify', 'sipfront', 'rtcp'],
+            ['capture', 'homer', 'voipmonitor', 'heplify', 'sipfront', 'rtcp', 'opencode'],
             array_column($r['parts'], 'key')
         );
-        $this->assertCount(6, $r['missing']);
-        $this->assertCount(6, $r['next']);
+        $this->assertCount(7, $r['missing']);
+        $this->assertCount(7, $r['next']);
         $this->assertSame(100, array_sum(array_column($r['next'], 'gain')));
         $this->assertSame('capture', $r['next'][0]['key']);
         $this->assertStringContainsString('capture target', $r['next'][0]['action']);
@@ -80,14 +98,14 @@ final class GregObservabilityServiceTest extends TestCase
     {
         $r = GregObservabilityService::score($this->signals([
             'capture' => 'on', 'homer' => 'on', 'voipmonitor' => 'on',
-            'heplify' => 'on', 'sipfront' => 'on', 'rtcp' => 'on',
+            'heplify' => 'on', 'sipfront' => 'on', 'rtcp' => 'on', 'opencode' => 'on',
         ]));
         $this->assertSame(100, $r['score']);
         $this->assertSame('hot', $r['temperature']);
         $this->assertSame([], $r['missing']);
         $this->assertSame([], $r['next'], 'nothing to fix when every source is full');
         $this->assertSame(
-            ['capture' => 15, 'homer' => 20, 'voipmonitor' => 20, 'heplify' => 15, 'sipfront' => 15, 'rtcp' => 15],
+            ['capture' => 14, 'homer' => 18, 'voipmonitor' => 18, 'heplify' => 14, 'sipfront' => 14, 'rtcp' => 14, 'opencode' => 8],
             array_column($r['parts'], 'points', 'key')
         );
     }
@@ -101,9 +119,9 @@ final class GregObservabilityServiceTest extends TestCase
         $parts = $this->parts($r);
         $this->assertSame(4, $parts['homer']['points'], 'a failed collector is not full credit');
         $this->assertSame('down', $parts['homer']['state']);
-        $this->assertSame(34, $r['score']);
-        $this->assertCount(4, $r['next']);
-        $this->assertSame(66, array_sum(array_column($r['next'], 'gain')));
+        $this->assertSame(32, $r['score']);
+        $this->assertCount(5, $r['next']);
+        $this->assertSame(68, array_sum(array_column($r['next'], 'gain')));
         $this->assertSame('homer', $r['next'][0]['key']);
         $this->assertSame('/health', $r['next'][0]['url']);
         $this->assertStringContainsString('check the collector', $r['next'][0]['action']);
@@ -113,18 +131,38 @@ final class GregObservabilityServiceTest extends TestCase
     {
         $r = GregObservabilityService::score($this->signals([
             'capture' => 'limited', 'homer' => 'on', 'voipmonitor' => 'limited',
-            'heplify' => 'down', 'sipfront' => 'off', 'rtcp' => 'on',
+            'heplify' => 'down', 'sipfront' => 'off', 'rtcp' => 'on', 'opencode' => 'on',
         ]));
         $sum = array_sum(array_column($r['parts'], 'points'));
         $this->assertSame($sum, $r['score']);
-        $this->assertSame(9 + 20 + 12 + 3 + 0 + 15, $r['score']);
+        $this->assertSame(8 + 18 + 11 + 3 + 0 + 14 + 8, $r['score']);
         $this->assertSame(['sipfront'], array_map(
             fn($part) => $part['key'],
             array_values(array_filter($r['parts'], fn($part) => $part['state'] === 'off'))
         ));
         $this->assertSame(['capture', 'voipmonitor', 'heplify', 'sipfront'], array_column($r['next'], 'key'));
-        $this->assertSame([6, 8, 12, 15], array_column($r['next'], 'gain'));
+        $this->assertSame([6, 7, 11, 14], array_column($r['next'], 'gain'));
         $this->assertSame(100, $r['score'] + array_sum(array_column($r['next'], 'gain')));
+    }
+
+    public function testOpencodeLogsAreSelfDiagnosisNotCallEvidence(): void
+    {
+        $dir = $this->workspace . '/.home/.local/share/opencode/log';
+        mkdir($dir, 0777, true);
+        file_put_contents($dir . '/opencode.log', implode("\n", [
+            'timestamp=2026-10-18T19:23:49.787Z level=INFO run=r1 message=stream providerID=opencode modelID=big-pickle',
+            'timestamp=2026-10-18T19:23:50.530Z level=INFO run=r1 message="llm runtime selected" llm.provider=opencode llm.model=big-pickle',
+            'timestamp=2026-10-18T19:24:00.000Z level=ERROR run=r1 message="provider failed key=sk-abcdefgh12345678"',
+        ]) . "\n");
+
+        $r = GregObservabilityService::report();
+        $parts = $this->parts($r);
+        $this->assertSame('limited', $parts['opencode']['state'], 'a logged error is not full credit');
+        $this->assertSame(5, $parts['opencode']['points']);
+        $this->assertStringContainsString('1 error(s)', $parts['opencode']['detail']);
+        $this->assertStringContainsString('never as call evidence', $parts['opencode']['note']);
+        $this->assertStringNotContainsString('sk-abcdefgh12345678', $parts['opencode']['note'], 'log secrets are redacted');
+        $this->assertStringContainsString('opencode logs explain only your own', GregObservabilityService::promptContext());
     }
 
     public function testCaptureIsLiveOnlyWhenHepConfIsApplied(): void
@@ -136,7 +174,7 @@ final class GregObservabilityServiceTest extends TestCase
 
         $parts = $this->parts(GregObservabilityService::report());
         $this->assertSame('on', $parts['capture']['state']);
-        $this->assertSame(15, $parts['capture']['points']);
+        $this->assertSame(14, $parts['capture']['points']);
         $this->assertStringContainsString('127.0.0.1:9061', $parts['capture']['detail']);
         $this->assertNotContains('capture', array_column(GregObservabilityService::report()['next'], 'key'));
     }
@@ -146,7 +184,7 @@ final class GregObservabilityServiceTest extends TestCase
         $this->setting('hep.mode', 'builtin');
         $parts = $this->parts(GregObservabilityService::report());
         $this->assertSame('limited', $parts['capture']['state']);
-        $this->assertSame(9, $parts['capture']['points']);
+        $this->assertSame(8, $parts['capture']['points']);
         $this->assertStringContainsString('hep.conf', $parts['capture']['detail']);
         $r = GregObservabilityService::report();
         $next = array_column($r['next'], null, 'key');
@@ -163,11 +201,11 @@ final class GregObservabilityServiceTest extends TestCase
 
         $parts = $this->parts(GregObservabilityService::report());
         $this->assertSame('limited', $parts['homer']['state']);
-        $this->assertSame(12, $parts['homer']['points']);
+        $this->assertSame(11, $parts['homer']['points']);
         $this->assertStringContainsString('10.0.0.5:9060', $parts['homer']['detail']);
         $this->assertStringContainsString('no stored health check', $parts['homer']['detail']);
         $next = array_column(GregObservabilityService::report()['next'], null, 'key');
-        $this->assertSame(8, $next['homer']['gain']);
+        $this->assertSame(7, $next['homer']['gain']);
         $this->assertSame('/health', $next['homer']['url']);
         $this->assertStringContainsString('prove it answers', $next['homer']['action']);
     }
@@ -184,10 +222,10 @@ final class GregObservabilityServiceTest extends TestCase
         $st->execute(['hep_collector', 'warn', 'HOMER UI returned 503']);
         $parts = $this->parts(GregObservabilityService::report());
         $this->assertSame('limited', $parts['homer']['state']);
-        $this->assertSame(12, $parts['homer']['points']);
+        $this->assertSame(11, $parts['homer']['points']);
         $this->assertStringContainsString('warning', $parts['homer']['detail']);
         $warnNext = array_column(GregObservabilityService::report()['next'], null, 'key');
-        $this->assertSame(8, $warnNext['homer']['gain']);
+        $this->assertSame(7, $warnNext['homer']['gain']);
 
         $st->execute(['hep_collector', 'fail', 'HOMER UI did not answer']);
         $r = GregObservabilityService::report();
@@ -196,7 +234,7 @@ final class GregObservabilityServiceTest extends TestCase
         $this->assertSame(4, $parts['homer']['points']);
         $this->assertStringContainsString('failed', $parts['homer']['detail']);
         $failNext = array_column($r['next'], null, 'key');
-        $this->assertSame(16, $failNext['homer']['gain']);
+        $this->assertSame(14, $failNext['homer']['gain']);
         $this->assertStringContainsString('check the collector', $failNext['homer']['action']);
     }
 

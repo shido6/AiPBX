@@ -305,6 +305,10 @@ $obsStates = [
                         <label class="u-check-label"><input type="checkbox" class="u-accent" name="greg_council" value="1" <?php echo $greg['council'] ? 'checked' : ''; ?>> <?php echo t('ai_voip_engineer.council_label'); ?></label>
                         <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.council_hint'); ?></div>
                     </div>
+                    <div class="form-group" style="grid-column: 1 / -1;">
+                        <label class="u-check-label"><input type="checkbox" class="u-accent" name="greg_delegate" value="1" <?php echo $greg['delegate'] ? 'checked' : ''; ?>> <?php echo t('ai_voip_engineer.delegate_label'); ?></label>
+                        <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_voip_engineer.delegate_hint'); ?></div>
+                    </div>
                 </div>
 
                 <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">

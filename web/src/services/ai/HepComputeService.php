@@ -164,30 +164,48 @@ final class HepComputeService
     {
         $out = ['cores' => null, 'mem_total' => null, 'mem_used' => 0];
 
-        $cpuMax = @file_get_contents('/sys/fs/cgroup/cpu.max');
-        if (is_string($cpuMax) && preg_match('/^(\d+)\s+(\d+)/', trim($cpuMax), $m) && (int) $m[2] > 0) {
+        $cpuMax = self::read('/sys/fs/cgroup/cpu.max');
+        if ($cpuMax !== null && preg_match('/^(\d+)\s+(\d+)/', trim($cpuMax), $m) && (int) $m[2] > 0) {
             $out['cores'] = max(1, (int) ceil((int) $m[1] / (int) $m[2]));
         } else {
-            $quota = @file_get_contents('/sys/fs/cgroup/cpu/cpu.cfs_quota_us');
-            $period = @file_get_contents('/sys/fs/cgroup/cpu/cpu.cfs_period_us');
+            $quota = self::read('/sys/fs/cgroup/cpu/cpu.cfs_quota_us');
+            $period = self::read('/sys/fs/cgroup/cpu/cpu.cfs_period_us');
             if (is_numeric($quota) && (int) $quota > 0 && is_numeric($period) && (int) $period > 0) {
                 $out['cores'] = max(1, (int) ceil((int) $quota / (int) $period));
             }
         }
 
-        $memMax = @file_get_contents('/sys/fs/cgroup/memory.max');
-        $memNow = @file_get_contents('/sys/fs/cgroup/memory.current');
+        $memMax = self::read('/sys/fs/cgroup/memory.max');
+        $memNow = self::read('/sys/fs/cgroup/memory.current');
         if (is_numeric($memMax) && (int) $memMax > 0) {
             $out['mem_total'] = (int) $memMax;
             $out['mem_used'] = is_numeric($memNow) ? (int) $memNow : 0;
         } else {
-            $limit = @file_get_contents('/sys/fs/cgroup/memory/memory.limit_in_bytes');
-            $usage = @file_get_contents('/sys/fs/cgroup/memory/memory.usage_in_bytes');
+            $limit = self::read('/sys/fs/cgroup/memory/memory.limit_in_bytes');
+            $usage = self::read('/sys/fs/cgroup/memory/memory.usage_in_bytes');
             if (is_numeric($limit) && (int) $limit > 0 && (int) $limit < PHP_INT_MAX / 2) {
                 $out['mem_total'] = (int) $limit;
                 $out['mem_used'] = is_numeric($usage) ? (int) $usage : 0;
             }
         }
         return $out;
+    }
+
+    /**
+     * Read a kernel file only when it exists.
+     *
+     * `@file_get_contents()` hides the warning from the page, but an installed
+     * error handler (bin/smoke.php, and any host that logs warnings) is still
+     * called for a suppressed error — a cgroup v2 path that a container does
+     * not mount would fail every /ai-echo render. Asking is_readable() first
+     * means no warning is raised at all, and a missing file is simply null.
+     */
+    private static function read(string $path): ?string
+    {
+        if (!is_readable($path)) {
+            return null;
+        }
+        $text = @file_get_contents($path);
+        return is_string($text) ? $text : null;
     }
 }

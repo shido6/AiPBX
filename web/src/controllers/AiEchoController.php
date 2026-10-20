@@ -3,6 +3,7 @@ require_once __DIR__ . '/../services/ai/EchoService.php';
 require_once __DIR__ . '/../services/ai/HepSettingsService.php';
 require_once __DIR__ . '/../services/ai/HepComputeService.php';
 require_once __DIR__ . '/../services/ai/OpencodeService.php';
+require_once __DIR__ . '/../services/ai/OpencodeTrafficService.php';
 
 /**
  * /ai-echo — AI → Echo (admin only): the SIP correlation tool, its own section.
@@ -38,6 +39,12 @@ class AiEchoController extends BaseController
                         $message = HepSettingsService::save($_POST)['message'];
                     } elseif (isset($_POST['save_opencode'])) {
                         $message = OpencodeService::save($_POST)['message'];
+                    } elseif (isset($_POST['purge_opencode_traffic'])) {
+                        $removed = OpencodeTrafficService::purge();
+                        writeAuditLog('echo', 'opencode_traffic', 0,
+                            'purged ' . $removed . ' remote-model exchange(s)', 'delete',
+                            $_SESSION['user_id'] ?? null);
+                        $message = sprintf(t('ai_echo.traffic_purged'), $removed);
                     } elseif (isset($_POST['propose_opencode'])) {
                         $kind = ($_POST['opencode_kind'] ?? 'tool') === 'research' ? 'research' : 'tool';
                         $proposal = OpencodeService::propose((string) ($_POST['opencode_task'] ?? ''), $kind);
@@ -64,6 +71,15 @@ class AiEchoController extends BaseController
 
         $recent = EchoService::recentRuns(5);
         $hep = HepSettingsService::settings();
+        $trafficId = (int) ($_GET['oc_traffic'] ?? 0);
+        $trafficDetail = $trafficId > 0 ? OpencodeTrafficService::find($trafficId) : null;
+        if ($trafficId > 0 && $trafficDetail === null && $error === '') {
+            $error = t('ai_echo.traffic_missing');
+        }
+        $trafficStats = OpencodeTrafficService::stats();
+        $trafficPerPage = 25;
+        $trafficPages = max(1, (int) ceil($trafficStats['total'] / $trafficPerPage));
+        $trafficPage = max(1, min($trafficPages, (int) ($_GET['oc_page'] ?? 1)));
         static::renderPage('ai_echo/index', [
             'echo'        => EchoService::settings(),
             'setup_steps' => EchoService::setupSteps(),
@@ -79,6 +95,12 @@ class AiEchoController extends BaseController
                 $hep['mode'] === 'both' ? (int) $hep['voipmonitor_port'] : HepSettingsService::VOIPMONITOR_PORT),
             'oc'          => OpencodeService::settings(),
             'oc_recent'   => OpencodeService::recent(8),
+            'traffic'     => OpencodeTrafficService::recent($trafficPerPage, ($trafficPage - 1) * $trafficPerPage),
+            'traffic_stats' => $trafficStats,
+            'traffic_detail' => $trafficDetail,
+            'traffic_id'  => $trafficId,
+            'traffic_page' => $trafficPage,
+            'traffic_pages' => $trafficPages,
             'csrf_token'  => getCSRFToken(),
         ], ['title' => t('ai_echo.title'), 'message' => $message, 'error' => $error]);
     }
