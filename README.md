@@ -322,3 +322,11 @@ features: everything in the installer is in every copy.
 ## Author & Creator
 
 **Mahir Gül** · [mhrgl.com](https://mhrgl.com) · [@mahirgul](https://github.com/mahirgul)
+
+The PBX, the portal and the mobile apps are his work and that of AiPBX's contributors. That is the
+foundation, and it is credited on purpose.
+
+**EchoGuard's layer** — the plain-English change engine, Greg the AI VoIP engineer, and the Echo,
+Relay and Forge agents — is built by **Kaiel**: [echoguard.ca](https://echoguard.ca) ·
+[github.com/shido6](https://github.com/shido6). The commits that made it are in this repository's
+history, one reason per change.
