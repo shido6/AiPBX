@@ -20,7 +20,10 @@ managers: yesterday's calls and faxes and the state of every check.
 | Outgoing faxes | 1 h | faxes waiting to be sent for over an hour |
 | DHCP / TFTP / FTP | 15 min | switched on, but the service does not run |
 | Server address | 60 min | a stored address (server, phones, coturn, mDNS) is not this server's any more: see [Network settings](network-settings.md#when-the-servers-ip-address-changed) |
+| SSH key-only login | daily | `sshd` still accepts a password or keyboard-interactive login (warning), or refuses public keys (failed) — the rule for a centralized collector or portal; information when only root may use a key, and when the configuration cannot be read. It reports, never edits `sshd`. See [Security](security.md#ssh) |
 | Local AI service | 15 min | installed and enabled, but not running |
+| Call quality (RTCP) | 5 min | two RTCP reports at 5 %+ packet loss on a call (warning); at least three calls and half of the measured calls poor (failed). Information when there are no reports, *not used* when RTCP goes to a remote collector. Every incident is kept with its RTCP samples as `evidence #N`, cited in the notice. See [Signaling](signaling.md#call-quality-rtcp) |
+| SIP correlation collector | 15 min | HOMER or VoIPmonitor is configured but its web UI does not answer (failed), answers with a server error (warning), or no UI address is set and the HEP port cannot be proven open (information only) |
 | TLS certificate | daily | warning 14 days before it ends, failed 3 days before |
 | SIP call test | 1 h | With Sipfront keys, its latest test run is quoted instead of this check. Otherwise this server sends a real SIP OPTIONS to itself (SIPp when installed, otherwise a built-in probe): OK on 200, 401 or 407, warning when nothing answers. `tcpdump` records the exchange and the capture is parsed — methods, status codes and RTP — and the result says which source it used (`capture: pcap` or the engine's own output). |
 | Daily backup | daily | the newest file in `/var/backups/aipbx-daily` is older than 26 h |

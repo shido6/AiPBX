@@ -9,6 +9,25 @@ the git tag message and the GitHub Release notes, and installations show it as
 
 Remote monitoring and operations:
 
+- **Observability coverage: the more Greg can see, the better he diagnoses**: `/ai-voip-engineer`
+  now shows a gauge (0–100, as a pie and a temperature bar) built from what is actually installed —
+  HEP capture on this PBX, HOMER, VoIPmonitor, a local heplify-server, Sipfront keys with Echo on,
+  and local RTCP reports. A configured but unreachable collector earns little; a missing one earns
+  nothing and is named. The same map goes into Greg's prompt, so he cites what he can read, says
+  plainly when a collector is configured but not queryable, and asks for a Call-ID instead of
+  inventing a SIP ladder. Detection is passive: saved settings, the last stored health check and
+  fixed install paths — no scan, no login, no shell. This gauge is separate from the handover
+  temperature: one is what he was told, the other is what he can see. A next-step list under the
+  gauge names each source still short of full, the points it would add, and the one action that
+  earns them.
+- **Greg watches and helps set up HOMER and VoIPmonitor**: the Health page now has a **SIP
+  correlation collector** check (every 15 minutes) that follows Echo's target — HOMER, VoIPmonitor,
+  an external collector, or both — and asks the collector's own web UI for an answer. A sign-in
+  redirect or 401 is healthy, a 5xx is a warning, no answer is a failure and sends the normal
+  health alarm; without a UI address only a TCP listener can be proven, so a UDP-only collector is
+  reported as information instead of a false alarm. Echo shows the stored result, and Greg quotes
+  it and can walk an administrator through installation and the VoIPmonitor HEP settings using the
+  same commands the page shows — he cannot run them or change the remote collector.
 - **Cloud connector** (`aipbx-agent`, [docs/connector.md](docs/connector.md)): this installation can
   register as a node of an EchoGuard-compatible portal and be seen and operated from there.
   Outbound-only (no inbound port, no port forwarding), four allowlisted operations — `snapshot`,
@@ -28,7 +47,9 @@ Remote monitoring and operations:
   (the persona then answers with its own model), and the same card can send the persona into a
   Google Meet, Zoom or Teams call through Anam's Meetings API — now or up to seven days ahead,
   group calls waiting to be addressed by name. The card links to anam.ai/pricing and states how a
-  minute is counted, because the avatar is billed separately from the PBX.
+  minute is counted, because the avatar is billed separately from the PBX. Sessions also carry
+  Anam's AI-avatar disclosure (`sessionOptions.showAIAvatarDisclosure`), bound to the session token
+  so the browser cannot drop it, and the video stage itself is labelled *AI avatar*.
 - **Greg: the onboarding brief** (`web/src/services/GregBrief.php`): Greg now asks, once, on the
   first answer of a conversation, for the one document a VoIP engineer would want on their first
   morning — what the business does, who calls, which numbers matter, the carriers, the call flows
@@ -41,6 +62,119 @@ Remote monitoring and operations:
   disagrees with live data, and never to quote secrets from it. Admin-only page and downloads, the
   120,000-character limit refused rather than truncated, and saves and removals audited without
   the content.
+- **Greg: onboarding as a conversation** (`web/src/services/GregOnboardingService.php`): when no
+  handover document exists, saying "onboard me" — or the *Onboard him in chat* button — starts the
+  six questions a new engineer asks: the business, hours and the line that matters, flows that must
+  not break, carriers, people, and what good looks like. One at a time, and each answer is written
+  into the same `BRIEF.md` as it arrives, in a marked section: closing the tab loses nothing, a
+  second answer replaces the block instead of copying it, and the file can still be downloaded and
+  handed to a human engineer. A real question mid-interview is answered normally and the interview
+  waits; "skip" passes, "later" stops and keeps what was written, and running it again asks only
+  what is missing. Admin-only, audited with counts rather than answers, and the card shows how many
+  of the six the file already holds.
+- **Greg: the relief engineer — quiet-hours handoff** (`web/src/services/GregHandoffService.php`):
+  Greg sleeps inside his quiet hours, and a relief engineer — **Mahir Gul** by default — takes the
+  phones. The handoff is a real event: the last ten handoffs are kept in `AGENTS.md`, each is written
+  to the captain's log and audited, and it is recorded once rather than on every message. Both
+  engineers read the same brief, notes and log, but each has his own model source, so the night can
+  run on a different provider with its own credentials — the same source shares Greg's key, and its
+  blind spots. The relief engineer has his own persona (the night shift, a second pair of eyes that
+  says when it disagrees with what was written), and the phones can be handed over or taken back
+  manually until the next edge of the quiet window. Configured under *AI → VoIP Engineer → Relief
+  engineer*; the chat greeting names whoever is on duty.
+- **Greg: the two engineers agree before anyone hears an answer** (`web/src/services/GregCouncilService.php`):
+  an answer is no longer one model's opinion. The engineer on duty drafts it; the other reads the
+  question, the draft and the same working context — health, CDRs, RTCP evidence, brief, notes — and
+  either agrees or says what is wrong. A disagreement is settled by the on-duty engineer in one more
+  pass, so the administrator hears one engineer, never two. If the reviewer is unavailable or cannot
+  follow the review format, the draft still goes out and is marked unreviewed; if the settling pass
+  fails, the reviewer's correction is used rather than a draft it called wrong. Chat shows a quiet
+  line when both stand behind the answer and when it took a reconciliation, and the latter (plus any
+  unsettled answer) is audited without its content. One extra model call per reply, on by default and
+  switchable under *AI → VoIP Engineer → Relief engineer* — no relief engineer, no second reader.
+- **Greg: how ready is he — the handover gauge** (`web/src/services/GregReadinessService.php`,
+  `web/src/services/GregSystems.php`): the model is not the bottleneck; what it has been told is.
+  The *AI → VoIP Engineer* page now opens with a 0–100 temperature — a percentage, a bar and a
+  cold/cool/warm/hot reading — that names exactly what is missing: the business brief (who calls,
+  what the business does, when it is open, where it operates, why customers stay) and the systems
+  map (carriers and trunks, the CRM behind them, monitoring and alerting, ownership, and what is
+  deliberately out of scope). The business side comes from the six onboarding answers or an
+  uploaded brief; the systems side is a second markdown document, with its own template, download,
+  upload and editor, and it is read into Greg's prompt before every answer once it exists. The
+  score is computed locally from the files — no model call, nothing written on a page view — so a
+  good model with neither map is told plainly that it is guessing, and an administrator sees the
+  gap in Greg's chat too until both maps exist.
+- **Greg: the Asterisk reference, fetched from upstream** (`web/src/services/AsteriskDocsService.php`):
+  the two maps describe this installation; they should not have to explain what PJSIP is. A new card
+  under *AI → VoIP Engineer* downloads 26 curated pages of the official documentation
+  (`asterisk/documentation`: PJSIP, NAT, dialplan, CDRs, AMI/ARI, queues, hangup causes, logging,
+  troubleshooting) into `/var/lib/aipbx/greg/asterisk-docs`, where an offline box keeps them.
+  Nothing is fetched on a page view or a chat message: the administrator downloads or refreshes it,
+  a page that fails keeps its previous copy, and a refresh that reaches nothing leaves the cache
+  untouched. Greg gets at most three cited excerpts (about 4 KB), and only when the question shares
+  words with the manual — a Turkish "tek yönlü ses" is mapped to RTP/media/NAT terms, so the English
+  docs are still reachable — and every excerpt names its source URL. Content stays CC BY-SA 3.0 US,
+  credited in the card and in the prompt. The reference is deliberately excluded from the readiness
+  percentage: upstream knowledge is not a substitute for the two maps, it just stops Greg from
+  asking the administrator to explain Asterisk.
+- **Greg: HOMER or VoIPmonitor as correlation assistance** (`web/src/services/ai/HepSettingsService.php`):
+  the HEP card under *AI → Echo* now offers **VoIPmonitor** beside **HOMER** as the place Asterisk
+  sends SIP/RTCP, with a neutral correlation UI address Greg quotes when a Call-ID needs a call flow.
+  VoIPmonitor's sniffer must enable HEP (`hep = yes`, `hep_bind_ip`, `hep_bind_port = 9060`); the
+  page shows that snippet, keeps HOMER's one-command setup, and states both licensing facts — the
+  sniffer is GPL, the web GUI is licensed per channel. HEP over UDP is still unencrypted. The old
+  `hep.homer_url` setting is migrated to `hep.ui_url` on the next save. Greg does not query either
+  tool: his prompt names the chosen assistant and tells him to point the administrator to it
+  instead of claiming he looked. The systems-map template now asks for the correlation tool, its
+  UI address and its retention.
+- **Greg: HOMER *and* VoIPmonitor at the same time** (`web/src/services/ai/HepSettingsService.php`,
+  `signaling/aipbx_signaling/forward.py`): Asterisk has one `capture_address`, so choosing **both**
+  points it at the built-in daemon and the daemon forwards an unchanged copy of every HEPv3
+  datagram to HOMER (9060) and VoIPmonitor (9062). The list lives in
+  `/var/lib/aipbx/signaling/forward.json`, is re-read within a second without a restart, and is
+  removed when the target changes — no stale copies keep flowing. Both collectors must already be
+  running and need distinct UDP ports; local rows are still written, so Greg's own call counts and
+  SIP errors keep working. The card shows a host, port and UI address for each, opens either UI,
+  and tells Greg both are in use and that he cannot query them. It also states the cost — each
+  collector processes the full stream, roughly doubling their CPU/RAM/disk use — and that one or
+  both may run on another host, leaving only forwarding on the PBX. Before the picker, the card
+  measures this host's cores, one-minute load, available RAM and free data-disk space (including a
+  cgroup quota when containerised) and gives separate one-collector and both-collector verdicts;
+  the thresholds are planning gates from HOMER's and VoIPmonitor's published sizing, not a
+  benchmark. Greg receives the same measured capacity, so he does not recommend both locally when
+  the host is below the floor.
+- **A centralized collector needs SSH keys, not passwords**: when HOMER or VoIPmonitor runs on
+  another host, Greg now asks for key-only SSH before walking through the install — `ssh-keygen`,
+  `ssh-copy-id`, a login with `PasswordAuthentication=no` — and never asks for or suggests a
+  password. A new *SSH key-only login* health check (daily) reads `sshd -T` and warns while
+  password or keyboard-interactive login is accepted, fails if public keys are refused, and reports
+  information when only root may use a key or the configuration cannot be read. It never edits
+  `sshd`; the installer's warning now fires for any password login, not only root's, and
+  [docs/security.md](docs/security.md#ssh) carries the drop-in and the lockout-safe order. Keys are
+  recommended for every installation and required for a central host.
+- **Greg senses a call going bad — from RTCP, not from audio**: the signaling daemon now keeps the
+  packet-loss and jitter counters of every RTCP Sender/Receiver Report
+  (`rtcp_fraction_lost`, `rtcp_lost`, `rtcp_jitter`, `rtcp_ssrc`). A call is *poor* after two
+  reports at 5 %+ loss, *fair* above 1 %; one spike is not enough. A new **Call quality (RTCP)**
+  health check warns (and fails when the loss is widespread), Greg quotes the bad calls in his
+  prompt and is told plainly that he did not hear them, and a five-minute quality cron makes the
+  one safe automatic change: a lossy trunk whose media peer matches `pbx_trunks.ip_address` moves
+  to the end of its outbound route chain for **new calls only** — live calls keep their channel.
+  The move is audited, announced, limited to once per trunk per six hours, skipped while another
+  outbound change waits for Apply, rolled back if the dialplan reload fails, and can be switched
+  off under *AI → VoIP Engineer*. Local phones, Wi-Fi and a carrier that is bad on every trunk
+  become a notice for a human instead. No audio is captured or analysed. Sensing needs the
+  built-in capture (`builtin` or `both`); with a remote collector the check says so.
+- **Greg keeps the proof, not just the conclusion**: each quality incident is copied to
+  `pbx_quality_evidence` with its RTCP samples, the peer and time window, the thresholds, the
+  trunk match and the action taken, and a dedupe key so one incident is one record. Notices and
+  alarm e-mails cite `Evidence #N`; Greg's prompt carries the last five trails and requires him to
+  name the evidence id, source, peer, window and report count before he summarizes. The source is
+  written down as `res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events (proto='rtcp')`, and
+  `aipbx_quality.php --report=24` / `--evidence=N` print the day's incidents or one full record.
+  Evidence survives the raw rows' shorter retention (180 days by default, 7–3650 via
+  `call_quality.evidence_days`). With the automatic fix switched off he still keeps the evidence and
+  raises the notice; he just leaves the route alone.
 - **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
   `pbx_signaling_events` and can forward them to the same portal. Off by default.
 

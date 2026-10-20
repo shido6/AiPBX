@@ -1,6 +1,6 @@
 <?php
 /** @var array $echo @var string $setup_steps @var array $runs @var ?string $runs_error
- *  @var ?array $last_run @var string $csrf_token */
+ *  @var ?array $last_run @var string $csrf_token @var array $hep_compute */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 ?>
 <div class="card">
@@ -128,12 +128,82 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 <div class="card" style="margin-top: 16px;">
     <div class="card-header">
         <div class="card-title"><i class="fas fa-satellite-dish u-primary"></i> <?php echo t('ai_echo.hep_title'); ?></div>
-        <span class="badge <?php echo $hep['enabled'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11">
+        <span class="badge <?php echo $hep['enabled'] ? 'badge-success' : 'badge-secondary'; ?> u-fs-11"
+              style="white-space:normal;line-height:1.4;text-align:left;max-width:100%;">
             <?php echo $h(HepSettingsService::describe($hep)); ?>
         </span>
     </div>
     <div style="padding: 0 20px 20px;">
         <div class="u-muted u-fs-12" style="margin-bottom: 14px;"><?php echo t('ai_echo.hep_intro'); ?></div>
+
+        <div style="border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+            <div class="u-strong u-fs-12" style="margin-bottom:6px;">
+                <i class="fas fa-server"></i> <?php echo t('ai_echo.hep_compute_title'); ?>
+            </div>
+            <?php if ($hep_compute['measured']): ?>
+                <div style="display:flex;gap:22px;flex-wrap:wrap;margin-bottom:8px;">
+                    <div>
+                        <div class="u-muted u-fs-10"><?php echo t('ai_echo.hep_compute_cpu'); ?></div>
+                        <div class="u-strong u-fs-12">
+                            <?php echo sprintf(t('ai_echo.hep_compute_cores'), (int) $hep_compute['cores']); ?>
+                            <span class="u-muted u-fs-11">· <?php echo sprintf(t('ai_echo.hep_compute_load'), $hep_compute['load_pct'] === null ? '—' : (string) $hep_compute['load_pct']); ?></span>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="u-muted u-fs-10"><?php echo t('ai_echo.hep_compute_ram'); ?></div>
+                        <div class="u-strong u-fs-12">
+                            <?php echo sprintf(t('ai_echo.hep_compute_of'),
+                                HepComputeService::human((int) $hep_compute['mem_available']),
+                                HepComputeService::human((int) $hep_compute['mem_total'])); ?>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="u-muted u-fs-10"><?php echo t('ai_echo.hep_compute_disk'); ?></div>
+                        <div class="u-strong u-fs-12">
+                            <?php echo sprintf(t('ai_echo.hep_compute_of'),
+                                HepComputeService::human((int) $hep_compute['disk_free']),
+                                HepComputeService::human((int) $hep_compute['disk_total'])); ?>
+                        </div>
+                    </div>
+                </div>
+                <?php
+                $tone = ['ok' => 'var(--success)', 'tight' => 'var(--warning)', 'low' => 'var(--danger)'];
+                $icon = ['ok' => 'fa-circle-check', 'tight' => 'fa-triangle-exclamation', 'low' => 'fa-circle-xmark'];
+                foreach (['one', 'both'] as $kind):
+                    $level = $hep_compute[$kind]['level'];
+                    ?>
+                    <div class="u-fs-11" style="color:<?php echo $tone[$level] ?? 'var(--text-muted)'; ?>;margin-bottom:2px;">
+                        <i class="fas <?php echo $icon[$level] ?? 'fa-circle-info'; ?>"></i>
+                        <span class="u-strong"><?php echo t('ai_echo.hep_compute_' . $kind . '_label'); ?>:</span>
+                        <?php echo t('ai_echo.hep_compute_' . $kind . '_' . $level); ?>
+                    </div>
+                <?php endforeach; ?>
+                <div class="u-muted u-fs-10" style="margin-top:6px;"><?php echo t('ai_echo.hep_compute_note'); ?></div>
+            <?php else: ?>
+                <div class="u-muted u-fs-11"><?php echo t('ai_echo.hep_compute_unavailable'); ?></div>
+            <?php endif; ?>
+        </div>
+
+        <div class="u-muted u-fs-11" style="margin-bottom: 12px;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap;">
+            <i class="fas fa-heart-pulse"></i>
+            <span>
+                <span class="u-strong"><?php echo t('ai_echo.hep_health'); ?>:</span>
+                <?php if ($hep_health === null): ?>
+                    <?php echo t('ai_echo.hep_health_none'); ?>
+                <?php else: ?>
+                    <span class="badge badge-<?php echo $hep_health['status'] === 'ok' ? 'success' : ($hep_health['status'] === 'fail' ? 'danger' : ($hep_health['status'] === 'warn' ? 'warning' : 'secondary')); ?>">
+                        <?php echo $h(t('health.status_' . $hep_health['status'])); ?>
+                    </span>
+                    <?php if ($hep_health['checked_at'] !== null): ?>
+                        <span class="u-muted"><?php echo $h($hep_health['checked_at']); ?></span>
+                    <?php endif; ?>
+                    <?php if ($hep_health['message'] !== ''): ?>
+                        <span style="display:block;margin-top:2px;"><?php echo $h($hep_health['message']); ?></span>
+                    <?php endif; ?>
+                <?php endif; ?>
+                <a href="/health" class="u-fs-11"><?php echo t('ai_echo.hep_health_link'); ?></a>
+            </span>
+        </div>
 
         <div class="u-muted u-fs-11" style="margin-bottom: 12px;">
             <?php if (!$hep_current['exists']): ?>
@@ -152,7 +222,7 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
                 <div class="form-group">
                     <label class="form-label"><?php echo t('ai_echo.hep_mode'); ?></label>
                     <select class="form-control" name="hep_mode">
-                        <?php foreach (['builtin', 'homer', 'external', 'off'] as $m): ?>
+                        <?php foreach (['builtin', 'homer', 'voipmonitor', 'both', 'external', 'off'] as $m): ?>
                             <option value="<?php echo $m; ?>" <?php echo $hep['mode'] === $m ? 'selected' : ''; ?>>
                                 <?php echo t('ai_echo.hep_mode_' . $m); ?>
                             </option>
@@ -160,16 +230,17 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
                     </select>
                 </div>
                 <div class="form-group">
-                    <label class="form-label"><?php echo t('ai_echo.hep_homer_url'); ?></label>
-                    <input type="url" class="form-control" name="hep_homer_url" value="<?php echo $h($hep['homer_url']); ?>" placeholder="http://homer.local:9080">
+                    <label class="form-label"><?php echo t('ai_echo.hep_ui_url'); ?></label>
+                    <input type="url" class="form-control" name="hep_ui_url" value="<?php echo $h($hep['form_ui_url']); ?>" placeholder="http://homer.local:9080">
+                    <div class="u-muted u-fs-11 u-mt-4"><?php echo t('ai_echo.hep_ui_hint'); ?></div>
                 </div>
                 <div class="form-group">
                     <label class="form-label"><?php echo t('ai_echo.hep_host'); ?></label>
-                    <input type="text" class="form-control" name="hep_host" value="<?php echo $h($hep['host']); ?>" placeholder="127.0.0.1">
+                    <input type="text" class="form-control" name="hep_host" value="<?php echo $h($hep['form_host']); ?>" placeholder="127.0.0.1">
                 </div>
                 <div class="form-group">
                     <label class="form-label"><?php echo t('ai_echo.hep_port'); ?></label>
-                    <input type="text" class="form-control" name="hep_port" inputmode="numeric" value="<?php echo (int) $hep['port']; ?>">
+                    <input type="text" class="form-control" name="hep_port" inputmode="numeric" value="<?php echo (int) $hep['form_port']; ?>">
                 </div>
                 <div class="form-group">
                     <label class="form-label"><?php echo t('ai_echo.hep_password'); ?></label>
@@ -182,15 +253,87 @@ $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
                 </div>
             </div>
 
+            <div class="u-muted u-fs-11" style="margin:-4px 0 12px;"><?php echo t('ai_echo.hep_single_hint'); ?></div>
+
+            <details style="margin-bottom:14px;border:1px solid var(--border-color);border-radius:8px;padding:10px 12px;" <?php echo $hep['mode'] === 'both' ? 'open' : ''; ?>>
+                <summary class="u-strong u-fs-12" style="cursor:pointer;">
+                    <i class="fas fa-layer-group"></i> <?php echo t('ai_echo.hep_both_title'); ?>
+                </summary>
+                <div class="u-muted u-fs-11" style="margin:8px 0 12px;"><?php echo t('ai_echo.hep_both_hint'); ?></div>
+                <div class="u-fs-11" style="color:var(--warning);margin-bottom:12px;">
+                    <i class="fas fa-microchip"></i> <?php echo t('ai_echo.hep_both_cost'); ?>
+                </div>
+
+                <div class="u-strong u-fs-12" style="margin-bottom:6px;">HOMER</div>
+                <div class="u-grid-2" style="gap:12px;">
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_echo.hep_host'); ?></label>
+                        <input type="text" class="form-control" name="hep_homer_host" value="<?php echo $h($hep['homer_host']); ?>" placeholder="127.0.0.1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_echo.hep_port'); ?></label>
+                        <input type="text" class="form-control" name="hep_homer_port" inputmode="numeric" value="<?php echo (int) $hep['homer_port']; ?>">
+                    </div>
+                    <div class="form-group" style="grid-column:1/-1;">
+                        <label class="form-label"><?php echo t('ai_echo.hep_ui_url'); ?></label>
+                        <input type="url" class="form-control" name="hep_homer_ui_url" value="<?php echo $h($hep['homer_ui_url']); ?>" placeholder="http://127.0.0.1:9080">
+                    </div>
+                </div>
+
+                <div class="u-strong u-fs-12" style="margin:10px 0 6px;">VoIPmonitor</div>
+                <div class="u-grid-2" style="gap:12px;">
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_echo.hep_host'); ?></label>
+                        <input type="text" class="form-control" name="hep_voipmonitor_host" value="<?php echo $h($hep['voipmonitor_host']); ?>" placeholder="127.0.0.1">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('ai_echo.hep_port'); ?></label>
+                        <input type="text" class="form-control" name="hep_voipmonitor_port" inputmode="numeric" value="<?php echo (int) $hep['voipmonitor_port']; ?>">
+                    </div>
+                    <div class="form-group" style="grid-column:1/-1;">
+                        <label class="form-label"><?php echo t('ai_echo.hep_ui_url'); ?></label>
+                        <input type="url" class="form-control" name="hep_voipmonitor_ui_url" value="<?php echo $h($hep['voipmonitor_ui_url']); ?>" placeholder="http://127.0.0.1:8080">
+                    </div>
+                </div>
+            </details>
+
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:4px;">
                 <button type="submit" name="save_hep" value="1" class="btn btn-primary"><i class="fas fa-save"></i> <?php echo t('ai_echo.hep_apply'); ?></button>
                 <button type="submit" name="hep_test" value="1" class="btn btn-secondary"><i class="fas fa-plug-circle-check"></i> <?php echo t('ai_echo.hep_test'); ?></button>
+                <?php if ($hep['mode'] === 'both'): ?>
+                    <?php foreach ($hep['targets'] as $target): ?>
+                        <?php if ($target['ui_url'] !== ''): ?>
+                            <a class="btn btn-secondary btn-sm" href="<?php echo $h($target['ui_url']); ?>" target="_blank" rel="noopener noreferrer">
+                                <i class="fas fa-arrow-up-right-from-square"></i> <?php echo $h($target['label']); ?> UI
+                            </a>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                <?php elseif ($hep['ui_url'] !== ''): ?>
+                    <a class="btn btn-secondary btn-sm" href="<?php echo $h($hep['ui_url']); ?>" target="_blank" rel="noopener noreferrer">
+                        <i class="fas fa-arrow-up-right-from-square"></i> <?php echo t('ai_echo.hep_open_ui'); ?>
+                    </a>
+                <?php endif; ?>
             </div>
         </form>
 
         <div class="u-muted u-fs-12" style="margin-top:14px;border-top:1px solid var(--border-color);padding-top:12px;">
-            <div class="u-strong u-fs-12" style="margin-bottom:6px;"><?php echo t('ai_echo.hep_setup_homer'); ?></div>
-            <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($homer_cmd); ?></pre>
+            <?php if ($hep['mode'] === 'both'): ?>
+                <div class="u-strong u-fs-12" style="margin-bottom:6px;"><?php echo t('ai_echo.hep_setup_both'); ?></div>
+                <div class="u-fs-11" style="margin-bottom:3px;">HOMER:</div>
+                <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($homer_cmd); ?></pre>
+                <div class="u-fs-11" style="margin-bottom:3px;">VoIPmonitor:</div>
+                <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($voipmonitor_cfg); ?></pre>
+                <div class="u-muted u-fs-11" style="margin-bottom:8px;"><?php echo t('ai_echo.hep_voipmonitor_license'); ?></div>
+            <?php elseif ($hep['mode'] === 'voipmonitor'): ?>
+                <div class="u-strong u-fs-12" style="margin-bottom:6px;"><?php echo t('ai_echo.hep_setup_voipmonitor'); ?></div>
+                <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($voipmonitor_cfg); ?></pre>
+                <div class="u-muted u-fs-11" style="margin-bottom:8px;"><?php echo t('ai_echo.hep_voipmonitor_license'); ?></div>
+            <?php elseif ($hep['mode'] === 'homer'): ?>
+                <div class="u-strong u-fs-12" style="margin-bottom:6px;"><?php echo t('ai_echo.hep_setup_homer'); ?></div>
+                <pre style="background:var(--bg-main);padding:10px;border-radius:6px;white-space:pre-wrap;font-size:11px;margin:0 0 8px;"><?php echo $h($homer_cmd); ?></pre>
+            <?php else: ?>
+                <div class="u-muted u-fs-11" style="margin-bottom:8px;"><?php echo t('ai_echo.hep_setup_other'); ?></div>
+            <?php endif; ?>
             <div style="color: var(--warning);"><i class="fas fa-shield-halved"></i> <?php echo t('ai_echo.hep_warning_external'); ?></div>
         </div>
     </div>

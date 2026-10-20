@@ -13,6 +13,9 @@
  */
 require_once __DIR__ . '/../SipProbeService.php';
 require_once __DIR__ . '/../ai/SipfrontClient.php';
+require_once __DIR__ . '/../ai/HepSettingsService.php';
+require_once __DIR__ . '/../SshAccessService.php';
+require_once __DIR__ . '/../CallQualityService.php';
 
 final class HealthChecks
 {
@@ -33,7 +36,10 @@ final class HealthChecks
         'fax_queue' => 60,
         'network_services' => 15,
         'server_address' => 60,
+        'ssh_access' => 1440,
         'local_ai' => 15,
+        'hep_collector' => 15,
+        'call_quality' => 5,
         'certificate' => 1440,
         'backup' => 1440,
         'installation' => 1440,
@@ -61,7 +67,10 @@ final class HealthChecks
                 'fax_queue' => self::faxQueue(),
                 'network_services' => self::networkServices(),
                 'server_address' => self::serverAddress(),
+                'ssh_access' => self::sshAccess(),
                 'local_ai' => self::localAi(),
+                'hep_collector' => self::hepCollector(),
+                'call_quality' => self::callQuality(),
                 'certificate' => self::certificate(),
                 'backup' => self::backup(),
                 'installation' => self::installation(),
@@ -74,6 +83,56 @@ final class HealthChecks
     }
 
     // ------------------------------------------------------------------ checks
+
+    /** HOMER / VoIPmonitor reachability, from the target Echo is configured for. */
+    private static function hepCollector(): array
+    {
+        return HepSettingsService::health();
+    }
+
+    /**
+     * RTCP packet loss on recent calls. Read-only: the automatic trunk move
+     * happens in the quality cron, never here, so a health run (and the
+     * self-test) cannot change a route.
+     */
+    private static function callQuality(): array
+    {
+        if (!CallQualityService::available()) {
+            return ['off', t('health.msg_quality_off')];
+        }
+        $summary = CallQualityService::summary();
+        if ($summary['measured'] === 0) {
+            return ['info', t('health.msg_quality_none')];
+        }
+        if ($summary['poor'] > 0) {
+            $worst = $summary['worst'];
+            $loss = sprintf('%.2f%%', $worst['verdict']['loss_pct']);
+            $where = $worst['trunk']['trunk_name'] ?? (string) ($worst['peers'][0] ?? 'unknown peer');
+            $widespread = $summary['poor'] >= 3 && $summary['poor'] * 2 >= $summary['measured'];
+            if ($widespread) {
+                return ['fail', sprintf(t('health.msg_quality_fail'), $summary['poor'], $summary['measured'])];
+            }
+            return ['warn', sprintf(t('health.msg_quality_warn'), $summary['poor'], $summary['measured'], $loss, $where)];
+        }
+        return ['ok', sprintf(t('health.msg_quality_ok'), $summary['measured'])];
+    }
+
+    /**
+     * Remote login for a centralized installation: keys only, never a
+     * password. Read-only — the check never edits sshd, because a wrong line
+     * there locks the administrator out of the machine.
+     */
+    private static function sshAccess(): array
+    {
+        if (!SshAccessService::installed()) {
+            return ['off', t('health.msg_ssh_off')];
+        }
+        $cfg = SshAccessService::effective();
+        if ($cfg === null) {
+            return ['info', t('health.msg_ssh_unknown')];
+        }
+        return SshAccessService::verdict($cfg);
+    }
 
     private static function asterisk(): array
     {
@@ -191,9 +250,9 @@ final class HealthChecks
         if (!$r['ran']) {
             return ['warn', t('health.msg_sip_calltest_failed')];
         }
-        $engine = t('health.probe_engine_' . ($r['engine'] ?? 'builtin'));
+        $engine = t('health.probe_engine_' . $r['engine']);
         $code = (int) ($r['code'] ?? 0);
-        $cap = $r['capture'] ?? [];
+        $cap = $r['capture'];
         $captured = sprintf(
             t('health.msg_sip_calltest_capture'),
             (int) ($cap['sip_messages'] ?? 0),

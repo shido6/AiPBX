@@ -386,7 +386,7 @@ ln -sf "$INSTALL_DIR/web" /var/www/html
 # fax processing).
 # A root-only 750 bin/ silently broke *60/*72 because System(... &) logs nothing.
 chmod 755 "$INSTALL_DIR/web/bin"
-for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php greg_watch.php aipbx_ops.php; do
+for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php aipbx_quality.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php greg_watch.php aipbx_ops.php; do
     if [[ -f "$INSTALL_DIR/web/bin/$script" ]]; then
         ln -sf "$INSTALL_DIR/web/bin/$script" "/usr/local/bin/$script"
         chmod 755 "$INSTALL_DIR/web/bin/$script"
@@ -428,6 +428,10 @@ cat > /etc/cron.d/aipbx << 'CRON'
 
 # Greg (AI -> AI VoIP Engineer): health results become his notices. Silent when disabled.
 7 * * * * root /usr/local/bin/greg_watch.php >/dev/null 2>&1
+
+# Call quality (RTCP): sustained packet loss becomes a notice, and a lossy trunk
+# moves to the backup position for new calls. Silent when there is nothing to do.
+*/5 * * * * root /usr/local/bin/aipbx_quality.php >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/aipbx
 
@@ -1033,6 +1037,9 @@ if [ -d "$INSTALL_DIR/signaling" ]; then
     if command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-pymysql
     fi
+    # The portal writes the both-mode fan-out list here (www-data); the daemon
+    # reads it as root. Only the file is shared — the daemon has no other state.
+    install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/signaling
     if [ -d /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         install -o root -g root -m 0644 "$INSTALL_DIR/conf/systemd/aipbx-signaling.service" /etc/systemd/system/aipbx-signaling.service
     # hep.conf: never overwrite an operator's target, but make sure the portal
@@ -1867,9 +1874,14 @@ fi
 echo ""
 
 ssh_cfg="$(sshd -T 2>/dev/null)"
-if grep -qi '^permitrootlogin yes' <<<"$ssh_cfg" && grep -qi '^passwordauthentication yes' <<<"$ssh_cfg"; then
-    echo -e "  ${YELLOW}⚠️  SSH allows root login with a password. Consider key-only logins and${NC}"
-    echo -e "  ${YELLOW}   limiting port 22 to trusted networks (see docs/security.md).${NC}"
+if grep -qi '^passwordauthentication yes' <<<"$ssh_cfg" || grep -qi '^kbdinteractiveauthentication yes' <<<"$ssh_cfg"; then
+    echo -e "  ${YELLOW}⚠️  SSH still accepts passwords. Use key-only remote logins,${NC}"
+    echo -e "  ${YELLOW}   especially for a centralized collector or portal (docs/security.md).${NC}"
+    echo ""
+fi
+if grep -qi '^permitrootlogin yes' <<<"$ssh_cfg"; then
+    echo -e "  ${YELLOW}⚠️  SSH allows root login with a password. Prefer key-only root login${NC}"
+    echo -e "  ${YELLOW}   (PermitRootLogin prohibit-password).${NC}"
     echo ""
 fi
 echo -e "  ${BOLD}📄 All credentials saved to:${NC} ${CYAN}${CREDS_FILE}${NC}"

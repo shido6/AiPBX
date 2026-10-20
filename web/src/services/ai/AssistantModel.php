@@ -63,12 +63,8 @@ class AssistantModel
     private static function localChat(): ?callable
     {
         try {
-            if (method_exists('LocalAiService', 'status')) {
-                $status = LocalAiService::status();
-            } else {
-                return null;
-            }
-            $running = is_array($status) && ($status['running'] ?? false);
+            $status = LocalAiService::status();
+            $running = $status['running'] ?? false;
             if (!$running || empty($status['models'])) {
                 return null;
             }

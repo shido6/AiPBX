@@ -40,7 +40,7 @@ class GregHealthService
         'web' => ['service', 'reload', 'apache2'],
     ];
 
-    /** @return array<string, array{type:string, required?:bool, q:string}> */
+    /** @return array<string, array{type:string, required?:bool, q:string, choices?:array<int,string>}> */
     public static function questions(): array
     {
         return [
@@ -270,7 +270,7 @@ class GregHealthService
     {
         $def = self::questions()[$key];
         $raw = trim(preg_replace('/\s+/u', ' ', $raw) ?? $raw);
-        if (($def['type'] ?? 'text') === 'choice') {
+        if ($def['type'] === 'choice') {
             $choices = $def['choices'];
             if (ctype_digit($raw)) {
                 $i = (int) $raw - 1;
@@ -300,7 +300,7 @@ class GregHealthService
         $key = $keys[$step];
         $def = $qs[$key];
         $out = sprintf(t('health.greg_progress'), $step + 1, count($keys)) . "\n" . $def['q'];
-        if (($def['type'] ?? 'text') === 'choice') {
+        if ($def['type'] === 'choice') {
             foreach ($def['choices'] as $i => $c) {
                 $out .= "\n" . ($i + 1) . ') ' . self::choiceLabel($key, $c);
             }
@@ -453,7 +453,7 @@ class GregHealthService
             $value = $answers[$key] ?? '';
             if ($value === '') {
                 $value = t('health.greg_not_answered');
-            } elseif (($def['type'] ?? 'text') === 'choice') {
+            } elseif ($def['type'] === 'choice') {
                 $value = self::choiceLabel($key, (string) $value);
             }
             $out .= "\n- " . $def['q'] . ' ' . $value;

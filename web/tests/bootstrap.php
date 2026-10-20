@@ -49,6 +49,9 @@ putenv('AI_TTS_DIR=' . $tmpConf . '/tts');
 // Greg's notes and captain's log: a temp directory, so a test that saves
 // settings (which appends a journal entry) never writes into the live one.
 putenv('AIPBX_GREG_DIR=' . $tmpConf . '/greg');
+// The both-mode HEP fan-out list belongs to the signaling daemon, not the
+// tests' temp config tree; keep a save from writing the live one.
+putenv('AIPBX_SIGNALING_FORWARD=' . $tmpConf . '/signaling/forward.json');
 putenv('AIPBX_SETTINGS_KEY=test-settings-key');
 
 // LOCK 3 — no CLI command may reach the live Asterisk.

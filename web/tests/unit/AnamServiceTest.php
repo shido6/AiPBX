@@ -96,6 +96,11 @@ final class AnamServiceTest extends TestCase
         $p = AnamService::payload('persona-abc-123', 90);
         $this->assertSame(90, $p['personaConfig']['maxSessionLengthSeconds'],
             'the engine-side cut is per session, not only per setting');
+
+        // The disclosure is bound to the token, so a page cannot drop it.
+        $this->assertTrue($p['sessionOptions']['showAIAvatarDisclosure']);
+        $this->assertArrayNotHasKey('showAIAvatarDisclosure', $p['personaConfig'],
+            'Anam reads it from sessionOptions, not from the persona');
     }
 
     // ------------------------------------------------------------- refusals

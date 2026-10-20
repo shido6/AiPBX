@@ -25,8 +25,42 @@ Asterisk's own TLS WebSocket (8089) listens on loopback only: browsers and the m
 `/ws`, which goes through the nginx/Apache edge. Earlier versions opened 8089 publicly; installing or
 updating closes it.
 
-**SSH** is left as the operating system configured it. If root can log in with a password, the
-installer prints a warning; prefer key-only logins and allow port 22 only from trusted networks.
+## SSH
+
+**SSH is left as the operating system configured it.** AiPBX never rewrites `sshd_config`: one wrong
+line there locks you out of the machine, and a PBX is often the only way in. The installer and the
+daily **SSH key-only login** check warn; you change it.
+
+A **centralized installation** — one HOMER or VoIPmonitor collector, or one administrator, for
+several PBXs — must log in remotely with **keys only**. A password on a shared host is one
+credential that opens every PBX behind it. Keys are recommended for a single PBX too; for a central
+host they are required.
+
+On your workstation:
+
+```bash
+ssh-keygen -t ed25519 -C aipbx
+ssh-copy-id -i ~/.ssh/id_ed25519.pub user@collector
+ssh -o PasswordAuthentication=no user@collector true   # proves the key alone works
+```
+
+Only after the last command succeeds, on the collector, add
+`/etc/ssh/sshd_config.d/99-aipbx-keys.conf`:
+
+```
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+```
+
+then `sudo sshd -t && sudo systemctl reload ssh`. Keep your current session open until a second
+key-only login succeeds in a new one. The same order works for the PBX itself.
+
+**Admin → Health checks → SSH key-only login** (daily) reads the effective configuration with
+`sshd -T` and warns while password or keyboard-interactive login is accepted, fails if public keys
+are refused, reports information when root may still log in with a key, and says so when the
+configuration cannot be read. It only reports. Limiting port 22 to trusted networks remains
+recommended on top of keys.
 
 ## fail2ban
 

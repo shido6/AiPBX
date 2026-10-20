@@ -60,6 +60,52 @@ final class GregBrief
     }
 
     /**
+     * A marked section of the brief, without its markers ('' when absent).
+     *
+     * Used by the onboarding conversation: what Greg learned in chat is
+     * written into the same file, inside markers, so it can be found again,
+     * replaced without duplicating, and edited by hand like everything else.
+     */
+    public static function section(string $marker): string
+    {
+        [$begin, $end] = self::markers($marker);
+        $text = self::text();
+        if ($text === '' || !preg_match('/' . preg_quote($begin, '/') . '(.*?)' . preg_quote($end, '/') . '/s', $text, $m)) {
+            return '';
+        }
+        return trim($m[1]);
+    }
+
+    /**
+     * Write a marked section into the brief: the prose the administrator wrote
+     * stays as it is, and calling this again replaces only the block — a
+     * conversation can be resumed, corrected or re-run without piling up
+     * copies of the same answers.
+     */
+    public static function mergeSection(string $marker, string $title, string $body): void
+    {
+        [$begin, $end] = self::markers($marker);
+        $block = $begin . "\n## " . trim($title) . "\n\n" . rtrim($body) . "\n" . $end;
+        $text = rtrim(self::text());
+        $pattern = '/' . preg_quote($begin, '/') . '.*?' . preg_quote($end, '/') . '/s';
+        if ($text !== '' && preg_match($pattern, $text)) {
+            $text = (string) preg_replace_callback($pattern, static fn() => $block, $text, 1);
+        } else {
+            $text = $text === '' ? $block : $text . "\n\n" . $block;
+        }
+        self::save($text, 'onboarding conversation');
+    }
+
+    /** @return array{0: string, 1: string} */
+    private static function markers(string $marker): array
+    {
+        if (!preg_match('/^[a-z0-9-]{1,32}$/', $marker)) {
+            throw new \InvalidArgumentException('Invalid brief section marker');
+        }
+        return ['<!-- greg:' . $marker . ' -->', '<!-- /greg:' . $marker . ' -->'];
+    }
+
+    /**
      * Save pasted text (or an already-read upload).
      * Rejects rather than truncating: half a brief is worse than a clear error.
      */
@@ -148,11 +194,12 @@ final class GregBrief
             if (!$firstAnswer) {
                 return '';
             }
-            return "You do not have an onboarding brief for this installation yet. Mention it once, briefly and in your own words, "
-                . "at the end of this answer: one markdown file about the business and the phone system — customers, opening hours, "
-                . "the numbers that matter, carriers, call flows, who to call, what must not break — is how you learn a system the way "
-                . "a new engineer would. Say it can be added under AI → VoIP Engineer → Onboarding brief, and do not bring it up again "
-                . "unless the user asks.";
+            return "You do not have an onboarding brief for this installation yet. You are the new engineer on your first day: "
+                . "mention the missing handover once, briefly and in your own words, at the end of this answer — one markdown file "
+                . "about the business and the phone system (customers, opening hours, the numbers that matter, carriers, call flows, "
+                . "who to call, what must not break) is how a system is handed over. Say it can be uploaded under "
+                . "AI → VoIP Engineer → Onboarding brief, and that saying “onboard me” makes you ask the six questions yourself, one "
+                . "at a time, and write the file from the answers. Do not bring it up again unless the user asks.";
         }
         return "The administrator gave you an onboarding brief. Treat it as what the business told you about itself: "
             . "facts a colleague would have handed over on your first day. Where it disagrees with what you can observe now, "

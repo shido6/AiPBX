@@ -40,7 +40,7 @@ final class GregBriefTest extends TestCase
         $ask = GregBrief::context(true);
         $this->assertStringContainsString('do not have an onboarding brief', $ask);
         $this->assertStringContainsString('one markdown file', $ask);
-        $this->assertStringContainsString('do not bring it up again', $ask);
+        $this->assertStringContainsString('Do not bring it up again', $ask);
     }
 
     // ------------------------------------------------------------ template
@@ -149,6 +149,27 @@ final class GregBriefTest extends TestCase
         $this->assertStringContainsString('The brief continues', $ctx);
         $this->assertSame(mb_strlen(trim($text)), GregBrief::status()['chars'],
             'the file itself is not truncated');
+    }
+
+    public function testTheChatSectionIsMergedWithoutTouchingTheRest(): void
+    {
+        GregBrief::save("# Acme Dental\n\nHandwritten notes.\n");
+        GregBrief::mergeSection('onboarding', 'Onboarding conversation',
+            "### business — The business\nDental clinic.");
+
+        $this->assertStringContainsString('Handwritten notes', GregBrief::text());
+        $this->assertStringContainsString('Dental clinic.', GregBrief::text());
+        $this->assertSame("## Onboarding conversation\n\n### business — The business\nDental clinic.", GregBrief::section('onboarding'));
+
+        // A second answer replaces the block instead of appending a copy.
+        GregBrief::mergeSection('onboarding', 'Onboarding conversation',
+            "### business — The business\nDental clinic.\n\n### people — People\nAna.");
+        $text = GregBrief::text();
+        $this->assertSame(1, substr_count($text, '<!-- greg:onboarding -->'));
+        $this->assertSame(1, substr_count($text, 'Dental clinic.'));
+        $this->assertStringContainsString('Ana.', $text);
+        $this->assertStringContainsString('Handwritten notes', $text);
+        $this->assertStringContainsString('## Onboarding conversation', $text);
     }
 
     public function testSavingAndRemovingAreAudited(): void

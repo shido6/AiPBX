@@ -113,9 +113,90 @@ class EchoService
             $lines[] = '- Local call data: unavailable right now.';
         }
         require_once __DIR__ . '/HepSettingsService.php';
+        require_once __DIR__ . '/HepComputeService.php';
+        require_once __DIR__ . '/../SshAccessService.php';
         $hep = HepSettingsService::settings();
-        $lines[] = '- HEP capture: ' . HepSettingsService::describe($hep)
-            . ($hep['homer_url'] !== '' ? ' (HOMER UI: ' . $hep['homer_url'] . ')' : '');
+        // An external collector can be HOMER or VoIPmonitor too; a UI address
+        // is enough to know the administrator wants Greg to point people there.
+        $assist = in_array($hep['provider'], ['homer', 'voipmonitor'], true)
+            || $hep['mode'] === 'both'
+            || ($hep['mode'] === 'external' && $hep['ui_url'] !== '');
+        if ($hep['mode'] === 'both') {
+            $flows = [];
+            foreach (HepSettingsService::targets($hep) as $target) {
+                $flows[] = $target['label'] . ' ' . $target['host'] . ':' . $target['port']
+                    . ($target['ui_url'] !== '' ? ' (UI: ' . $target['ui_url'] . ')' : '');
+            }
+            $lines[] = '- Correlation assistance: ' . implode(' and ', $flows)
+                . ' — Asterisk sends one stream to the built-in capture, which forwards an unchanged copy to both.'
+                . ' You cannot query either from this chat; when a Call-ID is involved, point the administrator to the right UI and that Call-ID, and never claim you looked.';
+        } else {
+            $lines[] = ($assist ? '- Correlation assistance: ' : '- HEP capture: ')
+                . HepSettingsService::describe($hep)
+                . ($hep['ui_url'] !== '' ? ' (UI: ' . $hep['ui_url'] . ')' : '')
+                . ($assist
+                    ? ' — you cannot query it from this chat; when a Call-ID is involved, point the administrator to the UI and that Call-ID, and never claim you looked.'
+                    : '');
+        }
+        // Greg should know whether this host can actually carry the collectors
+        // before he suggests installing HOMER, VoIPmonitor or both.
+        try {
+            $compute = HepComputeService::measure();
+            if ($compute['measured']) {
+                $fit = [
+                    'ok' => 'fits with headroom',
+                    'tight' => 'fits with little headroom',
+                    'low' => 'is below the planning floor',
+                ];
+                $lines[] = '- Host capacity, measured just now: ' . $compute['cores'] . ' cores, '
+                    . HepComputeService::human((int) $compute['mem_available']) . ' RAM available, '
+                    . HepComputeService::human((int) $compute['disk_free']) . ' disk free; one local collector '
+                    . ($fit[$compute['one']['level']] ?? 'unknown') . ', both '
+                    . ($fit[$compute['both']['level']] ?? 'unknown') . '.'
+                    . ' These are planning gates, not a benchmark; if both is below the floor, recommend one collector or another host instead of installing both locally.';
+            }
+        } catch (\Throwable $e) {
+            // Capacity is context, never a reason for a reply to fail.
+        }
+        // The Health page already watches the configured collectors; Greg
+        // quotes that stored result instead of inventing a second probe.
+        $health = HepSettingsService::lastHealth();
+        if ($health !== null) {
+            $lines[] = '- Collector health, last check' . ($health['checked_at'] !== null ? ' at ' . $health['checked_at'] : '')
+                . ': ' . $health['status'] . ($health['message'] !== '' ? ' — ' . $health['message'] : '')
+                . '. Stored by Admin → Health checks; you did not run it just now.';
+        } elseif ($assist) {
+            $lines[] = '- Collector health: no stored check yet. Admin → Health checks runs it every 15 minutes; you cannot run it from this chat.';
+        }
+        if ($assist) {
+            // Setup help uses the same commands the Echo page shows, so Greg
+            // cannot drift from what the administrator can actually copy.
+            $lines[] = '- Collector setup help: you may walk the administrator through HOMER 7'
+                . ' (Asterisk sends HEP to the collector; the page command is `' . HepSettingsService::homerCommand() . '`)'
+                . ' or VoIPmonitor (its sniffer needs the HEP listener on: `'
+                . str_replace("\n", '; ', HepSettingsService::voipmonitorConfig(
+                    $hep['mode'] === 'both' ? (int) $hep['voipmonitor_port'] : HepSettingsService::VOIPMONITOR_PORT)) . '`).'
+                . ' Ask where it is installed (this server or another host), match the host capacity above, and give one step at a time.'
+                . ' You cannot run shell commands, open the collector UI, change its configuration or verify its database yourself — say so plainly and let the administrator run each step.';
+            // A centralized collector is reached over SSH. Demand a key before
+            // anything else: a password on a shared central host is the one
+            // credential an attacker can reuse against every PBX behind it.
+            $remote = [];
+            foreach (HepSettingsService::monitoredTargets($hep) as $target) {
+                $host = strtolower(trim((string) $target['host'], '[]'));
+                if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+                    $remote[] = $target['label'] . ' ' . $target['host'];
+                }
+            }
+            if ($remote) {
+                $lines[] = '- Centralized collector login: ' . implode(', ', $remote)
+                    . ' is on another host, so remote login must use SSH keys only — never ask for, suggest or accept a password.'
+                    . ' If no key is set up yet, walk the administrator through `' . SshAccessService::keySetup() . '`,'
+                    . ' then a drop-in on the collector with `' . str_replace("\n", '; ', SshAccessService::sshdDropIn()) . '`,'
+                    . ' tested with `sshd -t` before reloading SSH. Admin → Health checks warns while sshd still accepts passwords.'
+                    . ' You cannot create keys, edit sshd or log in yourself.';
+            }
+        }
         if (!SipfrontClient::configured()) {
             $lines[] = '- Sipfront is not configured (AI → Echo); no external SIP test data.';
             return implode("\n", $lines);

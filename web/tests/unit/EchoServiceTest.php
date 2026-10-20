@@ -4,6 +4,7 @@ use PHPUnit\Framework\TestCase;
 
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../../src/services/ai/EchoService.php';
+require_once __DIR__ . '/../../src/services/ai/HepSettingsService.php';
 
 /**
  * Echo as its own AI section: the keys it stores (secret encrypted, never
@@ -111,6 +112,60 @@ final class EchoServiceTest extends TestCase
         $this->assertStringContainsString('Echo (SIP correlation)', $ctx);
         $this->assertStringContainsString('not configured', $ctx);
         $this->assertStringNotContainsString('Recent Sipfront runs', $ctx);
+    }
+
+    public function testGregContextNamesTheChosenCorrelationAssistant(): void
+    {
+        EchoService::save(['echo_enabled' => '1', 'echo_public_key' => '', 'echo_secret' => '']);
+        HepSettingsService::save([
+            'hep_mode' => 'voipmonitor',
+            'hep_ui_url' => 'http://voipmonitor.local:8080',
+        ]);
+        try {
+            $ctx = EchoService::promptContext();
+            $this->assertStringContainsString('Correlation assistance: VoIPmonitor', $ctx);
+            $this->assertStringContainsString('http://voipmonitor.local:8080', $ctx);
+            $this->assertStringContainsString('cannot query it', $ctx, 'Greg must not pretend he looked');
+        } finally {
+            HepSettingsService::save(['hep_mode' => 'off']);
+        }
+    }
+
+    public function testGregRequiresSshKeysForARemoteCollector(): void
+    {
+        EchoService::save(['echo_enabled' => '1', 'echo_public_key' => '', 'echo_secret' => '']);
+        HepSettingsService::save([
+            'hep_mode' => 'external',
+            'hep_host' => '10.8.0.5',
+            'hep_port' => '9060',
+            'hep_ui_url' => 'http://10.8.0.5:8080',
+        ]);
+        try {
+            $ctx = EchoService::promptContext();
+            $this->assertStringContainsString('Centralized collector login', $ctx);
+            $this->assertStringContainsString('SSH keys only', $ctx);
+            $this->assertStringContainsString('ssh-keygen', $ctx);
+            $this->assertStringContainsString('sshd -t', $ctx);
+            $this->assertStringContainsString('never ask for', $ctx);
+        } finally {
+            HepSettingsService::save(['hep_mode' => 'off']);
+        }
+    }
+
+    public function testGregDoesNotDemandSshSetupForALocalCollector(): void
+    {
+        EchoService::save(['echo_enabled' => '1', 'echo_public_key' => '', 'echo_secret' => '']);
+        HepSettingsService::save([
+            'hep_mode' => 'homer',
+            'hep_ui_url' => 'http://127.0.0.1:9080',
+        ]);
+        try {
+            $ctx = EchoService::promptContext();
+            $this->assertStringContainsString('Correlation assistance: HOMER', $ctx);
+            $this->assertStringNotContainsString('Centralized collector login', $ctx);
+        } finally {
+            HepSettingsService::save(['hep_mode' => 'off']);
+        }
     }
 
     public function testUnconfiguredCallsFailWithTheLocalizedReason(): void

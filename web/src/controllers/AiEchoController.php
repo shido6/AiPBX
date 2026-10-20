@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../services/ai/EchoService.php';
 require_once __DIR__ . '/../services/ai/HepSettingsService.php';
+require_once __DIR__ . '/../services/ai/HepComputeService.php';
 require_once __DIR__ . '/../services/ai/OpencodeService.php';
 
 /**
@@ -44,7 +45,7 @@ class AiEchoController extends BaseController
                         $run = ['proposal' => $proposal];
                     } elseif (isset($_POST['decide_proposal'])) {
                         $id = (int) ($_POST['proposal_id'] ?? 0);
-                        $approve = (string) ($_POST['decide_proposal'] ?? '') === 'approve';
+                        $approve = (string) $_POST['decide_proposal'] === 'approve';
                         OpencodeService::decide($id, $approve);
                         $message = sprintf(t('ai_echo.oc_decided'), (string) $id);
                     } elseif (isset($_POST['hep_test'])) {
@@ -62,15 +63,20 @@ class AiEchoController extends BaseController
         }
 
         $recent = EchoService::recentRuns(5);
+        $hep = HepSettingsService::settings();
         static::renderPage('ai_echo/index', [
             'echo'        => EchoService::settings(),
             'setup_steps' => EchoService::setupSteps(),
             'runs'        => $recent['runs'],
             'runs_error'  => $recent['error'],
             'last_run'    => $run,
-            'hep'         => HepSettingsService::settings(),
+            'hep'         => $hep,
+            'hep_compute' => HepComputeService::measure(),
             'hep_current' => HepSettingsService::currentFile(),
+            'hep_health'  => HepSettingsService::lastHealth(),
             'homer_cmd'   => HepSettingsService::homerCommand(),
+            'voipmonitor_cfg' => HepSettingsService::voipmonitorConfig(
+                $hep['mode'] === 'both' ? (int) $hep['voipmonitor_port'] : HepSettingsService::VOIPMONITOR_PORT),
             'oc'          => OpencodeService::settings(),
             'oc_recent'   => OpencodeService::recent(8),
             'csrf_token'  => getCSRFToken(),

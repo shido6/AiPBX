@@ -113,6 +113,81 @@ class GregJournal
         @chmod($path, 0640);
     }
 
+    /**
+     * Handoff notes already in AGENTS.md (the marked block only).
+     * @return array<int, string> lines, each already starting with "- "
+     */
+    public static function handoffs(): array
+    {
+        if (!preg_match('/<!-- greg:handoffs -->(.*?)<!-- \/greg:handoffs -->/s', self::agents(), $m)) {
+            return [];
+        }
+        $out = [];
+        foreach (preg_split('/\R/', $m[1]) ?: [] as $line) {
+            $line = trim($line);
+            if (str_starts_with($line, '- ')) {
+                $out[] = $line;
+            }
+        }
+        return array_slice($out, -10);
+    }
+
+    /**
+     * Record a handoff where both engineers will see it: AGENTS.md, the file
+     * Greg reads before anything else. Bounded to the last ten notes, and the
+     * administrator's own words are never dropped to make room — if the file
+     * is full, this returns false and the captain's log still has the entry.
+     */
+    public static function appendHandoff(string $line): bool
+    {
+        $line = self::oneLine($line, 280);
+        if ($line === '') {
+            return false;
+        }
+        $notes = self::handoffs();
+        $notes[] = '- ' . $line;
+        $notes = array_slice($notes, -10);
+
+        $agents = self::agents();
+        $pattern = '/<!-- greg:handoffs -->.*?<!-- \/greg:handoffs -->/s';
+        $outside = trim((string) preg_replace($pattern, '', $agents));
+        $build = static fn(array $notes): string => "<!-- greg:handoffs -->\n## Handoffs\n\n"
+            . implode("\n", $notes) . "\n<!-- /greg:handoffs -->";
+
+        while ($notes && mb_strlen($outside === '' ? $build($notes) : $outside . "\n\n" . $build($notes)) > self::MAX_AGENTS) {
+            array_shift($notes);
+        }
+        if (!$notes) {
+            return false;
+        }
+
+        $block = $build($notes);
+        $text = trim($agents);
+        if ($text !== '' && preg_match($pattern, $text)) {
+            $text = (string) preg_replace_callback($pattern, static fn() => $block, $text, 1);
+        } else {
+            $text = $text === '' ? $block : $text . "\n\n" . $block;
+        }
+        if (mb_strlen($text) > self::MAX_AGENTS) {
+            return false;
+        }
+        try {
+            self::ensureDirs();
+        } catch (\Throwable $e) {
+            return false;
+        }
+        $path = self::agentsPath();
+        $tmp = $path . '.tmp.' . bin2hex(random_bytes(4));
+        if (@file_put_contents($tmp, $text . "\n", LOCK_EX) === false || !@rename($tmp, $path)) {
+            @unlink($tmp);
+            return false;
+        }
+        @chmod($path, 0640);
+        // The event itself is audited once by GregHandoffService; reviewing a
+        // handoff should not mean two rows for one shift change.
+        return true;
+    }
+
     /** The last entries, newest at the bottom — for the page. */
     public static function recentText(int $lines = self::RECENT_LINES): string
     {

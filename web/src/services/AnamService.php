@@ -170,13 +170,27 @@ final class AnamService
 
     // --------------------------------------------------------------- Anam
 
-    /** The body Anam expects: which persona, and how long it may run. */
+    /**
+     * The body Anam expects: which persona, how long it may run, and the AI
+     * disclosure.
+     *
+     * `sessionOptions.showAIAvatarDisclosure` is bound to the token (Anam's
+     * docs are explicit that the SDK cannot change it later), so the browser
+     * cannot forget to render the watermark. That is the disclosure layer that
+     * travels with the video; the stage is also labelled, and the chat greeting
+     * already says he is an AI VoIP engineer.
+     *
+     * Reference: https://anam.ai/docs/security/ai-avatar-disclosure
+     */
     public static function payload(string $personaId, ?int $seconds = null): array
     {
-        return ['personaConfig' => [
-            'personaId' => $personaId,
-            'maxSessionLengthSeconds' => $seconds ?? self::sessionLimit(),
-        ]];
+        return [
+            'personaConfig' => [
+                'personaId' => $personaId,
+                'maxSessionLengthSeconds' => $seconds ?? self::sessionLimit(),
+            ],
+            'sessionOptions' => ['showAIAvatarDisclosure' => true],
+        ];
     }
 
     /**

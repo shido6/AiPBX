@@ -11,6 +11,9 @@ Environment:
                              configured capture address's host, so a port
                              opened by mistake cannot be fed from outside
     AIPBX_SIGNALING_ENV      environment file (default /etc/ai-pbx.env)
+    AIPBX_SIGNALING_FORWARD  fan-out list written by the portal (default
+                             /var/lib/aipbx/signaling/forward.json); absent
+                             or empty means no forwarding
 
 Asterisk never waits for this service: res_hep sends over UDP, and a capture
 server that is slow or down only loses captures. Nothing here can affect a
@@ -29,6 +32,7 @@ import time
 
 from . import hep
 from .db import BATCH_MAX, Store
+from .forward import Forwarder
 
 LOG = logging.getLogger("aipbx-signaling")
 
@@ -58,9 +62,11 @@ def parse_listen(value: str) -> tuple:
 
 
 class Capture:
-    def __init__(self, store: Store, source_check: bool = True):
+    def __init__(self, store: Store, source_check: bool = True,
+                 forwarder: Forwarder = None):
         self.store = store
         self.source_check = source_check
+        self.forwarder = forwarder
         self.queue: list = []
         self.lock = threading.Lock()
         self.stop = threading.Event()
@@ -71,9 +77,15 @@ class Capture:
         self.stats["received"] += 1
         if self.source_check and addr[0] != self.allowed_source:
             # Second fence: the firewall (and, by default, the loopback bind)
-            # is the first. A datagram from anywhere else is counted, not read.
+            # is the first. A datagram from anywhere else is counted, not read
+            # and certainly not forwarded.
             self.stats["wrong_source"] += 1
             return
+        # Forward the raw datagram before parsing: the collectors should see
+        # exactly what Asterisk sent, including anything this parser does not
+        # summarise. Only HEPv3 leaves this process.
+        if self.forwarder is not None and data[:4] == hep.HEP_MAGIC:
+            self.forwarder.forward(data)
         event = hep.parse_event(data)
         if event is None:
             self.stats["dropped"] += 1
@@ -105,6 +117,8 @@ class Capture:
                 % (self.stats["received"], self.stats["parsed"],
                    self.stats["dropped"], self.stats["wrong_source"],
                    self.store.rows_written, self.store.write_errors))
+        if self.forwarder is not None:
+            line += " " + self.forwarder.report()
         LOG.info("%s", line)
 
 
@@ -115,7 +129,8 @@ def serve(listen: str = "", source_check: bool = True, store: Store = None,
     listen = listen or os.environ.get("AIPBX_SIGNALING_LISTEN",
                                       "127.0.0.1:9061")
     host, port = parse_listen(listen)
-    capture = capture or Capture(store or Store(), source_check=source_check)
+    capture = capture or Capture(store or Store(), source_check=source_check,
+                                 forwarder=Forwarder())
     if source_check:
         capture.allowed_source = host
 
@@ -174,6 +189,9 @@ def serve(listen: str = "", source_check: bool = True, store: Store = None,
             last_report = now
 
     capture.flush(time.time())
+    forward_sock = getattr(capture.forwarder, "sock", None)
+    if forward_sock is not None:
+        forward_sock.close()
     sock.close()
     capture.report()
     return 0
