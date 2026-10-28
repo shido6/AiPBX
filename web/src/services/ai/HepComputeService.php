@@ -105,7 +105,7 @@ final class HepComputeService
 
     private static function hostCores(): int
     {
-        $info = @file_get_contents('/proc/cpuinfo');
+        $info = self::read('/proc/cpuinfo');
         if (is_string($info) && preg_match_all('/^processor\s*:/m', $info, $m)) {
             return max(1, count($m[0]));
         }
@@ -116,7 +116,8 @@ final class HepComputeService
     private static function memory(): array
     {
         $out = ['total' => 0, 'available' => 0];
-        $lines = @file('/proc/meminfo', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        $text = self::read('/proc/meminfo');
+        $lines = $text === null ? [] : explode("\n", $text);
         $values = [];
         foreach ($lines as $line) {
             if (preg_match('/^(\w+):\s+(\d+)(?:\s+kB)?$/', $line, $m)) {
@@ -135,13 +136,22 @@ final class HepComputeService
     /** @return array{total:int, free:int} bytes */
     private static function disk(): array
     {
-        $free = @disk_free_space(self::DISK_PATH);
-        $total = @disk_total_space(self::DISK_PATH);
-        if ($free === false || $total === false) {
-            $free = @disk_free_space('/');
-            $total = @disk_total_space('/');
+        // statvfs warns for a path that is not there — /var/lib/aipbx before the
+        // first install, or the temp config dir in tests — and an installed error
+        // handler (bin/smoke.php, a host that logs warnings) still hears it even
+        // under @. Ask only about a path that exists, then fall back to the root
+        // filesystem, and report 0 when neither can be measured.
+        foreach ([self::DISK_PATH, '/'] as $path) {
+            if (!is_dir($path)) {
+                continue;
+            }
+            $free = disk_free_space($path);
+            $total = disk_total_space($path);
+            if ($free !== false && $total !== false) {
+                return ['total' => (int) $total, 'free' => (int) $free];
+            }
         }
-        return ['total' => (int) $total, 'free' => (int) $free];
+        return ['total' => 0, 'free' => 0];
     }
 
     private static function load1(): ?float
