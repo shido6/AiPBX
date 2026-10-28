@@ -1,9 +1,15 @@
 # AiPBX Android app
 
+<p align="left">
+  <a href="https://play.google.com/store/apps/details?id=com.mhrgl.AiPBX" target="_blank" rel="noopener">
+    <img src="https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png" alt="Get it on Google Play" height="54">
+  </a>
+</p>
+
 - **Package:** `com.mhrgl.AiPBX` (debug builds: `com.mhrgl.AiPBX.debug`)
 - **Android:** 8.0 (API 26) to 16 (API 36)
 - **Version:** `versionName` / `versionCode` in `app/build.gradle.kts`
-- **Distribution:** Google Play (CI uploads every build of `main` to the alpha track), or the signed
+- **Distribution:** Google Play (CI uploads releases to the production track), or the signed
   APK directly
 
 A native Android client for an AiPBX server: calls (audio and video) over WebRTC, chat, voicemail,
@@ -42,12 +48,23 @@ is optional.
 Requirements: Android SDK 36, JDK 17; the Gradle wrapper is included.
 
 ```bash
-./gradlew testReleaseUnitTest      # unit tests
+./gradlew testReleaseUnitTest      # unit tests (including EdgeToEdgeComplianceTest)
 ./gradlew assembleDebug            # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease          # signed release APK
 ./gradlew bundleRelease            # signed AAB for Google Play
 bin/tls_audit.sh                   # checks that no TLS bypass came back (Play policy)
+bin/edge_to_edge_audit.sh          # checks Android 15 edge-to-edge compliance & deprecations
 ```
+
+## Android 15 (API 35+) Edge-to-Edge Standards
+
+Android 15 enforces edge-to-edge display by default and deprecates explicit bar color and decor fitting APIs. To permanently satisfy Google Play Console policies:
+
+1. **`BaseActivity` Pattern:** All UI screens inherit from `com.mhrgl.aipbx.ui.BaseActivity`.
+2. **Zero-Parameter `enableEdgeToEdge()`:** Invoked automatically by `BaseActivity.onCreate()`. Never pass custom parameters (like `SystemBarStyle.dark/light(...)`).
+3. **No Deprecated APIs:** Never call `Window.setDecorFitsSystemWindows`, `WindowCompat.setDecorFitsSystemWindows`, `setStatusBarColor`, or `setNavigationBarColor`.
+4. **Window Insets:** Root layouts must call `applyEdgeToEdgeInsets(rootView, consumeIme = true/false)` to prevent system bars or keyboards from overlapping UI elements.
+5. **Continuous Verification:** `EdgeToEdgeComplianceTest` and `bin/edge_to_edge_audit.sh` strictly guard the codebase against regressions.
 
 Release signing reads `keystore.properties` (not in git). `sdk.dir` goes into `local.properties`.
 

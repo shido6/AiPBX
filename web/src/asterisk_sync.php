@@ -93,12 +93,25 @@ function writeConfWithRollback($filename, $content, callable $reloadFn, $context
  * it falls back to the old (lock-free) behaviour.
  */
 function withSyncLock($lock_name, callable $fn) {
-    $lock_dir = sys_get_temp_dir() . '/aipbx_sync_locks';
-    if (!is_dir($lock_dir)) {
-        @mkdir($lock_dir, 0700, true);
+    // One directory for Apache (www-data), Asterisk's feature codes (asterisk)
+    // and root: /tmp does not work (Apache has its own PrivateTmp, and a
+    // directory root made with 0700 locked www-data out, which then ran
+    // without a lock). Group asterisk, which www-data is in (install.sh);
+    // closed to every other user, who could otherwise hold a lock forever.
+    $lock_dir = is_dir('/var/lib/aipbx') ? '/var/lib/aipbx/sync-locks' : sys_get_temp_dir() . '/aipbx_sync_locks';
+    if (!is_dir($lock_dir) && @mkdir($lock_dir, 0770, true)) {
+        @chgrp($lock_dir, 'asterisk');
+        @chmod($lock_dir, 02770);   // setgid: lock files get the group too
     }
     $lock_file = $lock_dir . '/' . preg_replace('/[^a-z0-9_]/', '', $lock_name) . '.lock';
+    $created = !file_exists($lock_file);
     $lock_fp = @fopen($lock_file, 'c');
+    if ($lock_fp !== false && $created) {
+        @chmod($lock_file, 0660);
+    }
+    if ($lock_fp === false) {
+        $lock_fp = @fopen($lock_file, 'r');   // flock() works on a read-only handle too
+    }
     if ($lock_fp === false) {
         return $fn();
     }
@@ -169,6 +182,17 @@ function markPendingSync($domain, $entity_type, $entity_id, $entity_label, $acti
     // sys_pending_sync ROWS are DELETED after Apply — a permanent "who did
     // what and when" record goes to the separate, INSERT-only sys_audit_log.
     writeAuditLog($domain, $entity_type, $entity_id, $entity_label, $action, $user_id);
+
+    if (is_file(__DIR__ . '/services/WebhookService.php')) {
+        require_once __DIR__ . '/services/WebhookService.php';
+        WebhookService::emit('config.pending_created', [
+            'domain'       => $domain,
+            'entity_type'  => $entity_type,
+            'entity_id'    => (string)$entity_id,
+            'entity_label' => $entity_label,
+            'action'       => $action,
+        ]);
+    }
 }
 
 // writeAuditLog() lives in src/audit_log.php (loaded by config.php for every
@@ -217,6 +241,13 @@ function applyPendingSync($user_id = null) {
     $db = getDB();
     $domains = $db->query("SELECT DISTINCT domain FROM sys_pending_sync")->fetchAll(PDO::FETCH_COLUMN);
 
+    if (is_file(__DIR__ . '/services/WebhookService.php')) {
+        require_once __DIR__ . '/services/WebhookService.php';
+    }
+    if (is_file(__DIR__ . '/core/PluginManager.php')) {
+        require_once __DIR__ . '/core/PluginManager.php';
+    }
+
     $results = [];
     foreach ($domains as $domain) {
         $results[$domain] = applyPendingSyncDomain($domain, $user_id);
@@ -245,9 +276,17 @@ function applyPendingSyncDomain($domain, $user_id = null) {
     }
     try {
         $fn();
+        // A plugin's dialplan lives in the general context, so a general regen is
+        // where the enabled plugins' files are rewritten too.
+        if ($domain === 'general_dialplan' && class_exists('PluginManager')) {
+            PluginManager::syncAllEnabledPlugins();
+        }
         $del = getDB()->prepare("DELETE FROM sys_pending_sync WHERE domain = ?");
         $del->execute([$domain]);
         writeAuditLog($domain, 'sync_apply', $domain, $domain, 'apply', $user_id);
+        if (class_exists('WebhookService')) {
+            WebhookService::emit('config.sync_applied', ['domain' => $domain]);
+        }
         return ['success' => true, 'error' => null];
     } catch (\Throwable $e) {
         // 2026-08-25: only the domain name ("queues") used to be written
@@ -259,6 +298,9 @@ function applyPendingSyncDomain($domain, $user_id = null) {
         // it, so it is trimmed safely.
         $label = "{$domain}: " . mb_substr($e->getMessage(), 0, 230);
         writeAuditLog($domain, 'sync_apply', $domain, $label, 'apply_failed', $user_id);
+        if (class_exists('WebhookService')) {
+            WebhookService::emit('config.sync_failed', ['domain' => $domain, 'error' => $e->getMessage()]);
+        }
         return ['success' => false, 'error' => $e->getMessage()];
     }
 }
@@ -276,11 +318,13 @@ require_once __DIR__ . '/sync/SyncExtensions.php';
 require_once __DIR__ . '/sync/SyncTrunks.php';
 require_once __DIR__ . '/sync/SyncQueues.php';
 require_once __DIR__ . '/sync/SyncIVRs.php';
+require_once __DIR__ . '/sync/SyncIvrDataSteps.php';
 require_once __DIR__ . '/sync/SyncTimeConditions.php';
 require_once __DIR__ . '/sync/SyncFeatureCodes.php';
 require_once __DIR__ . '/sync/SyncInternalNumbers.php';
 require_once __DIR__ . '/sync/SyncRtpSettings.php';
 require_once __DIR__ . '/sync/SyncUdptlSettings.php';
+require_once __DIR__ . '/sync/SyncSignaling.php';
 require_once __DIR__ . '/sync/SyncRingGroups.php';
 require_once __DIR__ . '/sync/SyncConferences.php';
 require_once __DIR__ . '/sync/SyncVoicemail.php';
@@ -353,9 +397,14 @@ function syncEverything() {
     // that does not exist.
     syncInternalNumbers();
     syncGeneralDialplan();
+    if (is_file(__DIR__ . '/core/PluginManager.php')) {
+        require_once __DIR__ . '/core/PluginManager.php';
+        PluginManager::syncAllEnabledPlugins();
+    }
     syncAsteriskMOH();
     syncRtpSettings();
     syncUdptlSettings();
+    syncSignalingCapture();
 
     return true;
 }

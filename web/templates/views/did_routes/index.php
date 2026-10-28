@@ -102,7 +102,7 @@ $destOptionsCache = [];
 
                 <div class="form-group">
                     <label class="form-label"><?php echo t('did.field_did_number'); ?></label>
-                    <input type="text" name="did_number" id="modal_did_number" class="form-control" required placeholder="<?php echo t('common.eg'); ?> 3000">
+                    <input type="text" name="did_number" id="modal_did_number" class="form-control" required placeholder="<?php echo t('common.eg'); ?> 3000, 98XX">
                 </div>
 
                 <div class="form-group">
@@ -161,5 +161,6 @@ $destOptionsCache = [];
     </div>
 </div>
 
+<script>window.DEST_CONTEXT = 'did';</script>
 <script src="<?php echo asset('/assets/js/destinations_helper.js'); ?>"></script>
 <script src="<?php echo asset('/assets/js/did_routes.js'); ?>"></script>

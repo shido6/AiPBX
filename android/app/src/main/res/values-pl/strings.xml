@@ -118,8 +118,10 @@
     <string name="btn_remove">Usuń</string>
     <string name="call_from_pbx">Połączenie z centrali</string>
     <string name="call_on_hold">Zawieszone</string>
+    <string name="cf_always">PP (ZAWSZE)</string>
     <string name="cf_busy">PP (ZAJĘTY)</string>
     <string name="cf_busy_noanswer">PP (ZAJĘTY/BRAK ODP.)</string>
+    <string name="cf_noanswer">PP (BRAK ODP.)</string>
     <string name="chat_document">Dokument</string>
     <string name="chat_extension_title">Numer wewnętrzny #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Brak uprawnień do kamery: rozmowa trwa tylko z dźwiękiem.</string>
     <string name="err_camera_unavailable">Kamera niedostępna: rozmowa trwa tylko z dźwiękiem.</string>
     <string name="contacts_extensions_listed">numerów wewnętrznych</string>
+    <string name="api_fcm_token_failed">Nie udało się wysłać tokenu FCM (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Nie udało się usunąć grupy (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Zachowaj prefiks \'+\'</string>
+    <string name="pref_send_plus_desc">Wysyłaj międzynarodowy prefiks \'+\' bezpośrednio do centrali PBX w celu normalizacji (WŁ.) lub konwertuj na 00 (WYŁ.)</string>
 </resources>

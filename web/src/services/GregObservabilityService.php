@@ -28,7 +28,7 @@
 require_once __DIR__ . '/ai/HepSettingsService.php';
 require_once __DIR__ . '/ai/EchoService.php';
 require_once __DIR__ . '/ai/OpencodeService.php';
-require_once __DIR__ . '/CallQualityService.php';
+require_once __DIR__ . '/CallQualityEvidenceService.php';
 require_once __DIR__ . '/GregReadinessService.php';
 
 final class GregObservabilityService
@@ -346,13 +346,13 @@ final class GregObservabilityService
     /** @return array{state:string, detail:string, note:string, url:string} */
     private static function rtcp(): array
     {
-        if (!CallQualityService::available()) {
+        if (!CallQualityEvidenceService::available()) {
             return self::signal('off',
                 t('ai_voip_engineer.obs_rtcp_off'),
                 'RTCP quality rows are not local: the capture target is remote, so you have no packet-loss evidence from this PBX.');
         }
         try {
-            $summary = CallQualityService::summary();
+            $summary = CallQualityEvidenceService::summary();
         } catch (\Throwable $e) {
             return self::signal('limited',
                 t('ai_voip_engineer.obs_rtcp_none'),
@@ -360,9 +360,9 @@ final class GregObservabilityService
         }
         if ((int) $summary['measured'] > 0) {
             return self::signal('on',
-                sprintf(t('ai_voip_engineer.obs_rtcp_on'), (int) $summary['measured'], CallQualityService::WINDOW_MIN),
+                sprintf(t('ai_voip_engineer.obs_rtcp_on'), (int) $summary['measured'], CallQualityEvidenceService::WINDOW_MIN),
                 'Local RTCP quality is measurable: ' . (int) $summary['measured'] . ' call(s) in the last '
-                    . CallQualityService::WINDOW_MIN . ' minutes. Use the quality block for loss, evidence ids and actions.');
+                    . CallQualityEvidenceService::WINDOW_MIN . ' minutes. Use the quality block for loss, evidence ids and actions.');
         }
         return self::signal('limited',
             t('ai_voip_engineer.obs_rtcp_none'),

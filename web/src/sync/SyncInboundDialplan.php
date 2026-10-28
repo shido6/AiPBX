@@ -28,6 +28,15 @@ function __syncInboundDialplanBody() {
             $route_group = max(1, intval($t['outbound_route_group'] ?? 1));
             $is_busy_tone_wrapper = (($t['context'] ?? '') === 'from-trunk-kapanma-tonu');
 
+            // Channel and calls-per-minute limits: a refused call is hung up with
+            // cause 34 (no circuit), so the carrier may try another way.
+            $max_ch = max(0, intval($t['max_channels'] ?? 0));
+            $max_rate = max(0, intval($t['max_calls_per_minute'] ?? 0));
+            $limit_lines = ($max_ch > 0 || $max_rate > 0)
+                ? " same => n,Gosub(sub-trunk-limit,s,1({$t_name},{$max_ch},{$max_rate},trunkin))\n"
+                    . " same => n,ExecIf(\$[\"\${TRUNK_LIMIT}\" != \"\"]?Hangup(34))\n"
+                : '';
+
             $conf .= "; --- Trunk inbound: {$t_name} ({$title}) ---\n";
             $conf .= "[from-trunk-{$t_name}]\n";
             // Any DID: plain digits or +E.164 (see CATCH_ALL_EXTEN_PATTERNS).
@@ -47,6 +56,7 @@ function __syncInboundDialplanBody() {
             }
 
             $same .= " same => n,Set(CDR(did)=\${NORMALIZED_DID})\n";
+            $same .= $limit_lines;
             $same .= " same => n,Goto(from-trunk-{$t_name}-route,\${NORMALIZED_DID},1)\n";
             $conf .= buildCatchAllExtensions(
                 "NoOp(Inbound trunk call [{$t_name}] - caller: \${CALLERID(num)} - target: \${EXTEN})",
@@ -61,6 +71,7 @@ function __syncInboundDialplanBody() {
                 $conf .= " same => n,Set(TONE_DETECT(0,,brg(kapanma-tonu,s,1))=)\n";
             }
             $conf .= " same => n,Set(CDR(did)=s)\n";
+            $conf .= $limit_lines;
             $conf .= " same => n,Goto(from-trunk-{$t_name}-route,s,1)\n\n";
 
             // Routing context (route context)
@@ -83,30 +94,73 @@ function __syncInboundDialplanBody() {
     // ------------------------------------------------------------------
     // General inbound routes (DID matches)
     // ------------------------------------------------------------------
+    require_once __DIR__ . '/../services/PrivacyService.php';
+    $privacyNotice = PrivacyService::dialplanNoticeConfig();
+    $beepOpt = PrivacyService::mixMonitorOptionSuffix();
+
+    if ($privacyNotice !== null) {
+        $conf .= "; --- Global Privacy / KVKK / GDPR / CCPA Pre-Call Notice & Consent ---\n";
+        $conf .= "[sub-privacy-consent]\n";
+        $conf .= "exten => s,1,NoOp(KVKK / GDPR Pre-Call Privacy Notice [{$privacyNotice['mode']}])\n";
+        $conf .= " same => n,Answer()\n";
+        if ($privacyNotice['mode'] === 'optout') {
+            $conf .= " same => n,Read(PRIVACY_CHOICE,{$privacyNotice['sound_path']},1,,1,{$privacyNotice['optout_timeout']})\n";
+            $conf .= " same => n,ExecIf(\$[\"\${PRIVACY_CHOICE}\" = \"{$privacyNotice['optout_digit']}\"]?Set(__PRIVACY_NO_RECORD=1))\n";
+            $conf .= " same => n,ExecIf(\$[\"\${PRIVACY_NO_RECORD}\" = \"1\"]?Set(CDR(accountcode)=PRIVACY_OPTOUT))\n";
+        } elseif ($privacyNotice['mode'] === 'optin') {
+            $conf .= " same => n,Set(__PRIVACY_NO_RECORD=1)\n";
+            $conf .= " same => n,Read(PRIVACY_CHOICE,{$privacyNotice['sound_path']},1,,1,{$privacyNotice['optout_timeout']})\n";
+            $conf .= " same => n,ExecIf(\$[\"\${PRIVACY_CHOICE}\" = \"{$privacyNotice['optout_digit']}\"]?Set(__PRIVACY_NO_RECORD=0))\n";
+            $conf .= " same => n,ExecIf(\$[\"\${PRIVACY_NO_RECORD}\" = \"1\"]?Set(CDR(accountcode)=PRIVACY_NO_CONSENT):Set(CDR(accountcode)=PRIVACY_CONSENT_OK))\n";
+        } else {
+            $conf .= " same => n,Playback({$privacyNotice['sound_path']})\n";
+        }
+        $conf .= " same => n,Return()\n\n";
+    }
+
+    $conf .= trunkLimitSubroutine();
     $conf .= "[from-trunk-inbound]\n\n";
 
+    $pattern_lengths = [];
     if (!empty($dids)) {
         foreach ($dids as $d) {
-            $num = preg_replace('/[^0-9]/', '', trim($d['did_number']));
+            $raw_did = ltrim(strtoupper(trim($d['did_number'])), '_');
+            $num = preg_replace('/[^0-9XZN.!]/', '', $raw_did);
+            if ($num === '') continue;
+            $is_pattern = (bool)preg_match('/[XZN.!]/', $num);
+            $exten_key = $is_pattern ? "_{$num}" : $num;
+            $did_cdr = $is_pattern ? '${EXTEN}' : $num;
+            $rec_to = $is_pattern ? '${FILTER(0-9+,${EXTEN})}' : $num;
+            $label_id = intval($d['id'] ?? 0) ?: preg_replace('/[^0-9A-Za-z_]/', '', $num);
+            if ($is_pattern && !preg_match('/[.!]/', $num)) {
+                $pattern_lengths[strlen($num)] = true;
+            }
             $title = toCleanAscii($d['title']);
-            $conf .= "; DID: {$num} ({$title})\n";
-            $conf .= "exten => {$num},1,NoOp(Inbound call for DID {$num} - {$title})\n";
-            $conf .= " same => n,Set(CDR(did)={$num})\n";
+            $conf .= "; DID: {$exten_key} ({$title})\n";
+            $conf .= "exten => {$exten_key},1,NoOp(Inbound call for DID {$exten_key} - {$title})\n";
+            $conf .= " same => n,Set(CDR(did)={$did_cdr})\n";
             $conf .= " same => n,Set(CDR(direction)=inbound)\n";
             if (!empty($d['language'])) {
                 $lang = preg_replace('/[^a-zA-Z_]/', '', $d['language']);
                 $conf .= " same => n,Set(CHANNEL(language)={$lang})\n";
             }
-            // Mandatory call recording.
-            if (!empty($d['record_call'])) {
+            if ($privacyNotice !== null) {
+                $conf .= " same => n,Gosub(sub-privacy-consent,s,1)\n";
+            }
+            // Mandatory call recording (unless caller opted out via KVKK/GDPR consent key).
+            // Never for a fax number: the recording is modem noise and only costs disk.
+            if (!empty($d['record_call']) && $d['dest_type'] !== 'fax') {
                 $rec = "/var/spool/asterisk/monitor/inbound_"
-                     . "\${STRFTIME(\${EPOCH},,%Y%m%d_%H%M%S)}_\${FILTER(0-9+,\${CALLERID(num)})}_to_{$num}.wav";
+                     . "\${STRFTIME(\${EPOCH},,%Y%m%d_%H%M%S)}_\${FILTER(0-9+,\${CALLERID(num)})}_to_{$rec_to}.wav";
+                $conf .= " same => n,GotoIf(\$[\"\${PRIVACY_NO_RECORD}\" = \"1\"]?skip_did_rec_{$label_id})\n";
                 $conf .= " same => n,Set(REC_FILE={$rec})\n";
-                $conf .= " same => n,MixMonitor(\${REC_FILE})\n";
+                $conf .= " same => n,MixMonitor(\${REC_FILE}{$beepOpt})\n";
                 $conf .= " same => n,Set(CDR(userfield)=\${REC_FILE})\n";
+                $conf .= " same => n(skip_did_rec_{$label_id}),NoOp(DID Recording check done)\n";
             }
 
-            $conf .= buildDestinationLines($d['dest_type'], $d['dest_id'], $num) . "\n\n";
+            $orig_target = $is_pattern ? '${EXTEN}' : $num;
+            $conf .= buildDestinationLines($d['dest_type'], $d['dest_id'], $orig_target) . "\n\n";
         }
     } else {
         $conf .= "; No specific DIDs configured yet\n\n";
@@ -116,9 +170,17 @@ function __syncInboundDialplanBody() {
     // Closing context for unmatched calls
     // ------------------------------------------------------------------
     $conf .= "[from-trunk-notfound]\n";
+    $notfound_body = "";
+    foreach (array_keys($pattern_lengths) as $pLen) {
+        $pLen = (int)$pLen;
+        if ($pLen > 0) {
+            $notfound_body .= " same => n,GotoIf(\$[\$[\${LEN(\${EXTEN})} > {$pLen}] & \$[\${DIALPLAN_EXISTS(from-trunk-inbound,\${EXTEN:-{$pLen}},1)}]]?from-trunk-inbound,\${EXTEN:-{$pLen}},1)\n";
+        }
+    }
+    $notfound_body .= " same => n,Playtones(congestion)\n same => n,Congestion(10)\n same => n,Hangup(1)\n";
     $conf .= buildCatchAllExtensions(
         "NoOp(No matching inbound route - DID: \${EXTEN})",
-        " same => n,Playtones(congestion)\n same => n,Congestion(10)\n same => n,Hangup(1)\n"
+        $notfound_body
     ) . "\n";
 
     $conf .= "exten => s,1,NoOp(No matching inbound route - DID: s)\n";
@@ -147,3 +209,39 @@ function __syncInboundDialplanBody() {
         AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadDialplan()], t('sync.ctx_inbound'));
     }, t('sync.ctx_inbound'));
 }
+
+/**
+ * [sub-trunk-limit]: channels (inbound "trunkin" and outbound "trunk" groups
+ * together) and calls per minute of one trunk. ARG1 trunk, ARG2 max channels,
+ * ARG3 calls per minute (0 = none), ARG4 group of this call. TRUNK_LIMIT is
+ * empty when the call may go on, "channels" or "rate" when it is refused; a
+ * refused call leaves the group and is counted in astdb trunkblock/<trunk>
+ * ("first:count:reason:last", a 15-minute window) for the health check
+ * "Trunk limits". The minute counter is astdb trunkrate/<trunk>.
+ */
+function trunkLimitSubroutine(): string
+{
+    return "[sub-trunk-limit]\n"
+        . "exten => s,1,Set(TRUNK_LIMIT=)\n"
+        . " same => n,Set(GROUP(\${ARG4})=\${ARG1})\n"
+        . " same => n,GotoIf(\$[0\${ARG2} = 0]?rate)\n"
+        . " same => n,GotoIf(\$[\${GROUP_COUNT(\${ARG1}@trunk)} + \${GROUP_COUNT(\${ARG1}@trunkin)} > \${ARG2}]?full)\n"
+        . " same => n(rate),GotoIf(\$[0\${ARG3} = 0]?ok)\n"
+        . " same => n,Set(LOCAL(min)=\${STRFTIME(\${EPOCH},,%Y%m%d%H%M)})\n"
+        . " same => n,Set(LOCAL(cnt)=\${DB(trunkrate/\${ARG1})})\n"
+        . " same => n,Set(LOCAL(cnt)=\${IF(\$[\"\${CUT(cnt,:,1)}\" = \"\${min}\"]?\$[0\${CUT(cnt,:,2)} + 1]:1)})\n"
+        . " same => n,Set(DB(trunkrate/\${ARG1})=\${min}:\${cnt})\n"
+        . " same => n,GotoIf(\$[\${cnt} > \${ARG3}]?over)\n"
+        . " same => n(ok),Return()\n"
+        . " same => n(full),Set(TRUNK_LIMIT=channels)\n"
+        . " same => n,Goto(refused)\n"
+        . " same => n(over),Set(TRUNK_LIMIT=rate)\n"
+        . " same => n(refused),Set(GROUP(\${ARG4})=)\n"
+        . " same => n,Set(LOCAL(blk)=\${DB(trunkblock/\${ARG1})})\n"
+        . " same => n,Set(LOCAL(first)=\${IF(\$[\${EPOCH} - 0\${CUT(blk,:,1)} < 900]?\${CUT(blk,:,1)}:\${EPOCH})})\n"
+        . " same => n,Set(LOCAL(n)=\${IF(\$[\${EPOCH} - 0\${CUT(blk,:,1)} < 900]?\$[0\${CUT(blk,:,2)} + 1]:1)})\n"
+        . " same => n,Set(DB(trunkblock/\${ARG1})=\${first}:\${n}:\${TRUNK_LIMIT}:\${EPOCH})\n"
+        . " same => n,NoOp(Trunk \${ARG1}: call refused, limit \${TRUNK_LIMIT})\n"
+        . " same => n,Return()\n\n";
+}
+

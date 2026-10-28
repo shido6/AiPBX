@@ -103,11 +103,6 @@ function roleHomePath(string $role): string {
     };
 }
 
-function _isSessionActivityFresh() {
-    $idle_limit = 3600;
-    return !isset($_SESSION['last_activity']) || (time() - $_SESSION['last_activity']) <= $idle_limit;
-}
-
 /**
  * Maps page filenames to RBAC module keys
  */
@@ -122,9 +117,12 @@ function getModuleKeyForPage($page = null) {
         'trunks.php'            => 'trunks',
         'did_routes.php'        => 'did_routes',
         'outbound_routes.php'   => 'outbound_routes',
+        'dialplan_rules.php'    => 'outbound_routes',
         'dial_permissions.php' => 'dial_permissions',
         'time_conditions.php'   => 'time_conditions',
         'ivrs.php'              => 'ivrs',
+        // SQL against the external databases: administrators only, like them.
+        'ivr_data_steps.php'    => 'external_dbs',
         'extensions.php'        => 'extensions',
         'phones.php'            => 'phones',
         'phone_keys.php'        => 'phones',
@@ -163,9 +161,15 @@ function getModuleKeyForPage($page = null) {
         'fail2ban.php'              => 'fail2ban',
         'certificates.php'          => 'certificates',
         'system_update.php'         => 'system_update',
+        'scheduled_tasks.php'       => 'scheduled_tasks',
         // Admin → Help (system guide): admins only (HelpController), listed with System update.
         'help.php'                  => 'system_update',
         'push_settings.php'         => 'push_settings',
+        'plugins.php'               => 'plugins',
+        'api_keys.php'              => 'api_keys',
+        'webhooks.php'              => 'webhooks',
+        'external_dbs.php'          => 'external_dbs',
+        'google_integration.php'    => 'google_integration',
         'ms_teams.php'              => 'ms_teams',
         'web_widgets.php'           => 'web_widgets',
         'ai_tts.php'                => 'ai_tts',
@@ -173,17 +177,30 @@ function getModuleKeyForPage($page = null) {
         'ai_cloud.php'              => 'ai_cloud',
         'ai_echo.php'               => 'echo',
         'ai_apps.php'               => 'ai_apps',
+        'assistant.php'             => 'assistant',
+        'privacy.php'               => 'privacy',
         'mail_settings.php'         => 'mail_settings',
         'file_storage.php'          => 'file_storage',
+        'health.php'                => 'health',
+        'call_quality.php'          => 'call_quality',
     ];
+    if (str_starts_with((string)$page, 'plugin_') && str_ends_with((string)$page, '.php')) {
+        return 'plugins';
+    }
     return $map[$page] ?? str_replace('.php', '', $page);
 }
 
 /**
  * Fetch permissions matrix for a given role key
  */
-function getRolePermissionsMap($role_key = null) {
+function getRolePermissionsMap($role_key = null, bool $reset = false) {
     static $cache = [];
+    if ($reset) {
+        $cache = [];
+        if ($role_key === null) {
+            return [];
+        }
+    }
     if ($role_key === null) {
         $role_key = $_SESSION['user_role'] ?? 'user';
     }
@@ -239,8 +256,24 @@ function hasModulePermission($module_key, $action = 'access') {
     // 'ai_cloud': holds the API keys of paid cloud AI services.
     // 'ai_apps': an application's lookup URL is requested by the server itself.
     // Keep in sync with RoleRepository::modulesDefinition() 'admin_only' (RbacTest checks it).
-    if (in_array($module_key, ['roles', 'system_users', 'firewall', 'fail2ban', 'mail_settings', 'system_update', 'certificates', 'google_integration', 'phones', 'web_widgets', 'file_storage', 'ai_models', 'ai_cloud', 'ai_apps', 'echo', 'ai_voip_engineer', 'assistant', 'health'], true)) {
+    if (in_array($module_key, ['roles', 'system_users', 'firewall', 'fail2ban', 'mail_settings', 'system_update', 'scheduled_tasks', 'certificates', 'privacy', 'plugins', 'api_keys', 'webhooks', 'external_dbs', 'google_integration', 'phones', 'web_widgets', 'file_storage', 'ai_models', 'ai_cloud', 'ai_apps', 'echo', 'ai_voip_engineer', 'assistant', 'health', 'call_quality'], true)) {
         return $role === 'admin';
+    }
+
+    // Plugin-backed delegable modules ('ms_teams' -> 'ms-teams', 'ai_tts' -> 'ai-tts'):
+    // when a plugin is not enabled in sys_plugins, non-admin roles must never access
+    // its pages or API endpoints even if sys_role_permissions grants them access.
+    $pluginModuleSlugs = [
+        'ms_teams' => 'ms-teams',
+        'ai_tts'   => 'ai-tts',
+    ];
+    if ($role !== 'admin' && isset($pluginModuleSlugs[$module_key])) {
+        if (is_file(__DIR__ . '/src/core/PluginManager.php')) {
+            require_once __DIR__ . '/src/core/PluginManager.php';
+            if (!PluginManager::isEnabled($pluginModuleSlugs[$module_key])) {
+                return false;
+            }
+        }
     }
 
     // Read-only viewer (read_only_admin) rule: can never change settings (edit) or delete (delete) in any module!
@@ -354,7 +387,37 @@ function requireRole($allowed_roles) {
     // by default when there is no row), so admin goes through the general
     // flow below as well; no separate shortcut needed.
 
+    if (!is_array($allowed_roles)) {
+        $allowed_roles = [$allowed_roles];
+    }
+
     $module_key = getModuleKeyForPage();
+    if ($module_key === 'cc') {
+        if ($user_role === 'read_only_admin' && !in_array('read_only_admin', $allowed_roles, true)) {
+            http_response_code(403);
+            exit;
+        }
+        $cc_modules = ['cc_agent', 'queue_monitor', 'cc_board', 'cc_reports'];
+        foreach ($cc_modules as $cm) {
+            if (hasModulePermission($cm, 'access') || hasModulePermission($cm, 'view')) {
+                return;
+            }
+        }
+        $role_perm_map = getRolePermissionsMap($user_role);
+        foreach ($cc_modules as $cm) {
+            if (isset($role_perm_map[$cm])) {
+                http_response_code(403);
+                echo '<!DOCTYPE html><html lang="' . getUserLanguage() . '"><head><title>' . t('auth.blocked') . '</title><link rel="stylesheet" href="/assets/css/variables.css"><link rel="stylesheet" href="/assets/css/layout.css"><link rel="stylesheet" href="/assets/css/components.css"><link rel="stylesheet" href="/assets/css/fontawesome.min.css"><link rel="stylesheet" href="/assets/css/style.css"></head>';
+                echo '<body class="auth-body"><div class="auth-card" style="text-align:center; max-width:480px;">';
+                echo '<h2 style="color:var(--danger);"><i class="fas fa-lock"></i> 403 - ' . t('auth.forbidden') . '</h2>';
+                echo '<p style="margin:20px 0; color:var(--text-muted);">' . t('auth.no_page_access') . '</p>';
+                echo '<a href="/" class="btn btn-primary"><i class="fas fa-arrow-left"></i> ' . t('auth.back_home') . '</a>';
+                echo '</div></body></html>';
+                exit;
+            }
+        }
+    }
+
     if (hasModulePermission($module_key, 'access')) {
         if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (isPostDeleteRequest()) {
@@ -394,10 +457,6 @@ function requireRole($allowed_roles) {
         exit;
     }
 
-    if (!is_array($allowed_roles)) {
-        $allowed_roles = [$allowed_roles];
-    }
-
     if (!in_array($user_role, $allowed_roles)) {
         http_response_code(403);
         echo '<!DOCTYPE html><html lang="' . getUserLanguage() . '"><head><title>' . t('auth.blocked') . '</title><link rel="stylesheet" href="/assets/css/variables.css"><link rel="stylesheet" href="/assets/css/layout.css"><link rel="stylesheet" href="/assets/css/components.css"><link rel="stylesheet" href="/assets/css/fontawesome.min.css"><link rel="stylesheet" href="/assets/css/style.css"></head>';
@@ -413,7 +472,7 @@ function requireRole($allowed_roles) {
 function getCurrentUser() {
     if (!isset($_SESSION['user_id'])) return null;
     $db = getDB();
-    $stmt = $db->prepare('SELECT u.id, u.username, u.full_name, u.email, u.extension, u.sip_password, u.role, u.can_listen_recordings, u.can_view_all_cdrs, u.can_view_queue_monitor, u.allowed_phone_mode, u.theme_preference, COALESCE(r.role_name, u.role) as role_display_name FROM sys_users u LEFT JOIN sys_roles r ON u.role = r.role_key WHERE u.id = ?');
+    $stmt = $db->prepare('SELECT u.id, u.username, u.full_name, u.email, u.extension, u.sip_password, u.role, u.can_listen_recordings, u.can_view_all_cdrs, u.can_view_queue_monitor, u.allowed_phone_mode, u.outbound_group, u.permission_group_id, u.theme_preference, COALESCE(r.role_name, u.role) as role_display_name FROM sys_users u LEFT JOIN sys_roles r ON u.role = r.role_key WHERE u.id = ?');
     $stmt->execute([$_SESSION['user_id']]);
     return $stmt->fetch();
 }

@@ -202,9 +202,8 @@ class QrLoginService
 
     private static function serverUrl(): string
     {
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host = $_SERVER['HTTP_HOST'] ?? getSystemSetting('portal_domain', 'localhost');
-        return $scheme . '://' . $host;
+        require_once __DIR__ . '/ForgotPasswordService.php';
+        return ForgotPasswordService::portalUrl();
     }
 
     /** JSON payload the app reads from the QR (Android/iOS handleScannedQr). */
@@ -225,15 +224,20 @@ class QrLoginService
     /**
      * Checks whether the QR code has been scanned (for status polling on the web side).
      */
-    public static function checkStatus(string $token): array
+    public static function checkStatus(string $token, ?int $userId = null): array
     {
         if (empty($token)) {
             return ['used' => false, 'expired' => true];
         }
 
         $db = getDB();
-        $stmt = $db->prepare('SELECT used_at, expires_at, device_name FROM sys_user_qr_tokens WHERE token = ? LIMIT 1');
-        $stmt->execute([$token]);
+        if ($userId !== null && $userId > 0) {
+            $stmt = $db->prepare('SELECT used_at, expires_at, device_name FROM sys_user_qr_tokens WHERE token = ? AND user_id = ? LIMIT 1');
+            $stmt->execute([$token, $userId]);
+        } else {
+            $stmt = $db->prepare('SELECT used_at, expires_at, device_name FROM sys_user_qr_tokens WHERE token = ? LIMIT 1');
+            $stmt->execute([$token]);
+        }
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if (!$row) {
@@ -270,7 +274,7 @@ class QrLoginService
         $db = getDB();
         $stmt = $db->prepare('SELECT q.id AS token_id, q.user_id, q.expires_at, q.used_at,
                                      u.id, u.username, u.full_name, u.role, u.extension,
-                                     u.extension_type, u.sip_password, u.is_active
+                                     u.email, u.extension_type, u.sip_password, u.allowed_phone_mode, u.is_active, u.token_epoch
                               FROM sys_user_qr_tokens q
                               JOIN sys_users u ON q.user_id = u.id
                               WHERE q.token = ?
@@ -298,73 +302,26 @@ class QrLoginService
             return ['success' => false, 'error' => t('mobile_api.no_extension_assigned'), 'code' => 400];
         }
 
-        // Mark the token as used
-        $upd = $db->prepare('UPDATE sys_user_qr_tokens SET used_at = NOW(), device_name = ?, ip_address = ? WHERE id = ?');
+        // Mark the token as used, atomically: two scans at the same moment
+        // both passed the used_at check above and both got a session.
+        $upd = $db->prepare('UPDATE sys_user_qr_tokens SET used_at = NOW(), device_name = ?, ip_address = ? WHERE id = ? AND used_at IS NULL');
         $upd->execute([$deviceName, $clientIp, $record['token_id']]);
+        if ($upd->rowCount() !== 1) {
+            return ['success' => false, 'error' => t('srv_qr.err_used'), 'code' => 401];
+        }
 
         // Log the sign-in attempt
         if (function_exists('logLoginAttempt')) {
             logLoginAttempt($clientIp, $record['username'], 'SUCCESS');
         }
 
-        // Coturn TURNS
-        $turn = null;
-        if (defined('TURN_SECRET') && TURN_SECRET !== '') {
-            $turn_username = (time() + 2592000) . ':' . $record['extension'];
-            $turn_password = base64_encode(hash_hmac('sha1', $turn_username, TURN_SECRET, true));
-            $turn_host = defined('TURN_HOST') && TURN_HOST !== '' ? TURN_HOST : ($_SERVER['HTTP_HOST'] ?? '127.0.0.1');
-            $turn_port = defined('TURNS_PORT') && TURNS_PORT !== '' ? TURNS_PORT : '443';
-            $turn = [
-                'username' => $turn_username,
-                'credential' => $turn_password,
-                'urls' => [
-                    'turns:' . $turn_host . ':' . $turn_port . '?transport=tcp'
-                ]
-            ];
-        }
-
+        // The same package as the password and Google sign-in (one place for the
+        // mobile-client rule, TURN and push settings).
         require_once dirname(__DIR__, 2) . '/api/mobile/auth_helper.php';
-        $token = generateMobileToken($record, 30 * 86400);
-
-        $host = $_SERVER['HTTP_HOST'] ?? getSystemSetting('portal_domain', 'localhost');
-        $host_parts = explode(':', $host);
-        $domain = $host_parts[0];
-        $ws_path = getSystemSetting('pjsip_ws_path', '/ws');
-
-        $push_config = [
-            'enabled' => getSystemSetting('push_enabled', '0') === '1',
-            'provider' => getSystemSetting('push_provider', 'none'),
-            'fcm_project_id' => getSystemSetting('push_fcm_project_id', ''),
-            'fcm_app_id' => getSystemSetting('push_fcm_app_id', ''),
-            'fcm_api_key' => getSystemSetting('push_fcm_api_key', ''),
-            'fcm_sender_id' => getSystemSetting('push_fcm_sender_id', ''),
-        ];
 
         writeAuditLog(null, 'user_account', $record['id'], "Mobile QR code sign-in: {$record['username']} ({$deviceName})", 'login', $record['id']);
 
-        $loginResponse = [
-            'success' => true,
-            'token' => $token,
-            'user' => [
-                'id' => (int)$record['id'],
-                'username' => $record['username'],
-                'full_name' => $record['full_name'],
-                'extension' => $record['extension'],
-                'role' => $record['role']
-            ],
-            'sip' => [
-                'extension' => $record['extension'],
-                'sip_username' => $record['extension'] . '-mob-webrtc',
-                'native_sip_username' => $record['extension'],
-                'webrtc_username' => $record['extension'] . '-mob-webrtc',
-                'sip_password' => $record['sip_password'] ?? '',
-                'domain' => $domain,
-                'sip_port' => 5060,
-                'ws_url' => 'wss://' . $domain . $ws_path,
-                'turn' => $turn
-            ],
-            'push_config' => $push_config
-        ];
+        $loginResponse = buildMobileLoginResponse($record);
 
         return ['success' => true, 'response' => $loginResponse];
     }

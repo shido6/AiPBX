@@ -118,8 +118,10 @@
     <string name="btn_remove">Remover</string>
     <string name="call_from_pbx">Chamada do PBX</string>
     <string name="call_on_hold">Em espera</string>
+    <string name="cf_always">REENC. (SEMPRE)</string>
     <string name="cf_busy">REENC. (OCUPADO)</string>
     <string name="cf_busy_noanswer">REENC. (OCUPADO/SEM RESPOSTA)</string>
+    <string name="cf_noanswer">REENC. (SEM RESPOSTA)</string>
     <string name="chat_document">Documento</string>
     <string name="chat_extension_title">Extensão #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Sem permissão da câmara: a chamada continua só com áudio.</string>
     <string name="err_camera_unavailable">Câmara indisponível: a chamada continua só com áudio.</string>
     <string name="contacts_extensions_listed">extensões listadas</string>
+    <string name="api_fcm_token_failed">Não foi possível enviar o token FCM (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Não foi possível eliminar o grupo (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Manter prefixo \'+\'</string>
+    <string name="pref_send_plus_desc">Enviar \'+\' internacional diretamente para o PBX para normalização (ATIVADO) ou converter para 00 (DESATIVADO)</string>
 </resources>

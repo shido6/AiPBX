@@ -34,6 +34,38 @@ silent: check the external IP under **PBX Settings**, the certificate (**Securit
 TURNS fails silently with a self-signed one) and `relay-ip` in `/etc/turnserver.conf`. Full checklist:
 [WebRTC, NAT and TURN](webrtc-nat.md#troubleshooting).
 
+## Incoming faxes fail (0 pages)
+
+**Fax Inbox** shows the call as *FAILED* with no file (installations before 1.50.2 do not show it at
+all), and `/var/log/asterisk/messages.log` has:
+
+```
+res_fax.c: channel 'PJSIP/<trunk>-...' refused to negotiate T.38
+res_fax_spandsp.c: WARNING T.30 Non-ECM carrier not found
+```
+
+The trunk offers T.38 and the carrier refuses it; the fax then falls back to audio and fails there.
+Switch T.38 off on that trunk (**Trunks → edit → T.38 UDPTL Fax Support: Inactive**, then **Apply**):
+the fax goes as audio (G.711) from the start, which works with every carrier. New trunks have T.38
+off since 1.50.2; turn it on only for a carrier that supports T.38.
+
+Not every failed call is a lost fax: people often dial a fax number by mistake (a mobile caller,
+a call of 10–20 seconds). The reason Asterisk gives is in the inbox under *FAILED*.
+
+## Outgoing faxes fail or hang
+
+- **"Permission denied" / nothing is sent on Ubuntu 26.04:** its AppArmor profile for Ghostscript
+  blocks the fax directories, so the PDF cannot be converted. The installer allows them in
+  `/etc/apparmor.d/local/gs` (1.50.4); run `sudo aipbx-update` or `sudo bash /opt/aipbx/install.sh --upgrade`.
+- **A fax that cannot complete its handshake** is hung up two minutes after it started if not a
+  single page has moved (the line used to stay busy for many minutes). A fax that is sending pages is
+  never cut, however long it is. The reason is in **Fax → Outbound Fax** under *FAILED*.
+- **Do not test by faxing your own number through the carrier.** Many carriers do not carry fax
+  between the two legs of such a loop (neither as audio nor as T.38), so it fails although faxes to
+  and from other numbers work. Test against a real fax machine elsewhere.
+- **T.38 needs the UDPTL ports** (4100–4999/udp) open in the firewall; the installer opens them
+  since 1.50.5.
+
 ## Capturing SIP
 
 ```bash
@@ -83,6 +115,22 @@ journalctl -t aipbx-voicemail -n 20
 
 "push off" means push is not set up, "push to 0 device(s)" that the extension has no registered
 phone (open the app once after signing in), and "failed: ..." carries Firebase's error.
+
+## System Update fails with "Code was modified by hand"
+
+`aipbx-update` refuses to update when files under `/opt/aipbx` were changed.
+Installations on **1.34.0 – 1.34.2** hit this without anyone editing anything:
+their installer made `web/bin/aipbx_ops.php` executable, and the updater of those
+versions counts that as a change. Restore the file once, then update as usual:
+
+```bash
+sudo git -C /opt/aipbx checkout -- web/bin/aipbx_ops.php
+sudo aipbx-update
+```
+
+From 1.50.2 on the updater ignores file mode changes. For any other file listed by
+the error, keep your change outside the code (portal, `/etc/ai-pbx.env`,
+`*_custom.conf`) and restore the file the same way.
 
 ## Useful commands
 

@@ -1,7 +1,7 @@
 name: Web & Chat CI
 
 # Checks that run on every push for the web portal (PHP), the chat service (Go)
-# and the local AI service (Python).
+# and the Python services (local AI, signaling capture).
 # Until 2026-09-27 only Android/iOS were built; that is why bugs breaking the
 # conference/ring group saves and the push settings went unnoticed.
 
@@ -12,6 +12,8 @@ on:
       - 'web/**'
       - 'chat/**'
       - 'ai/**'
+      - 'signaling/**'
+      - 'engine/**'
       - 'scripts/i18n.py'
       - '.github/workflows/web-ci.yml'
   pull_request:
@@ -19,6 +21,8 @@ on:
       - 'web/**'
       - 'chat/**'
       - 'ai/**'
+      - 'signaling/**'
+      - 'engine/**'
       - 'scripts/i18n.py'
       - '.github/workflows/web-ci.yml'
   workflow_dispatch:
@@ -55,6 +59,10 @@ jobs:
       DB_NAME: asterisk_test
       DB_USER: aipbx_test
       DB_PASS: ci-test
+      # Signs the sign-in tokens (no fallback to DB_PASS any more).
+      CHAT_JWT_SECRET: ci-token-key-0123456789abcdef0123456789
+      # Key used by SecretBox (AiTtsServiceTest & smoke.php).
+      AIPBX_SETTINGS_KEY: test-settings-key
       # No step sends a command to a real Asterisk.
       AIPBX_NO_ASTERISK: '1'
 
@@ -147,3 +155,18 @@ jobs:
       # Fake model backend: no torch or model download needed.
       - name: Unit tests
         run: python -m unittest discover -v ai/tests
+      # The signaling capture daemon (HEP parser, row shape); stdlib only.
+      - name: Signaling capture tests
+        run: python -m unittest discover -v -s tests
+        working-directory: signaling
+
+      # The desk-phone discovery engine (PBX -> Phones -> Discovered on the
+      # network); stdlib only. The parity tests read PhoneModels.php and
+      # PhoneDiscoveryService.php, so a vendor prefix or a setting added on the
+      # PHP side alone fails here. Skipped while the engine is not in the tree,
+      # so this step can land before the feature and guards it from the moment
+      # it does.
+      - name: Phone discovery engine tests
+        if: hashFiles('engine/tests/**') != ''
+        run: python -m unittest discover -v -s tests -t .
+        working-directory: engine

@@ -37,10 +37,43 @@ if ($path === '/set-language') {
         $stmt->execute([$lang, $_SESSION['user_id']]);
     }
     $redirect = $_GET['redirect'] ?? '/';
-    if (!is_string($redirect) || $redirect === '' || $redirect[0] !== '/' || (isset($redirect[1]) && $redirect[1] === '/')) {
+    if (!is_string($redirect) || $redirect === '' || $redirect[0] !== '/' || (isset($redirect[1]) && ($redirect[1] === '/' || $redirect[1] === '\\'))) {
         $redirect = '/';
     }
     header('Location: ' . $redirect);
+    exit;
+}
+
+// 0a. First-time Open Source License & Telecom Disclaimer acceptance (admin click-wrap)
+if ($path === '/accept-license' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    requireLogin();
+    header('Content-Type: application/json; charset=utf-8');
+    if (($_SESSION['user_role'] ?? '') !== 'admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Admin privileges required.']);
+        exit;
+    }
+    $csrf = (string)($_POST['csrf_token'] ?? $_SERVER['HTTP_X_CSRF_TOKEN'] ?? '');
+    if (!verifyCSRFToken($csrf)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Invalid CSRF token.']);
+        exit;
+    }
+    $acceptedAt = date('Y-m-d H:i:s');
+    $clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $acceptedBy = (string)($_SESSION['username'] ?? 'admin') . ' (' . $clientIp . ')';
+    $db = getDB();
+    $stmt = $db->prepare(
+        'INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?)
+         ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+    );
+    $stmt->execute(['license_accepted_at', $acceptedAt]);
+    $stmt->execute(['license_accepted_by', $acceptedBy]);
+    $stmt->execute(['license_accepted_version', defined('AIPBX_VERSION') ? AIPBX_VERSION : '']);
+    if (function_exists('writeAuditLog')) {
+        writeAuditLog('security', 'license_acceptance', 'mit_disclaimer', "Accepted MIT & Telecom Disclaimer by {$acceptedBy}", 'update', $_SESSION['user_id'] ?? null);
+    }
+    echo json_encode(['success' => true, 'accepted_at' => $acceptedAt]);
     exit;
 }
 
@@ -56,6 +89,28 @@ if ($path === '/provision' || str_starts_with($path, '/provision/')) {
 if ($path === '/widget-api' || str_starts_with($path, '/widget-api/')) {
     require_once __DIR__ . '/src/controllers/WidgetApiController.php';
     WidgetApiController::serve($path);
+}
+
+// 0d. REST API v1 (/api/v1 and /api/v1/*): stateless Bearer-authenticated JSON API.
+if ($path === '/api/v1' || str_starts_with($path, '/api/v1/')) {
+    require_once __DIR__ . '/src/controllers/ApiV1Controller.php';
+    ApiV1Controller::serve($path);
+}
+
+// 0e. Public Plugin Endpoints (/api/plugins/<slug> and /api/plugins/<slug>/*)
+if (preg_match('#^/api/plugins/([a-z0-9][a-z0-9-]{1,48})(?:/(.*))?$#', $path, $_pubPluginMatch)) {
+    require_once __DIR__ . '/src/core/PluginManager.php';
+    PluginManager::servePublicEndpoint($_pubPluginMatch[1], (string)($_pubPluginMatch[2] ?? ''));
+    exit;
+}
+
+// 0f. Plugin Detail / Settings page (/plugins/<slug>)
+if (preg_match('#^/plugins/([a-z0-9][a-z0-9-]{1,48})$#', $path, $_pluginMatch)) {
+    require_once __DIR__ . '/src/core/BaseController.php';
+    require_once __DIR__ . '/src/controllers/PluginsController.php';
+    $_SERVER['PHP_SELF'] = '/plugin_' . $_pluginMatch[1] . '.php';
+    PluginsController::detail($_pluginMatch[1]);
+    exit;
 }
 
 // 1. Old URLs → permanent redirect (exact-match whitelist)

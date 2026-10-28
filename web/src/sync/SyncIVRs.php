@@ -19,8 +19,9 @@ function syncAllIVRs() {
  * max_failures: every time "i" (invalid key) fires, a per-channel counter
  * (IVR{id}FAILS) is incremented; below the threshold the menu (s,1) plays
  * again from the start, at the threshold the call goes to the
- * invalid_dest_type/id destination. The timeout (t) is not part of this
- * counter; its behaviour did not change.
+ * invalid_dest_type/id destination. The timeout (t) goes straight to the
+ * timeout destination, or — with timeout_repeat — counts in the same counter
+ * and plays the menu again first.
  *
  * allow_direct_dial: when on, dialing an active extension number while the
  * IVR menu plays goes straight to the real call logic in [from-internal-pbx]
@@ -91,9 +92,9 @@ function buildIVRDialplanBlock($ivr, $entries, $active_exts = [], $internal_numb
             foreach ($outbound_routes as $r) {
                 $pattern = trim($r['match_pattern'] ?? '');
                 if ($pattern === '') continue;
-                $pat_clean = preg_replace('/[^0-9NXZnxz.\[\]_!*#-]/', '', $pattern);
+                $pat_clean = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', $pattern);
                 if ($pat_clean === '') continue;
-                $ext_rule = ($pat_clean[0] === '_' || preg_match('/^[0-9*#]+$/', $pat_clean)) ? $pat_clean : "_{$pat_clean}";
+                $ext_rule = ($pat_clean[0] === '_' || preg_match('/^[+0-9*#]+$/', $pat_clean)) ? $pat_clean : "_{$pat_clean}";
                 if (isset($used_digits[$ext_rule]) || isset($dialable[$ext_rule])) continue;
                 if (in_array($ext_rule, ['_.', '_!', '_X.', '_X!'], true)) continue;
                 $r_name = toCleanAscii($r['route_name'] ?? 'Route');
@@ -105,10 +106,22 @@ function buildIVRDialplanBlock($ivr, $entries, $active_exts = [], $internal_numb
 
     $conf .= "; Timeout Destination\n";
     $conf .= "exten => t,1,NoOp(IVR {$ivr_id} Timed Out -> {$ivr['timeout_dest_type']})\n";
+    if (!empty($ivr['timeout_repeat'])) {
+        // No key pressed: "Please try again." and the menu once more; it counts
+        // with the wrong keys, so after max_failures the timeout destination follows.
+        $conf .= " same => n,Set({$fail_var}=\$[0\${{$fail_var}} + 1])\n";
+        $conf .= " same => n,GotoIf(\$[0\${{$fail_var}} >= {$max_failures}]?tdest)\n";
+        $conf .= " same => n,Playback(please-try-again)\n";
+        $conf .= " same => n,Goto(s,1)\n";
+        $conf .= " same => n(tdest),NoOp(IVR {$ivr_id} no key {$max_failures} times -> {$ivr['timeout_dest_type']})\n";
+    }
     $conf .= buildDestinationLines($ivr['timeout_dest_type'], $ivr['timeout_dest_id']) . "\n\n";
 
     $conf .= "; Invalid Destination - {$max_failures} failed attempts repeat the menu\n";
     $conf .= "exten => i,1,NoOp(IVR {$ivr_id} Invalid Digit)\n";
+    // "Invalid choice." before the menu repeats: without it the caller heard
+    // the menu start again and could not tell the key was wrong.
+    $conf .= " same => n,Playback(conf-errormenu)\n";
     $conf .= " same => n,Set({$fail_var}=\$[0\${{$fail_var}} + 1])\n";
     $conf .= " same => n,GotoIf(\$[0\${{$fail_var}} < {$max_failures}]?s,1)\n";
     $conf .= " same => n,NoOp(IVR {$ivr_id} Max Invalid Attempts ({$max_failures}) Reached -> {$ivr['invalid_dest_type']})\n";
@@ -146,7 +159,13 @@ function __syncAllIVRsBody() {
         }
     }
 
-    return writeConfWithRollback("extensions_ivrs.conf", $conf, function() {
-        AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadDialplan()], 'IVR senkronizasyonu');
-    }, 'IVR senkronizasyonu');
+    $ok = writeConfWithRollback("extensions_ivrs.conf", $conf, function() {
+        AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadDialplan()], t('pending_sync.domain_ivrs'));
+    }, t('pending_sync.domain_ivrs'));
+
+    if (function_exists('__syncIvrDataStepsBody')) {
+        __syncIvrDataStepsBody();
+    }
+
+    return $ok;
 }

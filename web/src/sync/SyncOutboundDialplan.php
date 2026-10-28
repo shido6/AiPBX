@@ -19,18 +19,37 @@ function __syncOutboundDialplanBody() {
     // Trunk channel limits. The route's trunks_json does not have them; the
     // limit is kept on the trunk's own record (pbx_trunks.max_channels).
     $trunk_limits = [];
+    $trunk_rates = [];
     $trunk_cid_norm = [];
-    foreach (getDB()->query("SELECT trunk_name, max_channels, cid_keep_last, cid_prepend FROM pbx_trunks")->fetchAll(PDO::FETCH_ASSOC) as $tl) {
+    $trunk_carrier_norm = [];
+    foreach (getDB()->query("SELECT trunk_name, max_channels, max_calls_per_minute, cid_keep_last, cid_prepend, carrier_strip_prefix, carrier_add_prefix FROM pbx_trunks")->fetchAll(PDO::FETCH_ASSOC) as $tl) {
         $trunk_limits[$tl['trunk_name']] = intval($tl['max_channels']);
+        $trunk_rates[$tl['trunk_name']] = intval($tl['max_calls_per_minute'] ?? 0);
         $trunk_cid_norm[$tl['trunk_name']] = [
             'keep_last' => max(0, min(20, intval($tl['cid_keep_last'] ?? 0))),
             'prepend' => preg_replace('/[^0-9+]/', '', (string)($tl['cid_prepend'] ?? '')),
+        ];
+        $trunk_carrier_norm[$tl['trunk_name']] = [
+            'strip' => preg_replace('/[^0-9+*#]/', '', (string)($tl['carrier_strip_prefix'] ?? '')),
+            'add' => preg_replace('/[^0-9+*#]/', '', (string)($tl['carrier_add_prefix'] ?? '')),
         ];
     }
 
     $db = getDB();
     $routes = $db->query("SELECT * FROM pbx_outbound_routes WHERE is_active = 1 ORDER BY sort_order ASC, id ASC")->fetchAll();
     $external_dial_timeout = intval(getSystemSetting('pjsip_external_dial_timeout', '60'));
+
+
+    // Call normalization switched off as a whole: the per-device contexts stay
+    // (the phones point at them), only without rules.
+    $dialplan_rules = [];
+    if ((string)getSystemSetting('dialplan_rules_enabled', '1') !== '0') {
+        try {
+            $dialplan_rules = $db->query("SELECT * FROM pbx_dialplan_rules WHERE is_active = 1 ORDER BY sort_order ASC, id ASC")->fetchAll(PDO::FETCH_ASSOC);
+        } catch (\Exception $e) {
+            $dialplan_rules = [];
+        }
+    }
 
     // Routes are split by group. Every group gets its own context; users can
     // only use the routes of the group they are in.
@@ -43,6 +62,15 @@ function __syncOutboundDialplanBody() {
         $g = max(1, intval($r['route_group'] ?? 1));
         $groups[$g][] = $r;
     }
+    try {
+        $userGroups = $db->query("SELECT DISTINCT outbound_group FROM sys_users WHERE outbound_group > 1")->fetchAll(PDO::FETCH_COLUMN);
+        foreach ($userGroups as $ug) {
+            $ug = intval($ug);
+            if ($ug > 1 && !isset($groups[$ug])) {
+                $groups[$ug] = [];
+            }
+        }
+    } catch (\Exception $e) {}
     if (empty($groups)) {
         $groups[1] = [];
     }
@@ -61,7 +89,7 @@ function __syncOutboundDialplanBody() {
     if (!empty($routes)) {
         foreach ($routes as $r) {
             $name = toCleanAscii($r['route_name']);
-            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#-]/', '', trim($r['match_pattern']));
+            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', trim($r['match_pattern']));
             $prepend = preg_replace('/[^0-9]/', '', trim($r['prepend'] ?? ''));
             $append = preg_replace('/[^0-9]/', '', trim($r['append'] ?? ''));
             $strip_front = intval($r['strip_front'] ?? 0);
@@ -76,14 +104,14 @@ function __syncOutboundDialplanBody() {
             $trunks_raw = !empty($r['trunks_json']) ? (json_decode($r['trunks_json'], true) ?: []) : [];
             $trunk_chain = [];
             foreach ($trunks_raw as $t) {
-                $tn = trim($t['trunk_name'] ?? '');
+                $tn = preg_replace('/[^a-zA-Z0-9_-]/', '', trim($t['trunk_name'] ?? ''));
                 if ($tn === '') continue;
                 $trunk_chain[] = ['trunk_name' => $tn, 'callerid_override' => trim($t['callerid_override'] ?? ''), 'max_channels' => intval($trunk_limits[$tn] ?? 0)];
             }
             if (empty($trunk_chain)) {
                 $fallback = AsteriskHelper::getPrimaryTrunkName();
                 if ($fallback !== null) {
-                    $trunk_chain[] = ['trunk_name' => $fallback, 'callerid_override' => '', 'max_channels' => 0];
+                    $trunk_chain[] = ['trunk_name' => $fallback, 'callerid_override' => '', 'max_channels' => intval($trunk_limits[$fallback] ?? 0)];
                 }
             }
 
@@ -109,6 +137,7 @@ function __syncOutboundDialplanBody() {
                 $core = ($strip_back > 0) ? "\${EXTEN:{$strip_front}:-{$strip_back}}" : "\${EXTEN:{$strip_front}}";
             }
             $dial_num = $prepend . $core . $append;
+            $conf .= " same => n,Set(AIPBX_DIAL_TARGET={$dial_num})\n";
 
             // The CID of the first trunk to try is applied before the recording file name is set.
             // The original caller number is restored before every trunk attempt,
@@ -117,9 +146,13 @@ function __syncOutboundDialplanBody() {
             $conf .= buildTrunkCallerIdLine($trunk_chain[0], $is_internal);
             $conf .= buildTrunkCidNormalizeLine($trunk_cid_norm[$trunk_chain[0]['trunk_name']] ?? null);
 
-            $conf .= " same => n,Set(REC_FILE=/var/spool/asterisk/monitor/outbound_\${STRFTIME(\${EPOCH},,%Y%m%d_%H%M%S)}_\${CALLERID(num)}_to_{$dial_num}.wav)\n";
+            // A fax sent from the portal (AIPBX_FAX=1, set in its call file) takes
+            // the same route but is not recorded: the recording is modem noise.
+            $conf .= " same => n,GotoIf(\$[\"\${AIPBX_FAX}\" = \"1\"]?norec)\n";
+            $conf .= " same => n,Set(REC_FILE=/var/spool/asterisk/monitor/outbound_\${STRFTIME(\${EPOCH},,%Y%m%d_%H%M%S)}_\${FILTER(0-9+,\${CALLERID(num)})}_to_{$dial_num}.wav)\n";
             $conf .= " same => n,MixMonitor(\${REC_FILE})\n";
             $conf .= " same => n,Set(CDR(userfield)=\${REC_FILE})\n";
+            $conf .= " same => n(norec),NoOp()\n";
             $conf .= " same => n,Set(CHANNEL(accountcode)=\${CALLERID(num)})\n";
 
             // Try in order: when a trunk returns CHANUNAVAIL/CONGESTION, move on to the next.
@@ -141,22 +174,41 @@ function __syncOutboundDialplanBody() {
                 // The GROUP counter is per channel; Asterisk drops it itself
                 // when the call ends. When the limit is full this trunk counts
                 // as CONGESTION so the next trunk in the chain is tried.
+                // A call that came in on this trunk is not sent straight back
+                // out through it: a number the PBX behind the trunk routes to
+                // us and we route back looped, thousands of calls an hour
+                // (production NEC trunk, October 2026). Call forwarding of an
+                // extension (CF_HOPS set) may still go back out.
+                $hp = preg_quote($t['trunk_name'], '/');
+                $conf .= " same => n,GotoIf(\$[\"\${CF_HOPS}\" = \"\" & \${REGEX(\"^PJSIP/{$hp}-[0-9a-f]+\$\" \${CHANNEL(name)})}]?hairpin{$step})\n";
+                // Channels (inbound and outbound together) and calls per minute:
+                // sub-trunk-limit (SyncInboundDialplan) leaves TRUNK_LIMIT empty
+                // or says why the call is refused.
                 $limit = intval($t['max_channels'] ?? 0);
-                if ($limit > 0) {
-                    $conf .= " same => n,Set(GROUP(trunk)={$t['trunk_name']})\n";
-                    $conf .= " same => n,GotoIf(\$[\${GROUP_COUNT(" . $t['trunk_name'] . "@trunk)} > {$limit}]?trunkfull{$step})\n";
+                $rate = intval($trunk_rates[$t['trunk_name']] ?? 0);
+                $limited = $limit > 0 || $rate > 0;
+                if ($limited) {
+                    $conf .= " same => n,Gosub(sub-trunk-limit,s,1({$t['trunk_name']},{$limit},{$rate},trunk))\n";
+                    $conf .= " same => n,GotoIf(\$[\"\${TRUNK_LIMIT}\" != \"\"]?trunkfull{$step})\n";
                 }
+                // Per-trunk carrier dialed number normalization
+                $conf .= buildTrunkCarrierDialLine($trunk_carrier_norm[$t['trunk_name']] ?? null);
                 // D-1: the 'r' option was removed (only 'T' is used).
                 // The carrier's early media (183 Session Progress / announcement / real busy tone)
                 // thus reaches the caller directly instead of being masked by a fake local ring.
-                $conf .= " same => n,Set(JITTERBUFFER(adaptive)=default)\n";
-                $conf .= " same => n,Dial(PJSIP/{$dial_num}@{$t['trunk_name']},{$external_dial_timeout},Tb(sub-callee-jb^s^1))\n";
-                if ($limit > 0) {
+                // No jitter buffer for a fax: it reshapes the modem's timing.
+                $conf .= jitterBufferLine();
+                $conf .= " same => n,Dial(PJSIP/\${AIPBX_TRUNK_DIAL}@{$t['trunk_name']},{$external_dial_timeout},Tb(sub-callee-jb^s^1))\n";
+                if ($limited) {
                     $conf .= " same => n,Goto(afterdial{$step})\n";
-                    $conf .= " same => n(trunkfull{$step}),NoOp(Trunk {$t['trunk_name']} channel limit reached: {$limit})\n";
+                    $conf .= " same => n(trunkfull{$step}),NoOp(Trunk {$t['trunk_name']} over its limit: \${TRUNK_LIMIT})\n";
                     $conf .= " same => n,Set(DIALSTATUS=CONGESTION)\n";
                     $conf .= " same => n(afterdial{$step}),NoOp()\n";
                 }
+                $conf .= " same => n,Goto(afterhp{$step})\n";
+                $conf .= " same => n(hairpin{$step}),NoOp(Call came in on trunk {$t['trunk_name']}: not sent back out through it)\n";
+                $conf .= " same => n,Set(DIALSTATUS=CONGESTION)\n";
+                $conf .= " same => n(afterhp{$step}),NoOp()\n";
                 if ($step < $count) {
                     $next = $step + 1;
                     $conf .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\"=\"CHANUNAVAIL\"|\"\${DIALSTATUS}\"=\"CONGESTION\"]?try{$next}:donecall)\n";
@@ -180,14 +232,29 @@ function __syncOutboundDialplanBody() {
             $conf .= " same => n,Congestion(10)\n";
             $conf .= " same => n,Hangup(34)\n\n";
         } else {
-            $conf .= "exten => _NXXXXXX,1,NoOp(Fallback Outbound Call)\n";
-            $conf .= " same => n,Set(CDR(direction)=outbound)\n";
-            $conf .= " same => n,Dial(PJSIP/\${EXTEN}@{$fallback_trunk},{$external_dial_timeout},T)\n";
-            $conf .= " same => n,Goto(sub-outbound-status,\${IF($[\"\${DIALSTATUS}\" != \"\"]?\${DIALSTATUS}:NOANSWER)},1)\n\n";
-            $conf .= "exten => _05XXXXXXXXX,1,NoOp(Fallback Mobile Outbound Call)\n";
-            $conf .= " same => n,Set(CDR(direction)=outbound)\n";
-            $conf .= " same => n,Dial(PJSIP/\${EXTEN}@{$fallback_trunk},{$external_dial_timeout},T)\n";
-            $conf .= " same => n,Goto(sub-outbound-status,\${IF($[\"\${DIALSTATUS}\" != \"\"]?\${DIALSTATUS}:NOANSWER)},1)\n\n";
+            // Without any route the same brakes as a route: dial permissions (and the
+            // night protection in it), no hairpin back out of the trunk the call came
+            // in on, the trunk's limits and number format. They were skipped here, so
+            // a fresh install had unlimited, unchecked outbound calling.
+            $limit = intval($trunk_limits[$fallback_trunk] ?? 0);
+            $rate = intval($trunk_rates[$fallback_trunk] ?? 0);
+            $hp = preg_quote($fallback_trunk, '/');
+            foreach (['_NXXXXXX' => 'Fallback Outbound Call', '_05XXXXXXXXX' => 'Fallback Mobile Outbound Call'] as $fbPattern => $fbLabel) {
+                $conf .= "exten => {$fbPattern},1,NoOp({$fbLabel})\n";
+                $conf .= " same => n,Set(CDR(direction)=outbound)\n";
+                $conf .= " same => n,Gosub(sub-check-dial-permission,s,1(\${CALLERID(num)},\${EXTEN}))\n";
+                $conf .= " same => n,GotoIf(\$[\"\${CF_HOPS}\" = \"\" & \${REGEX(\"^PJSIP/{$hp}-[0-9a-f]+\$\" \${CHANNEL(name)})}]?refused)\n";
+                if ($limit > 0 || $rate > 0) {
+                    $conf .= " same => n,Gosub(sub-trunk-limit,s,1({$fallback_trunk},{$limit},{$rate},trunk))\n";
+                    $conf .= " same => n,GotoIf(\$[\"\${TRUNK_LIMIT}\" != \"\"]?refused)\n";
+                }
+                $conf .= " same => n,Set(AIPBX_DIAL_TARGET=\${EXTEN})\n";
+                $conf .= buildTrunkCarrierDialLine($trunk_carrier_norm[$fallback_trunk] ?? null);
+                $conf .= jitterBufferLine();
+                $conf .= " same => n,Dial(PJSIP/\${AIPBX_TRUNK_DIAL}@{$fallback_trunk},{$external_dial_timeout},T)\n";
+                $conf .= " same => n,Goto(sub-outbound-status,\${IF($[\"\${DIALSTATUS}\" != \"\"]?\${DIALSTATUS}:NOANSWER)},1)\n";
+                $conf .= " same => n(refused),Goto(sub-outbound-status,CONGESTION,1)\n\n";
+            }
         }
     }
     } // end of the group loop
@@ -203,6 +270,16 @@ function __syncOutboundDialplanBody() {
     $conf .= "; ---- Backward compatibility: the old name of group 1 ----\n";
     $conf .= "[from-internal-outbound]\n";
     $conf .= "include => from-internal-outbound-1\n\n";
+
+    // Ingress Call Normalization Pre-Filter for all groups
+    foreach ($groups as $group_no => $_gr) {
+        $conf .= buildDialplanNormalizationRules((int)$group_no, $dialplan_rules);
+    }
+
+    $conf .= "; ---- Ingress device aliases for group 1 ----\n";
+    $conf .= "[from-internal-desktop]\ninclude => from-internal-desktop-1\n\n";
+    $conf .= "[from-internal-mobile]\ninclude => from-internal-mobile-1\n\n";
+    $conf .= "[from-internal-web]\ninclude => from-internal-web-1\n\n";
 
     // Outbound call termination and status handling (D-1 / D-2)
     // BUSY -> 486 Busy Here, CONGESTION -> 503, NOANSWER -> 480, CHANUNAVAIL -> HANGUPCAUSE (e.g. 404/603)
@@ -237,4 +314,78 @@ function __syncOutboundDialplanBody() {
     return writeConfWithRollback('extensions_outbound.conf', $conf, function() {
         AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadDialplan()], t('sync.ctx_outbound'));
     }, t('sync.ctx_outbound'));
+}
+
+/**
+ * Builds ingress normalization contexts for a given outbound route group.
+ * Generates:
+ * - [sub-norm-desktop-N], [sub-norm-mobile-N], [sub-norm-web-N]
+ * - [from-internal-desktop-N], [from-internal-mobile-N], [from-internal-web-N]
+ */
+function buildDialplanNormalizationRules(int $group_no, array $rules): string
+{
+    $conf = "; ---- Ingress Normalization Pre-Filter (Group {$group_no}) ----\n";
+
+    $desktopRules = [];
+    $mobileRules = [];
+    $webRules = [];
+
+    foreach ($rules as $r) {
+        if (empty($r['is_active'])) continue;
+        $ct = $r['client_type'] ?? 'all';
+        if ($ct === 'desktop' || $ct === 'all') {
+            $desktopRules[] = $r;
+        }
+        if ($ct === 'mobile' || $ct === 'all') {
+            $mobileRules[] = $r;
+        }
+        if ($ct === 'web' || $ct === 'all') {
+            $webRules[] = $r;
+        }
+    }
+
+    $types = [
+        'desktop' => $desktopRules,
+        'mobile'  => $mobileRules,
+        'web'     => $webRules,
+    ];
+
+    foreach ($types as $type => $typeRules) {
+        $conf .= "[sub-norm-{$type}-{$group_no}]\n";
+        foreach ($typeRules as $r) {
+            $name = toCleanAscii($r['rule_name'] ?? '');
+            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', trim($r['match_pattern'] ?? ''));
+            if ($pattern === '') continue;
+
+            $strip_front = max(0, intval($r['strip_front'] ?? 0));
+            $strip_back = max(0, intval($r['strip_back'] ?? 0));
+            $prepend = preg_replace('/[^0-9*#+]/', '', trim((string)($r['prepend'] ?? '')));
+            $append = preg_replace('/[^0-9*#+]/', '', trim((string)($r['append'] ?? '')));
+
+            $core = "\${EXTEN}";
+            if ($strip_front > 0 || $strip_back > 0) {
+                $core = ($strip_back > 0) ? "\${EXTEN:{$strip_front}:-{$strip_back}}" : "\${EXTEN:{$strip_front}}";
+            }
+            $dial_num = $prepend . $core . $append;
+
+            $conf .= "; Pre-filter: {$name} ({$pattern} -> {$dial_num})\n";
+            $conf .= "exten => {$pattern},1,NoOp(Pre-filter [{$type}] rule: {$name} \${EXTEN} -> {$dial_num})\n";
+            $conf .= " same => n,Set(__AIPBX_NORM_COUNT=\$[0\${AIPBX_NORM_COUNT} + 1])\n";
+            $conf .= " same => n,GotoIf(\$[\${AIPBX_NORM_COUNT} > 3]?from-internal-outbound-{$group_no},\${EXTEN},1)\n";
+            $conf .= " same => n,Goto(from-internal-outbound-{$group_no},{$dial_num},1)\n\n";
+        }
+        if (empty($typeRules)) {
+            $conf .= "; (no active normalization rules for {$type})\n\n";
+        }
+    }
+
+    foreach (['desktop', 'mobile', 'web'] as $type) {
+        $conf .= "[from-internal-{$type}-{$group_no}]\n";
+        $conf .= "include => from-internal-pbx-ortak\n";
+        $conf .= "include => featurecodes-pbx\n";
+        $conf .= "include => sub-norm-{$type}-{$group_no}\n";
+        $conf .= "include => from-internal-outbound-{$group_no}\n\n";
+    }
+
+    return $conf;
 }

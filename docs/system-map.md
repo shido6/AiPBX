@@ -9,20 +9,7 @@ automatic checks).
 
 ## 1. The big picture
 
-```
- browser / app ──443──► nginx (TLS passthrough, picks by ALPN)
-                         ├─ http/1.1, h2 ──► Apache 127.0.0.1:8443 (TLS)
-                         │                   ├─ /            PHP portal (/opt/aipbx/web)
-                         │                   ├─ /ws          Asterisk WebSocket 127.0.0.1:8088 (SIP for browsers/apps)
-                         │                   ├─ /chat/ws     chat service 127.0.0.1:8086
-                         │                   └─ /provision/  desk phone files (also over plain HTTP, port 80)
-                         └─ no ALPN (TURNS) ──► coturn 5349 (media relay for WebRTC)
- desk phones ──5060 UDP/TCP, 5061 TLS──► Asterisk
- Asterisk ──AMI 127.0.0.1:5038──► portal (live state, originate, reload)
- Asterisk ──CURL / AudioSocket 127.0.0.1:8790/8791──► local AI service
- portal ──sudo──► /usr/local/sbin/aipbx-priv (the only root entry point)
- everything ──► MariaDB, database "asterisk"
-```
+![How the parts of AiPBX connect](img/system-map.svg)
 
 Changes made in the portal are stored in the database first. **Apply** (top bar) writes the Asterisk
 files under `/etc/asterisk/pbx/` and reloads Asterisk (section 5).
@@ -77,7 +64,7 @@ and line.
 
 | Unit | What | Listens | Logs |
 |------|------|---------|------|
-| `asterisk` | Telephony engine | 5060 udp/tcp, 5061 tls, 8088 (local, WebSocket), 5038 (local, AMI), RTP 10000–20000 udp | `/var/log/asterisk/messages.log`, `security.log`; CLI `asterisk -rvvv` |
+| `asterisk` | Telephony engine | 5060 udp/tcp, 5061 tls, 8088 (local, WebSocket), 5038 (local, AMI), RTP 10000–20000 udp, UDPTL (T.38) 4100–4999 udp | `/var/log/asterisk/messages.log`, `security.log`; CLI `asterisk -rvvv` |
 | `apache2` | Portal, API, `/ws` and `/chat/ws` proxy | 127.0.0.1:8443 (TLS), 80 | `/var/log/apache2/aipbx_ssl_error.log`, `aipbx_ssl_access.log` |
 | `nginx` | Port 443 multiplexer (web vs TURNS) | 443 | `/var/log/nginx/stream.log`, `error.log` |
 | `mariadb` | Database `asterisk` | 127.0.0.1:3306 | `journalctl -u mariadb` |
@@ -222,7 +209,7 @@ To see what changed: `diff /etc/asterisk/pbx/<file>.prev /etc/asterisk/pbx/<file
 | Tool | What |
 |------|------|
 | `aipbx-selftest` | Runs every health check now and prints OK/FAIL with the reason. Start here |
-| `aipbx-update [--yes] [--check]` | Updates to the latest release: backup, `git checkout`, `install.sh --upgrade`, migrations; rolls back by itself on failure. Restarts Asterisk (drops calls) |
+| `aipbx-update [--yes] [--check]` | Updates to the latest release: backup, `git checkout`, `install.sh --upgrade`, migrations; rolls back by itself on failure. Restarts Asterisk only when the release needs it (`scripts/asterisk-restart-needed.sh`); otherwise reloads and calls stay up |
 | `aipbx-backup` | Database and configuration backup to `/var/backups/aipbx-daily` |
 | `aipbx-cert` | Certificate handling (self-signed, Let's Encrypt, uploaded) |
 | `aipbx-priv` | The portal's only way to root: fixed subcommands with validated arguments (`service`, `postfix`, `fw`, `f2b`, `cert`, `update`, `sounds`, `asterisk-lang`, `netsvc`, `net`, `ai`). Read it to see exactly what a page may do as root |

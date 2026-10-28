@@ -42,14 +42,16 @@ def pcm16_from_wav(data):
         w = wave.open(io.BytesIO(data))
     except (wave.Error, EOFError) as e:
         raise ValueError(f"not a WAV file: {e}") from None
-    if w.getsampwidth() != 2:
-        raise ValueError("WAV must be 16-bit PCM")
-    rate, channels, frames = w.getframerate(), w.getnchannels(), w.getnframes()
-    if not 8000 <= rate <= 48000 or channels not in (1, 2):
-        raise ValueError("unsupported WAV format")
-    if frames / rate > MAX_SECONDS:
-        raise ValueError(f"audio longer than {MAX_SECONDS} s")
-    x = np.frombuffer(w.readframes(frames), dtype="<i2").astype(np.float32) / 32768.0
+    with w:
+        if w.getsampwidth() != 2:
+            raise ValueError("WAV must be 16-bit PCM")
+        rate, channels, frames = w.getframerate(), w.getnchannels(), w.getnframes()
+        if not 8000 <= rate <= 48000 or channels not in (1, 2):
+            raise ValueError("unsupported WAV format")
+        if frames / rate > MAX_SECONDS:
+            raise ValueError(f"audio longer than {MAX_SECONDS} s")
+        raw_frames = w.readframes(frames)
+    x = np.frombuffer(raw_frames, dtype="<i2").astype(np.float32) / 32768.0
     if channels == 2:
         x = x.reshape(-1, 2).mean(axis=1)
     if rate != RATE:
@@ -79,40 +81,44 @@ class VoskBackend:
     def download(self, progress):
         self.dir.mkdir(parents=True, exist_ok=True)
         part = self.dir / "download.zip.part"
+        staging = self.dir / "model.new"
         total = max(1, self.spec.download_mb * 1024 * 1024)
         done = 0
         req = urllib.request.Request(BASE_URL + self.spec.source["file"], headers={"User-Agent": "aipbx-ai"})
-        with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
-            while block := resp.read(1 << 16):
-                out.write(block)
-                done += len(block)
-                progress(min(95, 95 * done // total))
-        got = _sha256(part)
-        if got != self.spec.source["sha256"]:
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp, open(part, "wb") as out:
+                while block := resp.read(1 << 16):
+                    out.write(block)
+                    done += len(block)
+                    progress(min(95, 95 * done // total))
+            got = _sha256(part)
+            if got != self.spec.source["sha256"]:
+                raise RuntimeError(f"{self.spec.source['file']}: checksum mismatch ({got[:12]}…), not unpacked")
+            shutil.rmtree(staging, ignore_errors=True)
+            staging.mkdir()
+            root = staging.resolve()
+            with zipfile.ZipFile(part) as z:
+                for info in z.infolist():
+                    # Drop the top folder of the zip; refuse anything leaving the target.
+                    rel = Path(*Path(info.filename).parts[1:])
+                    if not rel.parts:
+                        continue
+                    target = (staging / rel).resolve()
+                    if root not in target.parents:
+                        raise RuntimeError("the model archive contains an unsafe path")
+                    if info.is_dir():
+                        target.mkdir(parents=True, exist_ok=True)
+                    else:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with z.open(info) as src, open(target, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+            shutil.rmtree(self.model_dir, ignore_errors=True)
+            os.replace(staging, self.model_dir)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        finally:
             part.unlink(missing_ok=True)
-            raise RuntimeError(f"{self.spec.source['file']}: checksum mismatch ({got[:12]}…), not unpacked")
-        staging = self.dir / "model.new"
-        shutil.rmtree(staging, ignore_errors=True)
-        staging.mkdir()
-        root = staging.resolve()
-        with zipfile.ZipFile(part) as z:
-            for info in z.infolist():
-                # Drop the top folder of the zip; refuse anything leaving the target.
-                rel = Path(*Path(info.filename).parts[1:])
-                if not rel.parts:
-                    continue
-                target = (staging / rel).resolve()
-                if root not in target.parents:
-                    raise RuntimeError("the model archive contains an unsafe path")
-                if info.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with z.open(info) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-        part.unlink(missing_ok=True)
-        shutil.rmtree(self.model_dir, ignore_errors=True)
-        os.replace(staging, self.model_dir)
         progress(100)
 
     def delete_files(self):

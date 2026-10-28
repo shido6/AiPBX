@@ -25,7 +25,7 @@ if (PHP_SAPI !== 'cli') {
 }
 
 require_once __DIR__ . '/../config.php';
-require_once __DIR__ . '/../src/services/CallQualityService.php';
+require_once __DIR__ . '/../src/services/CallQualityEvidenceService.php';
 
 $verbose = false;
 $evidenceId = 0;
@@ -40,11 +40,11 @@ foreach ($argv ?? [] as $arg) {
     }
 }
 if ($reportHours > 0) {
-    fwrite(STDOUT, CallQualityService::report($reportHours) . "\n");
+    fwrite(STDOUT, CallQualityEvidenceService::report($reportHours) . "\n");
     exit(0);
 }
 if ($evidenceId > 0) {
-    $trail = CallQualityService::evidenceTrail($evidenceId);
+    $trail = CallQualityEvidenceService::evidenceTrail($evidenceId);
     if ($trail === '') {
         fwrite(STDERR, 'No quality evidence #' . $evidenceId . ".\n");
         exit(1);
@@ -54,7 +54,7 @@ if ($evidenceId > 0) {
 }
 
 try {
-    $result = CallQualityService::tick();
+    $result = CallQualityEvidenceService::tick();
 } catch (\Throwable $e) {
     // The service already catches its own failures; this is the last fence so
     // cron never mails a stack trace.

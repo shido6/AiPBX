@@ -118,8 +118,10 @@
     <string name="btn_remove">Fjern</string>
     <string name="call_from_pbx">PBX-opkald</string>
     <string name="call_on_hold">Parkeret</string>
+    <string name="cf_always">VS (ALTID)</string>
     <string name="cf_busy">VS (OPTAGET)</string>
     <string name="cf_busy_noanswer">VS (OPTAGET/INTET SVAR)</string>
+    <string name="cf_noanswer">VS (INTET SVAR)</string>
     <string name="chat_document">Dokument</string>
     <string name="chat_extension_title">Lokalnummer #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Ingen kameratilladelse: opkaldet fortsætter kun med lyd.</string>
     <string name="err_camera_unavailable">Kameraet er ikke tilgængeligt: opkaldet fortsætter kun med lyd.</string>
     <string name="contacts_extensions_listed">lokalnumre vist</string>
+    <string name="api_fcm_token_failed">Kunne ikke sende FCM-token (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Kunne ikke slette gruppen (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Behold \'+\' præfiks</string>
+    <string name="pref_send_plus_desc">Send internationalt \'+\' direkte til PBX til normalisering (TIL) eller konverter til 00 (FRA)</string>
 </resources>

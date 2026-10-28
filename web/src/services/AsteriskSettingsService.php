@@ -64,7 +64,75 @@ class AsteriskSettingsService {
             // unlike every other setting it takes effect only after a FULL
             // Asterisk restart, a "reload" is not enough (see asterisk_sync.php).
             'system_default_language' => 'en',
+
+            // Answering Machine Detection (AMD) global defaults (passed to Asterisk AMD() application)
+            'amd_initial_silence'         => '2500',
+            'amd_greeting'                => '1500',
+            'amd_after_greeting_silence'  => '800',
+            'amd_total_analysis_time'     => '5000',
+            'amd_min_word_length'         => '100',
+            'amd_between_words_silence'   => '50',
+            'amd_maximum_number_of_words' => '2',
+            'amd_silence_threshold'       => '256',
+
+            // Signaling capture (SIP ladder + RTCP quality) into the local daemon: off by default.
+            'signaling_capture'        => '0',
+            'signaling_retention_days' => '30',
+            'status_prompt_busy'       => '0',
+            'status_prompt_noanswer'   => '0',
+            'status_prompt_unavail'    => '0',
+
+            // SIP Timers & Max-Forwards (Roadmap 2.5)
+            'pjsip_max_forwards' => '70',
+            'pjsip_timer_t1' => '500',
+            'pjsip_timer_b' => '32000',
+
+            // Jitter Buffer (Roadmap 2.5)
+            'jitterbuffer_enabled' => '1',
+            'jitterbuffer_max_size' => '200',
+            'jitterbuffer_initial_size' => '100',
+
+            // Night Restart Window (Roadmap 2.5)
+            'night_restart_enabled' => '0',
+            'night_restart_window_start' => '03:00',
+            'night_restart_window_end' => '05:00',
+
+            // Failed Registration Threshold & ACL Alarm (Roadmap 2.6)
+            'failed_reg_threshold' => '10',
+
+            // 10-Minute SIP Debug
+            'sip_debug_until' => '0',
         ];
+    }
+
+    /** Rows captured in the last 24 hours and the newest one, for the settings page. */
+    public static function signalingStatus(): array
+    {
+        try {
+            $r = getDB()->query('SELECT COUNT(*) AS n, MAX(ts) AS last FROM pbx_signaling_events WHERE ts >= NOW() - INTERVAL 1 DAY')->fetch(PDO::FETCH_ASSOC);
+            return ['rows' => (int) ($r['n'] ?? 0), 'last' => $r['last'] ?? null];
+        } catch (\Throwable $e) {
+            return ['rows' => 0, 'last' => null];
+        }
+    }
+
+    /**
+     * Build the 8-argument string for Asterisk's `AMD(...)` dialplan application
+     * from the saved global PBX settings.
+     */
+    public static function amdDialplanArgs(): string
+    {
+        $defs = self::defaults();
+        $initial   = max(250, min(15000, (int)getSystemSetting('amd_initial_silence', $defs['amd_initial_silence'])));
+        $greeting  = max(250, min(15000, (int)getSystemSetting('amd_greeting', $defs['amd_greeting'])));
+        $after     = max(100, min(10000, (int)getSystemSetting('amd_after_greeting_silence', $defs['amd_after_greeting_silence'])));
+        $total     = max(1000, min(30000, (int)getSystemSetting('amd_total_analysis_time', $defs['amd_total_analysis_time'])));
+        $minWord   = max(20, min(2000, (int)getSystemSetting('amd_min_word_length', $defs['amd_min_word_length'])));
+        $between   = max(10, min(2000, (int)getSystemSetting('amd_between_words_silence', $defs['amd_between_words_silence'])));
+        $maxWords  = max(1, min(20, (int)getSystemSetting('amd_maximum_number_of_words', $defs['amd_maximum_number_of_words'])));
+        $threshold = max(1, min(32767, (int)getSystemSetting('amd_silence_threshold', $defs['amd_silence_threshold'])));
+
+        return "{$initial},{$greeting},{$after},{$total},{$minWord},{$between},{$maxWords},{$threshold}";
     }
 
     /**
@@ -95,9 +163,15 @@ class AsteriskSettingsService {
             ? $filter_codecs($post['wired_codecs'], $allowed_audio, 'alaw,ulaw')
             : 'alaw,ulaw,g729';
 
+        $wss_port_val = filter_var(trim((string)($post['pjsip_wss_port'] ?? '8089')), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
+        $udp_port_val = filter_var(trim((string)($post['pjsip_udp_port'] ?? '5060')), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
+        if ($wss_port_val === false || $udp_port_val === false) {
+            return ['success' => false, 'error' => 'Invalid PJSIP port (1-65535).'];
+        }
+
         $new_settings = [
-            'pjsip_wss_port' => trim($post['pjsip_wss_port'] ?? '8089'),
-            'pjsip_udp_port' => trim($post['pjsip_udp_port'] ?? '5060'),
+            'pjsip_wss_port' => (string)$wss_port_val,
+            'pjsip_udp_port' => (string)$udp_port_val,
             // Edited on Network → Network settings (validated there); this form keeps them.
             'pjsip_external_ip' => (string) getSystemSetting('pjsip_external_ip', ''),
             'pjsip_local_net' => (string) getSystemSetting('pjsip_local_net', '192.168.1.0/24'),
@@ -109,8 +183,8 @@ class AsteriskSettingsService {
             // stripped: it goes into a raw SIP header, accepting line breaks
             // would allow header injection.
             'pjsip_user_agent' => preg_replace('/[\r\n]+/', ' ', trim($post['pjsip_user_agent'] ?? 'Asterisk PBX')),
-            'pjsip_direct_media' => trim($post['pjsip_direct_media'] ?? 'no'),
-            'pjsip_rtp_symmetric' => trim($post['pjsip_rtp_symmetric'] ?? 'yes'),
+            'pjsip_direct_media' => (($post['pjsip_direct_media'] ?? 'no') === 'yes') ? 'yes' : 'no',
+            'pjsip_rtp_symmetric' => (($post['pjsip_rtp_symmetric'] ?? 'yes') === 'no') ? 'no' : 'yes',
             'pjsip_qualify_frequency' => max(0, intval($post['pjsip_qualify_frequency'] ?? 60)),
             'pjsip_internal_dial_timeout' => max(5, min(120, intval($post['pjsip_internal_dial_timeout'] ?? 30))),
             'pjsip_external_dial_timeout' => max(5, min(180, intval($post['pjsip_external_dial_timeout'] ?? 60))),
@@ -129,7 +203,43 @@ class AsteriskSettingsService {
 
             'system_default_language' => in_array($post['system_default_language'] ?? '', getAvailableLanguages(), true)
                 ? $post['system_default_language'] : 'en',
+
+            'amd_initial_silence'         => (string)max(250, min(15000, intval($post['amd_initial_silence'] ?? 2500))),
+            'amd_greeting'                => (string)max(250, min(15000, intval($post['amd_greeting'] ?? 1500))),
+            'amd_after_greeting_silence'  => (string)max(100, min(10000, intval($post['amd_after_greeting_silence'] ?? 800))),
+            'amd_total_analysis_time'     => (string)max(1000, min(30000, intval($post['amd_total_analysis_time'] ?? 5000))),
+            'amd_min_word_length'         => (string)max(20, min(2000, intval($post['amd_min_word_length'] ?? 100))),
+            'amd_between_words_silence'   => (string)max(10, min(2000, intval($post['amd_between_words_silence'] ?? 50))),
+            'amd_maximum_number_of_words' => (string)max(1, min(20, intval($post['amd_maximum_number_of_words'] ?? 2))),
+            'amd_silence_threshold'       => (string)max(1, min(32767, intval($post['amd_silence_threshold'] ?? 256))),
+
+            'status_prompt_busy'       => (($post['status_prompt_busy'] ?? '0') === '1') ? '1' : '0',
+            'status_prompt_noanswer'   => (($post['status_prompt_noanswer'] ?? '0') === '1') ? '1' : '0',
+            'status_prompt_unavail'    => (($post['status_prompt_unavail'] ?? '0') === '1') ? '1' : '0',
+            'signaling_capture'        => (($post['signaling_capture'] ?? '0') === '1') ? '1' : '0',
+            'signaling_retention_days' => (string)max(1, min(3650, intval($post['signaling_retention_days'] ?? 30))),
+
+            // SIP Timers & Max-Forwards
+            'pjsip_max_forwards' => (string)max(1, min(255, intval($post['pjsip_max_forwards'] ?? 70))),
+            'pjsip_timer_t1' => (string)max(50, min(10000, intval($post['pjsip_timer_t1'] ?? 500))),
+            'pjsip_timer_b' => (string)max(500, min(64000, intval($post['pjsip_timer_b'] ?? 32000))),
+
+            // Jitter Buffer
+            'jitterbuffer_enabled' => (($post['jitterbuffer_enabled'] ?? '1') === '0') ? '0' : '1',
+            'jitterbuffer_max_size' => (string)max(50, min(2000, intval($post['jitterbuffer_max_size'] ?? 200))),
+            'jitterbuffer_initial_size' => (string)max(20, min(1000, intval($post['jitterbuffer_initial_size'] ?? 100))),
+
+            // Night Restart Window
+            'night_restart_enabled' => (($post['night_restart_enabled'] ?? '0') === '1') ? '1' : '0',
+            'night_restart_window_start' => preg_match('/^\d{2}:\d{2}$/', trim((string)($post['night_restart_window_start'] ?? ''))) ? trim((string)$post['night_restart_window_start']) : '03:00',
+            'night_restart_window_end' => preg_match('/^\d{2}:\d{2}$/', trim((string)($post['night_restart_window_end'] ?? ''))) ? trim((string)$post['night_restart_window_end']) : '05:00',
+
+            // Failed Registration Threshold
+            'failed_reg_threshold' => (string)max(1, min(1000, intval($post['failed_reg_threshold'] ?? 10))),
         ];
+        $signaling_changed = getSystemSetting('signaling_capture', '0') !== $new_settings['signaling_capture'];
+        require_once __DIR__ . '/VoicemailPolicy.php';
+        $new_settings += VoicemailPolicy::fromPost($post);
 
         // --- RTP (media) settings --------------------------------------------
         $rtp_start = max(1024, min(65534, intval($post['rtp_start'] ?? 10000)));
@@ -218,6 +328,16 @@ class AsteriskSettingsService {
         markPendingSync('queues', 'system_setting', 'general', $label, 'update', $uid);
         markPendingSync('rtp', 'system_setting', 'general', $label, 'update', $uid);
         markPendingSync('udptl', 'system_setting', 'general', $label, 'update', $uid);
+        markPendingSync('voicemail', 'system_setting', 'general', $label, 'update', $uid);
+
+        // Capture on/off only reloads res_hep (no call is touched), so it is applied now.
+        if ($signaling_changed) {
+            try {
+                syncSignalingCapture();
+            } catch (\Throwable $e) {
+                return ['success' => false, 'error' => t('srv_asterisk.saved') . ' ' . $e->getMessage()];
+            }
+        }
 
         try {
             $lang_changed = syncDefaultLanguage($new_settings['system_default_language']);
@@ -234,5 +354,48 @@ class AsteriskSettingsService {
         }
 
         return ['success' => true, 'message' => $message];
+    }
+
+    public static function enableSipDebug(int $duration = 600): array
+    {
+        $until = time() + max(60, min(3600, $duration));
+        setSystemSetting('sip_debug_until', (string)$until);
+        require_once dirname(__DIR__) . '/asterisk_helper.php';
+        AsteriskHelper::execCLI('pjsip set logger on');
+        if (function_exists('writeAuditLog')) {
+            writeAuditLog('asterisk_settings', 'sip_debug', 'on', "Enabled PJSIP logger until {$until}", 'update', $_SESSION['user_id'] ?? null);
+        }
+        return ['success' => true, 'until' => $until, 'message' => t('asterisk_settings.sip_debug_enabled')];
+    }
+
+    public static function disableSipDebug(): array
+    {
+        setSystemSetting('sip_debug_until', '0');
+        require_once dirname(__DIR__) . '/asterisk_helper.php';
+        AsteriskHelper::execCLI('pjsip set logger off');
+        if (function_exists('writeAuditLog')) {
+            writeAuditLog('asterisk_settings', 'sip_debug', 'off', 'Disabled PJSIP logger', 'update', $_SESSION['user_id'] ?? null);
+        }
+        return ['success' => true, 'message' => t('asterisk_settings.sip_debug_disabled')];
+    }
+
+    public static function rotateLogs(): array
+    {
+        require_once dirname(__DIR__) . '/asterisk_helper.php';
+        $res = AsteriskHelper::execCLI('logger rotate');
+        if (function_exists('writeAuditLog')) {
+            writeAuditLog('asterisk_settings', 'logger', 'rotate', 'Triggered Asterisk logger rotate', 'update', $_SESSION['user_id'] ?? null);
+        }
+        return ['success' => $res['success'], 'message' => t('asterisk_settings.logs_rotated')];
+    }
+
+    public static function checkSipDebugExpiry(): void
+    {
+        $until = (int)getSystemSetting('sip_debug_until', '0');
+        if ($until > 0 && time() >= $until) {
+            setSystemSetting('sip_debug_until', '0');
+            require_once dirname(__DIR__) . '/asterisk_helper.php';
+            AsteriskHelper::execCLI('pjsip set logger off');
+        }
     }
 }

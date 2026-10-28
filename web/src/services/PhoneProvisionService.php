@@ -20,6 +20,9 @@ require_once dirname(__DIR__) . '/audit_log.php';
 require_once dirname(__DIR__) . '/secret_box.php';
 require_once __DIR__ . '/ForgotPasswordService.php';
 require_once __DIR__ . '/phones/PhoneTemplates.php';
+require_once __DIR__ . '/phones/PhoneKeyAndTftpHelper.php';
+require_once __DIR__ . '/phones/CiscoFirmware.php';
+require_once __DIR__ . '/PhoneFirmwareService.php';
 
 class PhoneProvisionService
 {
@@ -50,6 +53,16 @@ class PhoneProvisionService
         'provision_syslog' => '',
         // Also write each phone's files into the TFTP/FTP folder (exportTftp).
         'provision_tftp_export' => '0',
+        // Firmware load written to the Cisco CallManager-series phones
+        // (loadInformation, without the .loads extension, e.g. SIP42.9-4-2SR3-1S).
+        // Empty: the element is left out and the phone keeps the load it runs,
+        // which is the only safe default — the load is per model and per build.
+        'provision_cisco_load' => '',
+        // Per model: one `model=load` line per Cisco 7900 model (e.g.
+        // cisco-cm-7962g=SIP42.9-4-2SR3-1S). This is what the automatic switch
+        // reads: a model named here is pointed at its SIP load when it is
+        // provisioned, and the load's files are checked first (PhoneFirmwareService).
+        'provision_cisco_loads' => '',
     ];
 
     /** Rows kept in the fetch log. */
@@ -138,6 +151,12 @@ class PhoneProvisionService
     {
         // The address fields moved to Network settings: a form without them keeps the stored values.
         $data += self::addressSettings();
+        // Same for the Cisco load: a page that does not send it (an older form, or
+        // another caller) must not wipe a value somebody set on purpose.
+        $data += [
+            'provision_cisco_load' => (string) getSystemSetting('provision_cisco_load', ''),
+            PhoneFirmwareService::SETTING => (string) getSystemSetting(PhoneFirmwareService::SETTING, ''),
+        ];
         return PBXHelper::handleAction($data['csrf_token'] ?? '', function () use ($data) {
             $transport = ($data['provision_transport'] ?? '') === 'tls' ? 'tls' : 'udp';
             $srtp = (string) max(0, min(2, (int) ($data['provision_srtp'] ?? 0)));
@@ -155,7 +174,22 @@ class PhoneProvisionService
                 $lang = 'en';
             }
             $rate = max(5, min(1000, (int) ($data['provision_rate_limit'] ?? 60)));
+            // A firmware load name: a file name, never a path or a URL.
+            $ciscoLoad = trim((string) ($data['provision_cisco_load'] ?? ''));
+            if ($ciscoLoad !== '' && !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/', $ciscoLoad)) {
+                throw new \Exception(t('phones.err_cisco_load'));
+            }
+            $ciscoLoads = PhoneFirmwareService::parseLoads((string) ($data[PhoneFirmwareService::SETTING] ?? ''), $badLoads);
+            if ($badLoads !== []) {
+                throw new \Exception(sprintf(t('phones.err_cisco_loads'), implode(', ', array_slice($badLoads, 0, 3))));
+            }
             $values = [
+                'provision_cisco_load' => $ciscoLoad,
+                PhoneFirmwareService::SETTING => implode("\n", array_map(
+                    static fn (string $model, string $load): string => $model . '=' . $load,
+                    array_keys($ciscoLoads),
+                    array_values($ciscoLoads)
+                )),
                 'provision_transport' => $transport,
                 'provision_srtp' => $srtp,
                 'provision_codecs' => implode(',', $codecs),
@@ -169,6 +203,7 @@ class PhoneProvisionService
                 $stmt->execute([$k, $v]);
             }
             writeAuditLog('phones', 'settings', 0, 'Provisioning settings', 'update', $_SESSION['user_id'] ?? null);
+            PhoneFirmwareService::armAllQuietly();
             self::exportTftpQuietly();
             return t('phones.settings_saved');
         });
@@ -337,6 +372,11 @@ class PhoneProvisionService
         }
         $db->prepare('DELETE FROM pbx_phones_waiting WHERE mac = ?')->execute([$mac]);
         writeAuditLog('phones', 'phone', $id, PhoneModels::formatMac($mac), $action, $_SESSION['user_id'] ?? null);
+        // The SIP firmware switch travels with provisioning: a Cisco 7900 that
+        // is added through any path (the automatic pool, the Approve button, the
+        // form, the CSV import) is pointed at its model's SIP load here, and the
+        // outcome is recorded even when the firmware itself is missing.
+        PhoneFirmwareService::armQuietly($id);
         return $id;
     }
 
@@ -393,7 +433,12 @@ class PhoneProvisionService
     public static function deleteWaiting(int $waitingId, string $csrf): array
     {
         return PBXHelper::handleAction($csrf, function () use ($waitingId) {
-            getDB()->prepare('DELETE FROM pbx_phones_waiting WHERE id = ?')->execute([$waitingId]);
+            $db = getDB();
+            $mac = $db->prepare('SELECT mac FROM pbx_phones_waiting WHERE id = ?');
+            $mac->execute([$waitingId]);
+            $label = ($m = $mac->fetchColumn()) ? PhoneModels::formatMac((string) $m) : "#{$waitingId}";
+            $db->prepare('DELETE FROM pbx_phones_waiting WHERE id = ?')->execute([$waitingId]);
+            writeAuditLog('phones', 'phone_waiting', $waitingId, $label, 'delete', $_SESSION['user_id'] ?? null);
             return t('phones.waiting_removed');
         });
     }
@@ -462,6 +507,9 @@ class PhoneProvisionService
             return ['success' => false, 'error' => t('phones.err_csv_empty')];
         }
         $r = self::importCsv($csv);
+        if ($r['added'] + $r['updated'] > 0) {
+            self::exportTftpQuietly();   // TFTP/FTP phones get their files now, not at the next cron run
+        }
         $msg = sprintf(t('phones.import_done'), $r['added'], $r['updated']);
         if ($r['errors'] !== []) {
             return ['success' => false, 'error' => $msg . ' ' . implode(' ', array_slice($r['errors'], 0, 10))];
@@ -489,8 +537,13 @@ class PhoneProvisionService
         $hits = [];
         foreach (PhoneModels::MODELS as $key => $m) {
             $keyNorm = str_replace('-', '', $key);
-            $short = strtolower((string) preg_replace('/[^a-z0-9]/i', '', substr($key, strpos($key, '-') + 1)));
-            if ($norm === $keyNorm || $norm === $short) {
+            $labelNorm = strtolower((string) preg_replace('/[^a-z0-9]/i', '', $m['label']));
+            $vendorPrefix = $m['vendor'] . '-';
+            $shortKey = str_starts_with($key, $vendorPrefix)
+                ? substr($key, strlen($vendorPrefix))
+                : substr($key, (int) strpos($key, '-') + 1);
+            $short = strtolower((string) preg_replace('/[^a-z0-9]/i', '', $shortKey));
+            if ($norm === $keyNorm || $norm === $labelNorm || $norm === $short) {
                 $hits[] = $key;
             }
         }
@@ -539,9 +592,7 @@ class PhoneProvisionService
 
     public static function getKeys(int $userId): array
     {
-        $stmt = getDB()->prepare('SELECT page, position, key_type AS type, target, label FROM pbx_phone_keys WHERE user_id = ? ORDER BY page, position');
-        $stmt->execute([$userId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        return PhoneKeyAndTftpHelper::getKeys($userId);
     }
 
     /** The model of the user's (first) phone, '' when they have none. */
@@ -558,91 +609,19 @@ class PhoneProvisionService
      */
     public static function saveKeys(int $userId, array $keys, string $csrf): array
     {
-        return PBXHelper::handleAction($csrf, function () use ($userId, $keys) {
-            if (self::userRow($userId) === null) {
-                throw new \Exception(t('phones.err_user'));
-            }
-            $rows = self::validateKeys($keys);
-            self::writeKeys($userId, $rows);
-            writeAuditLog('phones', 'key_layout', $userId, (string) self::userRow($userId)['extension'], 'update', $_SESSION['user_id'] ?? null);
-            self::exportTftpQuietly();
-            return t('phones.keys_saved');
-        });
+        return PhoneKeyAndTftpHelper::saveKeys($userId, $keys, $csrf, [self::class, 'userRow']);
     }
 
     /** Copies $fromUser's layout to every user in $toUsers (their own layout is replaced). */
     public static function copyKeys(int $fromUser, array $toUsers, string $csrf): array
     {
-        return PBXHelper::handleAction($csrf, function () use ($fromUser, $toUsers) {
-            $rows = self::getKeys($fromUser);
-            $n = 0;
-            foreach (array_unique(array_map('intval', $toUsers)) as $to) {
-                if ($to === $fromUser || self::userRow($to) === null) {
-                    continue;
-                }
-                self::writeKeys($to, $rows);
-                writeAuditLog('phones', 'key_layout', $to, (string) self::userRow($to)['extension'], 'copy', $_SESSION['user_id'] ?? null);
-                $n++;
-            }
-            if ($n === 0) {
-                throw new \Exception(t('phones.err_copy_none'));
-            }
-            self::exportTftpQuietly();
-            return sprintf(t('phones.keys_copied'), $n);
-        });
+        return PhoneKeyAndTftpHelper::copyKeys($fromUser, $toUsers, $csrf, [self::class, 'userRow']);
     }
 
     /** @return list<array{page: int, position: int, type: string, target: string, label: string}> */
     public static function validateKeys(array $keys): array
     {
-        $rows = [];
-        $seen = [];
-        foreach ($keys as $k) {
-            $type = (string) ($k['type'] ?? '');
-            if ($type === '') {
-                continue;
-            }
-            if (!in_array($type, self::KEY_TYPES, true)) {
-                throw new \Exception(t('phones.err_key_type'));
-            }
-            $page = (int) ($k['page'] ?? 0);
-            $pos = (int) ($k['position'] ?? 0);
-            if ($page < 0 || $page > 6 || $pos < 1 || $pos > 120) {
-                throw new \Exception(t('phones.err_key_position'));
-            }
-            $target = trim((string) ($k['target'] ?? ''));
-            if (in_array($type, ['blf', 'speeddial', 'park'], true)) {
-                if (!preg_match('/^[0-9*#+]{1,32}$/', $target)) {
-                    throw new \Exception(sprintf(t('phones.err_key_target'), $pos));
-                }
-            } else {
-                $target = '';
-            }
-            $label = mb_substr(trim((string) preg_replace('/[\x00-\x1F\x7F]/u', '', (string) ($k['label'] ?? ''))), 0, 64);
-            if (isset($seen["{$page}-{$pos}"])) {
-                continue;
-            }
-            $seen["{$page}-{$pos}"] = true;
-            $rows[] = ['page' => $page, 'position' => $pos, 'type' => $type, 'target' => $target, 'label' => $label];
-        }
-        return $rows;
-    }
-
-    private static function writeKeys(int $userId, array $rows): void
-    {
-        $db = getDB();
-        $db->beginTransaction();
-        try {
-            $db->prepare('DELETE FROM pbx_phone_keys WHERE user_id = ?')->execute([$userId]);
-            $ins = $db->prepare('INSERT INTO pbx_phone_keys (user_id, page, position, key_type, target, label) VALUES (?, ?, ?, ?, ?, ?)');
-            foreach ($rows as $r) {
-                $ins->execute([$userId, (int) $r['page'], (int) $r['position'], $r['type'], $r['target'], $r['label']]);
-            }
-            $db->commit();
-        } catch (\Throwable $e) {
-            $db->rollBack();
-            throw $e;
-        }
+        return PhoneKeyAndTftpHelper::validateKeys($keys);
     }
 
     // ------------------------------------------------------ TFTP / FTP folder
@@ -650,62 +629,25 @@ class PhoneProvisionService
     /**
      * Writes the configuration files of every assigned phone into the TFTP/FTP
      * folder (Network services), for phones that fetch their files over TFTP
-     * or FTP (NEC). Only with "provision_tftp_export" on; files of phones that
-     * are gone (or the whole set, when switched off) are removed. A file is
-     * rewritten only when its content changed. The folder answers only the
-     * allowed networks (firewall), like the HTTP provisioning.
-     *
-     * Runs on every change on the Phones page and every 5 minutes
-     * (bin/provision_tftp.php), so a changed SIP password reaches it too.
+     * or FTP (NEC).
      *
      * @return array{written: int, removed: int, files: int}
      */
     public static function exportTftp(?string $dir = null): array
     {
-        $dir = $dir ?? (getenv('AIPBX_TFTP_DIR') ?: '/var/lib/aipbx/tftp');
-        $old = json_decode((string) getSystemSetting('provision_tftp_files', '[]'), true);
-        $old = is_array($old) ? $old : [];
-        $new = [];
-        $written = 0;
-        if (getSystemSetting('provision_tftp_export', '0') === '1' && is_dir($dir) && is_writable($dir)) {
-            $phones = getDB()->query('SELECT * FROM pbx_phones WHERE user_id IS NOT NULL')->fetchAll(PDO::FETCH_ASSOC);
-            foreach ($phones as $phone) {
-                $tpl = PhoneTemplates::forModel((string) $phone['model']);
-                $user = self::userRow((int) $phone['user_id']);
-                if ($tpl === null || $user === null || (int) $user['is_active'] !== 1) {
-                    continue;
-                }
-                $ctx = self::withConfigVersion($phone, $tpl, self::buildContext($phone, $user), true);
-                foreach ($tpl->exportFiles((string) $phone['mac']) as $name) {
-                    if (!preg_match('/^[A-Za-z0-9._-]{1,120}$/', $name)) {
-                        continue;
-                    }
-                    $new[] = $name;
-                    $body = $tpl->renderFile($name, $ctx);
-                    $path = $dir . '/' . $name;
-                    if (is_file($path) && @file_get_contents($path) === $body) {
-                        continue;
-                    }
-                    $tmp = $dir . '/.' . $name . '.tmp';
-                    if (@file_put_contents($tmp, $body) !== false && @chmod($tmp, 0644) && @rename($tmp, $path)) {
-                        $written++;
-                    } else {
-                        @unlink($tmp);
-                    }
-                }
-            }
-        }
-        $removed = 0;
-        foreach (array_diff($old, $new) as $name) {
-            if (is_string($name) && preg_match('/^[A-Za-z0-9._-]{1,120}$/', $name) && @unlink($dir . '/' . $name)) {
-                $removed++;
-            }
-        }
-        if ($old !== $new) {
-            getDB()->prepare('INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)')
-                ->execute(['provision_tftp_files', (string) json_encode(array_values(array_unique($new)))]);
-        }
-        return ['written' => $written, 'removed' => $removed, 'files' => count(array_unique($new))];
+        return PhoneKeyAndTftpHelper::exportTftp($dir, [self::class, 'userRow']);
+    }
+
+    /**
+     * Every form a password can take in a phone file, longest first, so the
+     * preview hides each.
+     *
+     * @param list<string> $passwords
+     * @return list<string>
+     */
+    public static function secretForms(array $passwords): array
+    {
+        return PhoneKeyAndTftpHelper::secretForms($passwords);
     }
 
     /** exportTftp() after a change on the page; a failure must not fail the change. */
@@ -776,7 +718,7 @@ class PhoneProvisionService
         }
         $phone = self::phoneBy('mac', $mac);
         if ($phone === null) {
-            self::recordWaiting($mac, PhoneModels::guessVendor($mac, $ua), $ip, $ua);
+            self::recordWaiting($mac, PhoneModels::guessVendor($mac, $ua, $file), $ip, $ua);
             self::log(null, $mac, $file, 'unknown', $ip, $ua);
             return self::answer(404, 'unknown');
         }
@@ -799,6 +741,9 @@ class PhoneProvisionService
         getDB()->prepare('UPDATE pbx_phones SET last_fetch_at = NOW(), last_ip = ?, last_user_agent = ? WHERE id = ?')
             ->execute([$ip, $ua, $phone['id']]);
         self::log((int) $phone['id'], $phone['mac'], $file, 'served', $ip, $ua);
+        // A phone that fetches its file after the switch was armed has rebooted
+        // and taken the new configuration; the row says so from here on.
+        PhoneFirmwareService::noteFetched((int) $phone['id']);
         return ['status' => 200, 'body' => $body, 'type' => $tpl->contentType(), 'result' => 'served'];
     }
 
@@ -839,6 +784,9 @@ class PhoneProvisionService
             'language' => $s['provision_language'],
             'voicemail' => self::VOICEMAIL_CODE,
             'pickup_prefix' => self::PICKUP_PREFIX,
+            // Cisco CallManager-series phones only (CiscoCallManagerTemplate):
+            // the model's own load first, else the single fallback field.
+            'cisco_load' => PhoneFirmwareService::loadForModel((string) $phone['model']),
             'admin_password' => SecretBox::decrypt((string) $phone['admin_password']),
             'keys' => self::getKeys((int) $user['id']),
         ];
@@ -938,7 +886,7 @@ class PhoneProvisionService
         }
         // The number the phone gets at its next fetch; showing it changes nothing.
         $ctx = self::withConfigVersion($phone, $tpl, self::buildContext($phone, $user), false);
-        $secrets = $reveal ? [] : array_values(array_filter([$ctx['sip_password'], $ctx['admin_password']], fn($s) => strlen((string) $s) >= 4));
+        $secrets = $reveal ? [] : self::secretForms([(string) $ctx['sip_password'], (string) $ctx['admin_password']]);
         $out = [];
         foreach ($tpl->exportFiles((string) $phone['mac']) as $name) {
             $content = $tpl->renderFile($name, $ctx);
@@ -963,7 +911,7 @@ class PhoneProvisionService
         return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
     }
 
-    private static function userRow(int $id): ?array
+    public static function userRow(int $id): ?array
     {
         $stmt = getDB()->prepare("SELECT id, full_name, extension, sip_password, is_active FROM sys_users WHERE id = ? AND extension_type = 'sip' AND extension IS NOT NULL AND extension != ''");
         $stmt->execute([$id]);

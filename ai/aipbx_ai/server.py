@@ -96,7 +96,8 @@ class Handler(BaseHTTPRequestHandler):
     # ---- plumbing --------------------------------------------------------
 
     def log_message(self, fmt, *args):  # noqa: D401 - journal, no client data
-        log.info("%s %s", self.address_string(), fmt % args)
+        msg = re.sub(r"([?&]key=)[^&\s\"']+", r"\1***", fmt % args)
+        log.info("%s %s", self.address_string(), msg)
 
     def _send(self, status, body, content_type):
         self.send_response(status)
@@ -111,7 +112,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(obj, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     def _error(self, status, message):
-        self._json(status, {"error": message})
+        try:
+            self._json(status, {"error": message})
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def _authorize(self):
         if self._forwarded():
@@ -257,6 +261,8 @@ class Handler(BaseHTTPRequestHandler):
             if path in ("/v1/health", "/v1/models", "/v1/tts", "/v1/calls", "/v1/calls/start", "/v1/apps") or m:
                 raise ApiError(HTTPStatus.METHOD_NOT_ALLOWED, "method not allowed")
             raise ApiError(HTTPStatus.NOT_FOUND, "not found")
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
         except ApiError as e:
             self._error(e.status, e.message)
         except UnknownModel:

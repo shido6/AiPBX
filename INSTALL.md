@@ -2,6 +2,10 @@
 
 This guide covers installing and configuring **AI PBX** on **Ubuntu 26.04 LTS**.
 
+> 📺 **Prefer to watch?** The installation step by step, narrated and subtitled:
+> [English](https://www.youtube.com/watch?v=lH1-k_z5jFE) · [Türkçe](https://www.youtube.com/watch?v=eDHHHW6ZcvQ) ·
+> [Deutsch](https://www.youtube.com/watch?v=1QuOM6Rtcbg) — more on the [AiPBX YouTube channel](https://www.youtube.com/@aipbx).
+
 ---
 
 ## System Requirements
@@ -54,14 +58,7 @@ development branch instead of the latest release), `AIPBX_INSTALL_DIR` (default 
 
 ## 🌐 2. How Traffic Flows
 
-```
-Internet ──443──▶ nginx (stream: ALPN + PROXY protocol, no TLS termination)
-                    ├─ HTTPS / WSS ──▶ Apache + PHP on 127.0.0.1:8443
-                    │                    ├─ /ws      ──▶ Asterisk WebSocket (127.0.0.1:8088)
-                    │                    └─ /chat/…  ──▶ aipbx-chat (127.0.0.1:8086)
-                    └─ TURNS ─────────▶ coturn (via a local PROXY-protocol-stripping relay)
-Internet ──80───▶ Apache (Let's Encrypt HTTP-01, redirect to HTTPS)
-```
+![How traffic reaches the server](docs/img/traffic-flow.svg)
 
 - nginx stream config: `/etc/nginx/aipbx-stream.conf`
 - Apache virtual host: `/etc/apache2/sites-available/aipbx.conf`
@@ -98,10 +95,18 @@ sudo aipbx-update           # update to the latest release
 ```
 
 or from the portal: **System → System Update** (admin only). The update:
-1. refuses to run while calls are active (`--allow-calls` to force) or when files under `/opt/aipbx` were edited by hand;
+1. refuses to run when files under `/opt/aipbx` were edited by hand. Asterisk is restarted only when the release needs it (an
+   Asterisk configuration file or package changed); then the update waits for an idle PBX (`--allow-calls` to force).
+   Otherwise Asterisk is only reloaded and calls stay up. `--check` and the portal page say which applies;
 2. backs up the database, `/etc/ai-pbx.env` and `/etc/asterisk` to `/var/backups/aipbx/` (last 5 kept);
 3. checks out the release and runs `install.sh --upgrade` — database migrations, new packages and system settings are applied, **passwords, certificate, admin password and firewall choices are kept**;
 4. verifies services, the portal and every page; on any failure it restores the previous code, database and settings automatically.
+
+**Installations older than 1.50.0** are updated in two steps: `aipbx-update` first installs 1.50.0
+(the bridge release, which carries the old-to-new migrations), then the latest release. It does both
+steps in one run. An installation on 1.34.0–1.34.2 must
+first run `sudo git -C /opt/aipbx checkout -- web/bin/aipbx_ops.php`, see
+[Troubleshooting](docs/troubleshooting.md#system-update-fails-with-code-was-modified-by-hand).
 
 Keep local customisations out of `/opt/aipbx` (use the portal, `/etc/ai-pbx.env` and `*_custom.conf` files) — they survive updates.
 
@@ -115,6 +120,7 @@ portal's **Firewall** page, or with `firewall-cmd`. Ports opened by default:
 | 80/tcp, 443/tcp | Portal, WebRTC (WSS `/ws`), chat; TURNS too with `TURNS_PORT=443` ([WebRTC, NAT and TURN](docs/webrtc-nat.md)) |
 | 5060/udp+tcp, 5061/tcp | SIP / SIP-TLS |
 | 10000-20000/udp | RTP media |
+| 4100-4999/udp | T.38 fax (UDPTL) |
 | 3478/udp+tcp, 5349/udp+tcp | STUN/TURN |
 | 49152-65535/udp | TURN relay media |
 

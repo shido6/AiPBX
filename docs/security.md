@@ -19,7 +19,7 @@ firewall-cmd --reload
 ```
 
 The web softphone and the mobile apps connect over 443 and are not affected. RTP (10000–20000/udp) must
-stay open for carrier audio. The **Firewall** page shows and removes these rules.
+stay open for carrier audio, and UDPTL (4100–4999/udp) for T.38 fax. The **Firewall** page shows and removes these rules.
 
 Asterisk's own TLS WebSocket (8089) listens on loopback only: browsers and the mobile apps use 443
 `/ws`, which goes through the nginx/Apache edge. Earlier versions opened 8089 publicly; installing or
@@ -70,6 +70,23 @@ from the PROXY protocol) and `sshd`. Ban time, find time, max retries and the ig
 it overrides the installer's defaults. Add your internal networks and carrier to the ignore list so a
 misconfigured phone cannot lock them out.
 
+- **Failed registration alarm:** The [Failed registrations](health.md#checks) health check monitors
+  Asterisk's security log and alarms in the bell and by e-mail when failed SIP authentication attempts
+  exceed the configured threshold (see [PBX fine tuning](pbx-tuning.md#failed-registration-alarm)).
+
+## Toll fraud
+
+Three brakes, all off until switched on:
+
+- **Night dialling protection** (*Dial permissions* page): outside the night hours set there (and all
+  weekend if wanted), calls to protected prefixes (default `00` international and `0900` premium) are
+  blocked ("Your call cannot be completed as dialled", without answering the call) or need a night PIN
+  (three tries). It runs before the permission groups, so it also covers trunk-to-trunk transit;
+  portal faxes are exempt. Blocked calls carry `NIGHT_GUARD` in the CDR user field.
+- **Trunk limits** (*Trunks → Routing*): concurrent channels and calls per minute, with the health
+  alarm *Trunk limits* (see [Trunks](trunks.md#limits)).
+- **Dial permission groups**: which numbers a group of users may dial at all.
+
 ## Root helper (`aipbx-priv`)
 
 The portal never runs arbitrary commands as root. `/etc/sudoers.d/aipbx` allows `www-data` to run only
@@ -85,6 +102,14 @@ Ubuntu's `apache2.service` is hardened with systemd sandboxing. The installer's 
 - `/etc/asterisk`, `/etc/postfix` and `/etc/fail2ban/jail.d` writable (everything else under `/etc`
   stays read-only);
 - `/root`, `/boot`, `/etc/ssh`, `/etc/apt` stay inaccessible.
+
+## Scheduled task sandbox
+
+Scheduled background scripts run in a hardened `systemd-run` sandbox as the unprivileged user `aipbx-task` with an isolated filesystem, strict resource limits, and private network namespaces (see [Scheduled tasks](scheduled-tasks.md#sandbox-security)).
+
+## Read-only external databases
+
+External database queries in IVR data steps and plugins run in strictly enforced read-only sessions with a 2.5-second statement timeout, single statement restrictions, and encrypted credentials (see [External databases](external-databases.md#supported-engines-and-security)).
 
 ## AI egress (opencode)
 

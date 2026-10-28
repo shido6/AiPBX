@@ -70,6 +70,8 @@ final class SyncGeneratorTest extends TestCase
         $this->assertStringContainsString('allow=alaw,ulaw', $conf);
         $this->assertStringContainsString('t38_udptl=yes', $conf);
         $this->assertStringContainsString('192.0.2.10', $conf);
+        // a lost OPTIONS probe must not take the trunk down for a minute
+        $this->assertStringContainsString("qualify_frequency=60\nqualify_timeout=8\n", $conf);
     }
 
     public function testT38IsNotWrittenWhenOff(): void
@@ -270,6 +272,42 @@ final class SyncGeneratorTest extends TestCase
         }
     }
 
+    /**
+     * Two `sys_users` rows can share one extension (an imported account plus one
+     * re-created by hand). One object per row makes PJSIP reject the whole file —
+     * "configuration contains a duplicate object" — so the reload fails and the box
+     * comes up with no endpoints at all: every phone unregisters, not just the
+     * duplicated extension. The generator keeps the first row (id ASC, so the
+     * winner is stable) and logs the row it skipped.
+     */
+    public function testDuplicateUserRowsForOneExtensionGenerateOneBlock(): void
+    {
+        $db = getDB();
+        try {
+            $db->exec("INSERT IGNORE INTO sys_roles (role_key, role_name, is_system) VALUES ('user', 'User', 0)");
+            $ins = $db->prepare("INSERT INTO sys_users (username, password_hash, full_name, extension, sip_password, sip_auth_digest, extension_type, is_active, role) VALUES (?, '', ?, '7199', ?, 1, 'sip', 1, 'user')");
+            $ins->execute(['dupext1', 'Dup Winner', 'S' . bin2hex(random_bytes(8))]);
+            $ins->execute(['dupext2', 'Dup Loser', 'S' . bin2hex(random_bytes(8))]);
+
+            syncAllExtensions();
+            $conf = $this->endpointsConf();
+
+            $this->assertSame(1, substr_count($conf, '[7199-sip](endpoint-sip)'),
+                'the endpoint block was generated more than once');
+            $this->assertSame(1, substr_count($conf, '[auth7199-sip](auth-userpass)'),
+                'the auth block was generated more than once');
+            $this->assertSame(1, substr_count($conf, '[7199-sip-identify]'),
+                'the identify block was generated more than once');
+            $this->assertSame(1, substr_count($conf, '[7199](aor-dual)'),
+                'the AOR was generated more than once');
+            // The earliest row wins, so the output does not depend on row order.
+            $this->assertStringContainsString('Dup Winner', $conf);
+            $this->assertStringNotContainsString('Dup Loser', $conf);
+        } finally {
+            $db->prepare("DELETE FROM sys_users WHERE extension = '7199'")->execute();
+        }
+    }
+
     public function testEmptyIdentifyHostListFallsBackToTheOldWidePattern(): void
     {
         $db = getDB();
@@ -309,12 +347,48 @@ final class SyncGeneratorTest extends TestCase
 
             $this->assertStringContainsString('exten => 7003,1,NoOp(Direct Call to Extension 7003', $conf);
             $this->assertStringContainsString('Dial(${DIAL_CONTACTS},15,tTb(sub-callee-jb^s^1))', $conf);
-            $this->assertStringContainsString('Goto(from-internal-pbx,7004,1)', $conf);
-            $this->assertStringContainsString('Goto(from-internal-pbx,05551234567,1)', $conf);
+            $this->assertStringContainsString('Goto(from-internal-desktop,7004,1)', $conf);
+            $this->assertStringContainsString('Goto(from-internal-desktop,05551234567,1)', $conf);
             $this->assertStringContainsString('Call forwarding loop blocked - 7003', $conf);
         } finally {
             $db->prepare("DELETE FROM sys_users WHERE extension = '7003'")->execute();
         }
+    }
+
+    public function testIncomingFaxHandsTheFailureReasonToTheProcessor(): void
+    {
+        syncGeneralDialplan();
+        $conf = (string)file_get_contents(ASTERISK_PBX_DIR . '/extensions_general.conf');
+
+        // Filtered: the reason goes into a shell command.
+        $this->assertStringContainsString('Set(FAX_ERR=${FILTER(A-Za-z0-9_ .:/,${FAXOPT(error)}: ${FAXOPT(statusstr)})})', $conf);
+        $this->assertStringContainsString('"${FAXOPT(status)}" "${FAX_ERR}"))', $conf);
+    }
+
+    /**
+     * A fax that failed before its first page has no file. The processor used
+     * to stop there without a trace; it now records the call as FAILED with
+     * the reason. `mysql` is a stub that keeps the SQL it is given.
+     */
+    public function testFailedFaxWithoutAFileIsRecorded(): void
+    {
+        $dir = sys_get_temp_dir() . '/aipbx-fax-test-' . getmypid();
+        @mkdir($dir);
+        file_put_contents("$dir/mysql", "#!/bin/sh\ncat >> \"$dir/sql\"\n");
+        chmod("$dir/mysql", 0755);
+        @unlink("$dir/sql");
+
+        $script = dirname(__DIR__, 2) . '/bin/process_incoming_fax.sh';
+        $cmd = 'PATH=' . escapeshellarg($dir) . ':/usr/bin:/bin bash ' . escapeshellarg($script)
+            . ' /var/spool/asterisk/fax/20261022_104943_05427821260_1.494.tif 9399 05427821260 0 FAILED '
+            . escapeshellarg('NO_FAX: no fax tone; $(id)') . ' 2>/dev/null';
+        exec($cmd, $out, $rc);
+        $sql = (string)@file_get_contents("$dir/sql");
+        array_map('unlink', glob("$dir/*") ?: []);
+        @rmdir($dir);
+
+        $this->assertSame(0, $rc);
+        $this->assertStringContainsString("VALUES ('9399', '05427821260', 0, '', '', 0, 'FAILED', 'NO_FAX: no fax tone id', 1, 0);", $sql);
     }
 
     // --- Internal destination numbers ---------------------------------------
@@ -430,7 +504,7 @@ final class SyncGeneratorTest extends TestCase
         $db->prepare("INSERT INTO sys_settings (setting_key, setting_value) VALUES ('server_ip', '10.8.0.12'), ('pjsip_external_ip', '203.0.113.7')")->execute();
         try {
             $conf = buildRtpConf();
-            $this->assertMatchesRegularExpression('/^\[ice_host_candidates\]\ninclude_local_address=yes\n10\.8\.0\.12 => 203\.0\.113\.7$/m', $conf);
+            $this->assertMatchesRegularExpression('/^\[ice_host_candidates\]\n10\.8\.0\.12 => 203\.0\.113\.7,include_local_address$/m', $conf);
             $general = substr($conf, 0, (int) strpos($conf, '[ice_host_candidates]'));
             $this->assertStringNotContainsString('ice_host_candidates', $general, 'Asterisk ignores it under [general]');
 
@@ -553,6 +627,150 @@ final class SyncGeneratorTest extends TestCase
             'the outbound dialplan must not have the r option, which fakes ringing and drowns early media (D-1)');
     }
 
+    public function testCallFromATrunkIsNotSentBackThroughIt(): void
+    {
+        // A number the PBX behind a trunk routes to us and we route back looped
+        // (thousands of calls an hour on production, October 2026).
+        $db = getDB();
+        $db->prepare("INSERT INTO pbx_outbound_routes (route_name, match_pattern, is_active, route_group, trunks_json) VALUES ('Loop', '_5XXX', 1, 1, ?)")
+           ->execute([json_encode([['trunk_name' => Fixtures::TRUNK_NAME, 'callerid_override' => '']])]);
+        try {
+            syncOutboundDialplan();
+            $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_outbound.conf');
+            $t = Fixtures::TRUNK_NAME;
+            $this->assertStringContainsString(
+                ' same => n,GotoIf($["${CF_HOPS}" = "" & ${REGEX("^PJSIP/' . preg_quote($t, '/') . '-[0-9a-f]+$" ${CHANNEL(name)})}]?hairpin1)', $conf);
+            $this->assertMatchesRegularExpression('/n\(hairpin1\),NoOp\([^\n]*\)\n same => n,Set\(DIALSTATUS=CONGESTION\)\n same => n\(afterhp1\),NoOp\(\)/', $conf);
+            // the guard comes before the Dial it skips
+            $block = substr($conf, strpos($conf, 'exten => _5XXX,1'));
+            $this->assertLessThan(strpos($block, 'Dial(PJSIP/'), strpos($block, '?hairpin1)'));
+        } finally {
+            $db->exec("DELETE FROM pbx_outbound_routes WHERE route_name = 'Loop'");
+        }
+    }
+
+    public function testSignalingCaptureSwitchAndTheOldPluginFileIsRemoved(): void
+    {
+        $db = getDB();
+        $set = $db->prepare("INSERT INTO sys_settings (setting_key, setting_value) VALUES ('signaling_capture', ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        // The retired plugin's file sent the capture to 127.0.0.1:9060, where nothing listens.
+        file_put_contents(ASTERISK_PBX_DIR . '/hep_plugin_signaling-capture.conf', "[general]\ncapture_address = 127.0.0.1:9060\n");
+        try {
+            $set->execute(['1']);
+            syncSignalingCapture();
+            $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/hep_aipbx.conf');
+            $this->assertStringContainsString("[general]\nenabled = yes\n", $conf);
+            $this->assertStringNotContainsString('capture_address', $conf, 'always the local daemon of hep.conf');
+            $this->assertFileDoesNotExist(ASTERISK_PBX_DIR . '/hep_plugin_signaling-capture.conf');
+
+            $set->execute(['0']);
+            syncSignalingCapture();
+            $this->assertStringContainsString('enabled = no', (string) file_get_contents(ASTERISK_PBX_DIR . '/hep_aipbx.conf'));
+        } finally {
+            $db->exec("DELETE FROM sys_settings WHERE setting_key = 'signaling_capture'");
+        }
+    }
+
+    public function testTrunkLimitsAreCheckedInboundAndOutbound(): void
+    {
+        $db = getDB();
+        $t = Fixtures::TRUNK_NAME;
+        $db->prepare('UPDATE pbx_trunks SET max_channels = 4, max_calls_per_minute = 30 WHERE trunk_name = ?')->execute([$t]);
+        $db->prepare("INSERT INTO pbx_outbound_routes (route_name, match_pattern, is_active, route_group, trunks_json) VALUES ('Lim', '_6XXX', 1, 1, ?)")
+           ->execute([json_encode([['trunk_name' => $t, 'callerid_override' => '']])]);
+        try {
+            syncInboundDialplan();
+            $in = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_inbound.conf');
+            $this->assertStringContainsString('[sub-trunk-limit]', $in);
+            $this->assertStringContainsString(" same => n,Gosub(sub-trunk-limit,s,1({$t},4,30,trunkin))\n same => n,ExecIf(\$[\"\${TRUNK_LIMIT}\" != \"\"]?Hangup(34))", $in);
+
+            syncOutboundDialplan();
+            $out = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_outbound.conf');
+            $this->assertStringContainsString(" same => n,Gosub(sub-trunk-limit,s,1({$t},4,30,trunk))", $out);
+            $this->assertStringContainsString('?trunkfull1)', $out);
+            $this->assertStringNotContainsString('Set(GROUP(trunk)=', $out, 'the subroutine sets the group');
+
+            // No limit: no check at all.
+            $db->prepare('UPDATE pbx_trunks SET max_channels = 0, max_calls_per_minute = 0 WHERE trunk_name = ?')->execute([$t]);
+            syncInboundDialplan();
+            $this->assertStringNotContainsString("Gosub(sub-trunk-limit,s,1({$t},", (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_inbound.conf'));
+        } finally {
+            $db->prepare('UPDATE pbx_trunks SET max_channels = 0, max_calls_per_minute = 0 WHERE trunk_name = ?')->execute([$t]);
+            $db->exec("DELETE FROM pbx_outbound_routes WHERE route_name = 'Lim'");
+        }
+    }
+
+    public function testSpokenStatusIsPlayedOnlyWhenSwitchedOn(): void
+    {
+        $db = getDB();
+        $set = $db->prepare("INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        $db->prepare("INSERT INTO sys_users (username, password_hash, full_name, extension, sip_password, sip_auth_digest, extension_type, is_active, role, voicemail_enabled) VALUES ('sptest', '', 'Status Prompt', '7088', ?, 1, 'sip', 1, 'user', 0)")->execute(['S' . bin2hex(random_bytes(8))]);
+        try {
+            syncGeneralDialplan();
+            $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_general.conf');
+            $this->assertStringContainsString('[sub-status-prompt]', $conf);
+            $this->assertStringNotContainsString('Gosub(sub-status-prompt', $conf, 'off by default: tones only');
+
+            foreach (['busy', 'noanswer', 'unavail'] as $case) {
+                $set->execute(['status_prompt_' . $case, '1']);
+            }
+            syncGeneralDialplan();
+            $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_general.conf');
+            $this->assertStringContainsString("Gosub(sub-status-prompt,s,1(busy,7088))\n same => n,Hangup(17)", $conf);
+            $this->assertStringContainsString("Gosub(sub-status-prompt,s,1(noanswer,7088))\n same => n,Hangup()", $conf);
+            $this->assertStringContainsString("Gosub(sub-status-prompt,s,1(unavail,7088))\n same => n,Hangup()", $conf);
+            $this->assertStringContainsString('ExecIf($["${CHANNEL(state)}" != "Up"]?Progress())', $conf, 'early media: a trunk call is not answered');
+        } finally {
+            $db->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'status_prompt_%'");
+            $db->exec("DELETE FROM sys_users WHERE username = 'sptest'");
+        }
+    }
+
+    public function testFaxCallsAreNotRecordedAndGetNoJitterBuffer(): void
+    {
+        // A fax sent from the portal goes through the outbound route like a
+        // call. Recording it stores modem noise, and a jitter buffer reshapes
+        // the modem's timing; the call file marks it with __AIPBX_FAX=1.
+        syncOutboundDialplan();
+        $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_outbound.conf');
+        if (str_contains($conf, 'MixMonitor(${REC_FILE})')) {
+            $this->assertStringContainsString('GotoIf($["${AIPBX_FAX}" = "1"]?norec)', $conf);
+            $this->assertStringContainsString(' same => n(norec),NoOp()', $conf);
+        }
+        $this->assertStringNotContainsString(" same => n,Set(JITTERBUFFER(adaptive)=default)\n", $conf);
+
+        syncGeneralDialplan();
+        $general = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_general.conf');
+        $this->assertStringContainsString('ExecIf($["${AIPBX_FAX}" != "1"]?Set(JITTERBUFFER(adaptive)=default))', $general);
+    }
+
+    public function testFaxNumberIsNeverRecorded(): void
+    {
+        $_SESSION['csrf_token'] = 'test-csrf';
+        $res = RouteService::saveDIDRoute([
+            'csrf_token' => 'test-csrf',
+            'route_id' => 0,
+            'did_number' => '7999',
+            'title' => 'Recorded fax test',
+            'dest_type' => 'fax',
+            'dest_id' => '',
+            'record_call' => 1,
+            'is_active' => 1,
+        ]);
+        try {
+            $this->assertEmpty($res['error'] ?? '');
+            syncInboundDialplan();
+            $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_inbound.conf');
+            $start = strpos($conf, 'exten => 7999,1,');
+            $this->assertNotFalse($start);
+            $end = strpos($conf, "\n\n", $start);
+            $block = substr($conf, $start, $end === false ? null : $end - $start);
+            $this->assertStringNotContainsString('MixMonitor', $block);
+        } finally {
+            getDB()->exec("DELETE FROM pbx_dids WHERE did_number = '7999' AND title = 'Recorded fax test'");
+        }
+    }
+
     public function testOutboundRouteHasStatusHandlingAndHangupCause(): void
     {
         syncOutboundDialplan();
@@ -610,6 +828,48 @@ final class SyncGeneratorTest extends TestCase
         // ExecIf condition that keeps the caller number on transit inbound calls and checks the internal CID_EXTERNAL priority
         $this->assertStringContainsString('ExecIf($["${CDR(inbound_trunk)}" = ""]?Set(CALLERID(num)=${IF($["${CID_EXTERNAL}" != ""]?${CID_EXTERNAL}:08501234567)}))', $conf,
             'on trunk-to-trunk transit calls the incoming mobile number must not be replaced by the trunk default CID');
+    }
+
+    public function testInboundDidPatternAutoExtensionMatching(): void
+    {
+        $_SESSION['csrf_token'] = 'test-csrf';
+        $res = RouteService::saveDIDRoute([
+            'csrf_token' => 'test-csrf',
+            'route_id' => 0,
+            'did_number' => '98xx',
+            'title' => '98XX Extensions',
+            'dest_type' => 'extension',
+            'dest_id' => '__did__',
+            'record_call' => 1,
+            'is_active' => 1,
+        ]);
+        $this->assertEmpty($res['error'] ?? '');
+
+        $saved = getDB()->query("SELECT * FROM pbx_dids WHERE title = '98XX Extensions'")->fetch(\PDO::FETCH_ASSOC);
+        $this->assertNotEmpty($saved);
+        $this->assertSame('98XX', $saved['did_number']);
+
+        $res2 = RouteService::saveDIDRoute([
+            'csrf_token' => 'test-csrf',
+            'route_id' => 0,
+            'did_number' => '78xxx',
+            'title' => '78XXX Extensions',
+            'dest_type' => 'extension',
+            'dest_id' => '__did__',
+            'record_call' => 0,
+            'is_active' => 1,
+        ]);
+        $this->assertEmpty($res2['error'] ?? '');
+
+        syncInboundDialplan();
+        $conf = (string) file_get_contents(ASTERISK_PBX_DIR . '/extensions_inbound.conf');
+
+        $this->assertStringContainsString('exten => _98XX,1,NoOp(Inbound call for DID _98XX - 98XX Extensions)', $conf);
+        $this->assertStringContainsString('exten => _78XXX,1,NoOp(Inbound call for DID _78XXX - 78XXX Extensions)', $conf);
+        $this->assertStringContainsString('same => n,Set(CDR(did)=${EXTEN})', $conf);
+        $this->assertStringContainsString('same => n,GotoIf($[${DIALPLAN_EXISTS(from-internal-pbx-ortak,${EXTEN},1)}]?from-internal-pbx-ortak,${EXTEN},1)', $conf);
+        $this->assertStringContainsString('same => n,GotoIf($[$[${LEN(${EXTEN})} > 4] & $[${DIALPLAN_EXISTS(from-trunk-inbound,${EXTEN:-4},1)}]]?from-trunk-inbound,${EXTEN:-4},1)', $conf);
+        $this->assertStringContainsString('same => n,GotoIf($[$[${LEN(${EXTEN})} > 5] & $[${DIALPLAN_EXISTS(from-trunk-inbound,${EXTEN:-5},1)}]]?from-trunk-inbound,${EXTEN:-5},1)', $conf);
     }
 }
 

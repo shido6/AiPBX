@@ -1095,12 +1095,9 @@ function formatFileSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
+// escapeHtml() comes from ui_helper.js (loaded on every page). The copy that
+// was here did not escape quotes and, being global, replaced the safe one on
+// every page opened after the chat (SPA navigation).
 
 // 18. Group management and helper functions
 function getSenderColor(ext) {
@@ -1326,14 +1323,16 @@ function renderGroupInfo(conv) {
 
         let actionsHtml = '';
         if (isAdmin && !isMe) {
+            const safeExtAttr = escapeJsAttr(p.extension);
+            const safeNameAttr = escapeJsAttr(p.full_name);
             const toggleRoleAction = p.role === 'admin'
-                ? `<button class="btn btn-sm btn-outline-secondary" style="padding: 1px 6px; font-size: 11px;" onclick="updateMemberRole('${escapeHtml(p.extension)}', '${escapeHtml(p.full_name)}', 'member')" title="${__('js.chat.remove_admin')}"><i class="fas fa-user-minus"></i></button>`
-                : `<button class="btn btn-sm btn-outline-primary" style="padding: 1px 6px; font-size: 11px;" onclick="updateMemberRole('${escapeHtml(p.extension)}', '${escapeHtml(p.full_name)}', 'admin')" title="${__('js.chat.make_admin')}"><i class="fas fa-user-shield"></i></button>`;
+                ? `<button class="btn btn-sm btn-outline-secondary" style="padding: 1px 6px; font-size: 11px;" onclick="updateMemberRole('${safeExtAttr}', '${safeNameAttr}', 'member')" title="${__('js.chat.remove_admin')}"><i class="fas fa-user-minus"></i></button>`
+                : `<button class="btn btn-sm btn-outline-primary" style="padding: 1px 6px; font-size: 11px;" onclick="updateMemberRole('${safeExtAttr}', '${safeNameAttr}', 'admin')" title="${__('js.chat.make_admin')}"><i class="fas fa-user-shield"></i></button>`;
 
             actionsHtml = `
                 <div style="display: flex; align-items: center; gap: 4px;">
                     ${toggleRoleAction}
-                    <button class="btn btn-sm btn-outline-danger" style="padding: 1px 6px; font-size: 11px;" onclick="removeMemberFromGroup('${escapeHtml(p.extension)}', '${escapeHtml(p.full_name)}')" title="${__('js.chat.remove_member')}">
+                    <button class="btn btn-sm btn-outline-danger" style="padding: 1px 6px; font-size: 11px;" onclick="removeMemberFromGroup('${safeExtAttr}', '${safeNameAttr}')" title="${__('js.chat.remove_member')}">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>

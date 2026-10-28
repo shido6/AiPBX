@@ -7,11 +7,7 @@ what AiPBX does about it and what you need to configure.
 
 ## How a WebRTC call reaches Asterisk
 
-```
-browser / app ──443──▶ nginx ─┬─ ALPN present ──▶ Apache ── /ws ──▶ Asterisk (signalling)
-                              └─ no ALPN / stun.turn ──▶ coturn TURNS (media relay)
-media: client ⇄ Asterisk RTP directly when possible, otherwise client ⇄ coturn relay ⇄ Asterisk
-```
+![How a WebRTC call reaches Asterisk](img/webrtc-nat.svg)
 
 ICE tries the candidates in order of preference: the direct path (client to Asterisk's address) and,
 when that is blocked, the **TURN relay** on the same server. Clients are given only a **TURNS**
@@ -78,6 +74,7 @@ error**, and every call that needs the relay is silent. Check **Security → Cer
 | 3478/udp+tcp, 5349/udp+tcp | STUN/TURN and TURNS directly on coturn |
 | 49152-65535/udp | coturn relay ports |
 | 10000-20000/udp | Asterisk RTP (the default RTP range is 10000-12999) |
+| 4100-4999/udp | Asterisk UDPTL (T.38 fax), only for trunks with T.38 on |
 
 ## Desk phones behind NAT
 

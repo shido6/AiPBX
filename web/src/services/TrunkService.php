@@ -4,6 +4,19 @@
  */
 
 class TrunkService {
+    /**
+     * A PJSIP "timers" value Asterisk accepts (yes, no, required, always). An
+     * unknown one makes Asterisk refuse the whole endpoint, so the trunk is gone;
+     * "never" was offered once and meant "no".
+     */
+    public static function timersValue(string $v): string {
+        $v = strtolower(trim($v));
+        if ($v === 'never') {
+            return 'no';
+        }
+        return in_array($v, ['yes', 'no', 'required', 'always'], true) ? $v : 'yes';
+    }
+
     public static function saveTrunk($data) {
         return PBXHelper::handleAction($data['csrf_token'] ?? '', function() use ($data) {
             $trunk_id = intval($data['trunk_id'] ?? 0);
@@ -13,7 +26,7 @@ class TrunkService {
             $port = intval(($data['port'] ?? '') ?: 5060);
             $transport = trim($data['transport'] ?? 'udp');
             $codecs = trim($data['codecs'] ?? 'alaw,ulaw');
-            $t38 = intval($data['t38_support'] ?? 1);
+            $t38 = intval($data['t38_support'] ?? 0);
             $qualify = intval(($data['qualify_frequency'] ?? '') ?: 60);
             $send_caller_name = isset($data['send_caller_name']) ? intval($data['send_caller_name']) : 0;
             $is_active = isset($data['is_active']) ? intval($data['is_active']) : 1;
@@ -108,17 +121,25 @@ class TrunkService {
             $allow_outbound_routing = isset($data['allow_outbound_routing']) ? intval($data['allow_outbound_routing']) : 0;
             $outbound_route_group = max(1, intval($data['outbound_route_group'] ?? 1));
             $max_channels = max(0, intval($data['max_channels'] ?? 0));
+            $max_calls_per_minute = max(0, min(10000, intval($data['max_calls_per_minute'] ?? 0)));
             $cid_keep_last = max(0, min(20, intval($data['cid_keep_last'] ?? 0)));
             $cid_prepend = preg_replace('/[^0-9+]/', '', trim($data['cid_prepend'] ?? ''));
             $cid_prepend = substr($cid_prepend, 0, 30);
+
+            $carrier_strip_prefix = preg_replace('/[^0-9+*#]/', '', trim($data['carrier_strip_prefix'] ?? ''));
+            $carrier_strip_prefix = substr($carrier_strip_prefix, 0, 30);
+            $carrier_add_prefix = preg_replace('/[^0-9+*#]/', '', trim($data['carrier_add_prefix'] ?? ''));
+            $carrier_add_prefix = substr($carrier_add_prefix, 0, 30);
+
+            $prack_100rel = in_array(strtolower(trim($data['prack_100rel'] ?? '')), ['yes', 'no', 'required'], true)
+                ? strtolower(trim($data['prack_100rel']))
+                : 'yes';
 
             $direct_media = in_array(strtolower(trim($data['direct_media'] ?? '')), ['no', 'yes', 'nonat'], true)
                 ? strtolower(trim($data['direct_media']))
                 : 'no';
 
-            $timers = in_array(strtolower(trim($data['timers'] ?? '')), ['yes', 'no', 'always', 'never'], true)
-                ? strtolower(trim($data['timers']))
-                : 'yes';
+            $timers = self::timersValue((string)($data['timers'] ?? ''));
 
             $send_pai = isset($data['send_pai']) ? intval($data['send_pai']) : 0;
             $send_rpid = isset($data['send_rpid']) ? intval($data['send_rpid']) : 0;
@@ -158,8 +179,12 @@ class TrunkService {
                 'allow_outbound_routing' => $allow_outbound_routing,
                 'outbound_route_group' => $outbound_route_group,
                 'max_channels' => $max_channels,
+                'max_calls_per_minute' => $max_calls_per_minute,
                 'cid_keep_last' => $cid_keep_last,
                 'cid_prepend' => $cid_prepend !== '' ? $cid_prepend : null,
+                'carrier_strip_prefix' => $carrier_strip_prefix !== '' ? $carrier_strip_prefix : null,
+                'carrier_add_prefix' => $carrier_add_prefix !== '' ? $carrier_add_prefix : null,
+                'prack_100rel' => $prack_100rel,
                 'direct_media' => $direct_media,
                 'timers' => $timers,
                 'rtp_symmetric' => $rtp_symmetric,
@@ -224,7 +249,7 @@ class TrunkService {
                 SIPHelper::deleteSettings($t_name);
             }
             DBHelper::delete('pbx_trunks', 'id', $trunk_id);
-            markPendingSync('trunks', 'trunk', $t_name ?: ('id_' . $trunk_id), "Trunk: " . ($t_row['title'] ?? $t_name ?? $trunk_id) . " (silindi)", 'delete', $_SESSION['user_id'] ?? null);
+            markPendingSync('trunks', 'trunk', $t_name ?: ('id_' . $trunk_id), "Trunk: " . ($t_row['title'] ?? $t_name ?? $trunk_id) . " (deleted)", 'delete', $_SESSION['user_id'] ?? null);
             return t('srv_trunk.deleted');
         });
     }

@@ -7,6 +7,45 @@ function syncPermissions() {
     return withSyncLock('permissions', '__syncPermissionsBody');
 }
 
+/**
+ * A stored rule pattern as a PCRE fragment for the dialplan REGEX() check.
+ *
+ * A leading _ is the dialplan marker, not part of the number. N/X/Z are
+ * digit classes, . needs one more digit (Asterisk: one or more), ! matches
+ * anything (approximated: the early-match is emulated by rule order).
+ * [...] classes pass through verbatim; every other magic char is escaped.
+ * Exact patterns anchor both ends; prefix patterns only the start, so a
+ * prefix also matches the number itself (dialling 90 hits a 90-prefix rule).
+ */
+function permissionPatternToRegex(string $pattern, bool $isExact): string
+{
+    if (str_starts_with($pattern, '_')) {
+        $pattern = substr($pattern, 1);
+    }
+    $out = '';
+    $n = strlen($pattern);
+    for ($i = 0; $i < $n; $i++) {
+        $c = $pattern[$i];
+        if ($c === '[') {
+            $j = strpos($pattern, ']', $i + 1);
+            if ($j !== false) {
+                $out .= substr($pattern, $i, $j - $i + 1);
+                $i = $j;
+                continue;
+            }
+        }
+        $out .= match (strtoupper($c)) {
+            'N' => '[2-9]',
+            'X' => '[0-9]',
+            'Z' => '[1-9]',
+            '.' => '.+',
+            '!' => '.*',
+            default => preg_quote($c, '/'),
+        };
+    }
+    return '^' . $out . ($isExact ? '$' : '');
+}
+
 function __syncPermissionsBody() {
     $db = getDB();
     $groups = $db->query("SELECT * FROM pbx_permission_groups WHERE is_active = 1 ORDER BY id ASC")->fetchAll(PDO::FETCH_ASSOC);
@@ -16,10 +55,23 @@ function __syncPermissionsBody() {
     $conf .= "[sub-check-dial-permission]\n";
     $conf .= "exten => s,1,NoOp(Dial Permission Check for Caller \${ARG1} -> Target \${ARG2} (Group: \${PERMISSION_GROUP_ID}))\n";
     $conf .= " same => n,Set(PERM_GROUP=\${PERMISSION_GROUP_ID})\n";
+    // Night protection first: it covers trunk-to-trunk transit too, which has no group.
+    require_once dirname(__DIR__) . '/services/NightGuardService.php';
+    $nightGuard = NightGuardService::dialplan();
+    if ($nightGuard !== '') {
+        $conf .= " same => n,Gosub(sub-night-guard,s,1(\${ARG2}))\n";
+    }
+    // An empty group is allowed: calls from a trunk carry no group, and an
+    // inbound call that goes out again must keep working (forwarding to a
+    // mobile, an external DID/IVR destination, an external ring-group
+    // member, trunk-to-trunk). Every channel started by a user carries its
+    // group instead: endpoints (set_var), click-to-call (Originate) and
+    // ring-group legs (inherited), so it cannot be skipped by them.
     $conf .= " same => n,GotoIf(\$[\"\${PERM_GROUP}\" = \"\" | \"\${PERM_GROUP}\" = \"1\"]?perm_allow)\n";
-    $conf .= " same => n,Goto(perm-group-\${PERM_GROUP},\${ARG2},1)\n";
+    $conf .= " same => n,Gosub(perm-group-\${PERM_GROUP},s,1(\${ARG2}))\n";
     $conf .= " same => n(perm_allow),Return()\n\n";
 
+    $conf .= $nightGuard;
     $conf .= "[sub-permission-denied]\n";
     $conf .= "exten => s,1,NoOp(Dial permission restriction: destination not allowed!)\n";
     $conf .= " same => n,Set(CDR(userfield)=CALL_BARRED)\n";
@@ -35,8 +87,13 @@ function __syncPermissionsBody() {
         $gname = toCleanAscii($g['group_name']);
         $default_action = $g['default_action'] ?? 'allow';
 
+        // Rules run in priority order and the FIRST match wins: plain exten
+        // lines cannot do that (Asterisk most-specific-match beats file
+        // order, so a broad deny lost to a narrow allow whatever the
+        // priority said). The dialled number arrives as ARG1.
         $conf .= "; ---- Permission Group #{$gid}: {$gname} ----\n";
         $conf .= "[perm-group-{$gid}]\n";
+        $conf .= "exten => s,1,NoOp(Permission Group {$gid}: {$gname} - first matching rule in priority order wins)\n";
 
         $rules_stmt = $db->prepare("SELECT * FROM pbx_permission_rules WHERE group_id = ? ORDER BY priority ASC, id ASC");
         $rules_stmt->execute([$gid]);
@@ -44,24 +101,32 @@ function __syncPermissionsBody() {
 
         foreach ($rules as $r) {
             $raw_pattern = trim($r['pattern']);
-            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#-]/', '', $raw_pattern);
+            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', $raw_pattern);
             if ($pattern === '') continue;
 
-            $action = ($r['action'] === 'allow') ? 'Return()' : 'Goto(sub-permission-denied,s,1)';
             $is_exact = ($r['pattern_type'] === 'exact');
-
-            if ($is_exact) {
-                $conf .= "exten => {$pattern},1,{$action}\n";
-            } else {
-                // Prefix: match when the number starts with the pattern
-                $prefix_exten = str_starts_with($pattern, '_') ? $pattern : "_{$pattern}.";
-                $conf .= "exten => {$prefix_exten},1,{$action}\n";
-            }
+            $regex = permissionPatternToRegex($pattern, $is_exact);
+            $label = "p{$gid}_r" . intval($r['id']);
+            $conf .= " same => n,GotoIf(\${REGEX(\"{$regex}\" \"\${ARG1}\")}?{$label})\n";
         }
 
-        // Default action for un-matched numbers
+        // Default action for un-matched numbers. Rules that sanitize to
+        // nothing were silently skipped before; they stay visible here as a
+        // comment so the panel and the dialplan cannot disagree quietly.
         $default_app = ($default_action === 'allow') ? 'Return()' : 'Goto(sub-permission-denied,s,1)';
-        $conf .= buildCatchAllExtensions($default_app) . "\n";
+        $conf .= " same => n,Goto(p{$gid}_default)\n";
+        foreach ($rules as $r) {
+            $raw_pattern = trim($r['pattern']);
+            $pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', $raw_pattern);
+            if ($pattern === '') {
+                $conf .= "; rule " . intval($r['id']) . " sanitizes to nothing and never matches\n";
+                continue;
+            }
+            $label = "p{$gid}_r" . intval($r['id']);
+            $app = ($r['action'] === 'allow') ? 'Return()' : 'Goto(sub-permission-denied,s,1)';
+            $conf .= " same => n({$label}),{$app}\n";
+        }
+        $conf .= " same => n(p{$gid}_default),{$default_app}\n\n";
     }
 
     return writeConfWithRollback('extensions_permissions.conf', $conf, function() {

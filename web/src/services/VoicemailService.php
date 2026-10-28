@@ -30,6 +30,14 @@ class VoicemailService {
             $vm_on_unavail = isset($data['vm_on_unavail']) ? intval($data['vm_on_unavail']) : 0;
             $vm_always = isset($data['vm_always']) ? intval($data['vm_always']) : 0;
             $voicemail_enabled = isset($data['voicemail_enabled']) ? intval($data['voicemail_enabled']) : 1;
+            // A mailbox in use needs a PIN that passes the rules (PBX settings → Voicemail).
+            if ($voicemail_enabled) {
+                require_once __DIR__ . '/VoicemailPolicy.php';
+                $ext = (string) $db->query('SELECT extension FROM sys_users WHERE id = ' . (int) $userId)->fetchColumn();
+                if (($pinError = VoicemailPolicy::pinError($pin, $ext)) !== null) {
+                    throw new \Exception($pinError);
+                }
+            }
 
             $stmt = $db->prepare("UPDATE sys_users SET voicemail_enabled = ?, voicemail_pin = ?, voicemail_email = ?, voicemail_attach_audio = ?, vm_on_noanswer = ?, vm_on_busy = ?, vm_on_unavail = ?, vm_always = ? WHERE id = ?");
             $stmt->execute([$voicemail_enabled, $pin, $email, $attach, $vm_on_noanswer, $vm_on_busy, $vm_on_unavail, $vm_always, $userId]);
@@ -138,24 +146,43 @@ class VoicemailService {
     }
 
     /** Deletes the files of one message (portal and mobile app); throws on failure. */
-    public static function deleteFiles(string $ext, string $msgId): string {
+    public static function deleteFiles(string $ext, string $msgId, ?string $spool = null): string {
         $ext = preg_replace('/[^0-9]/', '', $ext);
         if (preg_match('/^Archive:(\d+)$/', $msgId, $a)) {
             $key = self::archivedKey($ext, $msgId);
             if ($key === null) {
                 throw new \Exception(t('srv_vm.err_not_found'));
             }
+            $origtime = 0;
+            try {
+                $st = getDB()->prepare('SELECT origtime FROM voicemail_archive WHERE id = ? AND mailbox = ?');
+                $st->execute([(int) $a[1], $ext]);
+                $origtime = (int) $st->fetchColumn();
+            } catch (\Throwable $e) {
+            }
             require_once __DIR__ . '/BucketFiles.php';
             BucketFiles::delete($key);
             getDB()->prepare('DELETE FROM voicemail_archive WHERE id = ? AND mailbox = ?')->execute([(int) $a[1], $ext]);
+            self::deleteAiTranscript($ext, $origtime);
             return t('srv_vm.deleted');
         }
         if ($ext === '' || !preg_match('/^(INBOX|Old):(msg[0-9]{4})$/', $msgId, $m)) {
             throw new \Exception(t('srv_vm.err_id'));
         }
-        $files = glob("/var/spool/asterisk/voicemail/default/{$ext}/{$m[1]}/{$m[2]}.*") ?: [];
+        $baseDir = $spool ?? '/var/spool/asterisk/voicemail/default';
+        $files = glob("{$baseDir}/{$ext}/{$m[1]}/{$m[2]}.*") ?: [];
         if (empty($files)) {
             throw new \Exception(t('srv_vm.err_not_found'));
+        }
+        $origtime = 0;
+        $txtFile = "{$baseDir}/{$ext}/{$m[1]}/{$m[2]}.txt";
+        if (is_file($txtFile)) {
+            foreach (@file($txtFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+                if (str_starts_with($line, 'origtime=')) {
+                    $origtime = (int) trim(substr($line, strlen('origtime=')));
+                    break;
+                }
+            }
         }
         foreach ($files as $f) {
             // The error used to be swallowed and "deleted" was reported even when it could not be deleted.
@@ -163,7 +190,19 @@ class VoicemailService {
                 throw new \Exception(t('srv_vm.err_delete'));
             }
         }
+        self::deleteAiTranscript($ext, $origtime);
         return t('srv_vm.deleted');
+    }
+
+    private static function deleteAiTranscript(string $ext, int $origtime): void
+    {
+        if ($ext === '' || $origtime <= 0) {
+            return;
+        }
+        try {
+            getDB()->prepare('DELETE FROM voicemail_ai WHERE mailbox = ? AND origtime = ?')->execute([$ext, $origtime]);
+        } catch (\Throwable $e) {
+        }
     }
 
     /**

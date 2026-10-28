@@ -118,8 +118,10 @@
     <string name="btn_remove">Rimuovi</string>
     <string name="call_from_pbx">Chiamata dal centralino</string>
     <string name="call_on_hold">In attesa</string>
+    <string name="cf_always">INOLTRO (SEMPRE)</string>
     <string name="cf_busy">INOLTRO (OCCUPATO)</string>
     <string name="cf_busy_noanswer">INOLTRO (OCCUPATO/NESSUNA RISPOSTA)</string>
+    <string name="cf_noanswer">INOLTRO (NESSUNA RISPOSTA)</string>
     <string name="chat_document">Documento</string>
     <string name="chat_extension_title">Interno #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Nessun permesso per la fotocamera: la chiamata continua solo con l\'audio.</string>
     <string name="err_camera_unavailable">Fotocamera non disponibile: la chiamata continua solo con l\'audio.</string>
     <string name="contacts_extensions_listed">interni elencati</string>
+    <string name="api_fcm_token_failed">Impossibile inviare il token FCM (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Impossibile eliminare il gruppo (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Mantieni il prefisso \'+\'</string>
+    <string name="pref_send_plus_desc">Invia il \'+\' internazionale direttamente al PBX per la normalizzazione (ATTIVO) o converti in 00 (NON ATTIVO)</string>
 </resources>

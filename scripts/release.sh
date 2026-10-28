@@ -40,6 +40,31 @@ fi
 NOTES="$(awk -v v="## $VER" '$0 == v {f=1; next} /^## / && f {exit} f' CHANGELOG.md | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
 [[ -n "${NOTES// }" ]] || { echo "CHANGELOG.md has no (or an empty) '## $VER' section" >&2; exit 1; }
 
+# The Android app has the same version and goes to Google Play — but only when
+# android/ changed since the last release (the CI skips the upload otherwise,
+# see .github/workflows/android-build.yml). Then its "What's new" must be
+# written for this version (else Play shows a generic text).
+LAST_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+if [[ -n "$LAST_TAG" ]] && git diff --quiet "$LAST_TAG" HEAD -- android ':!android/play-release-notes.json'; then
+    echo "Android: no change since $LAST_TAG -> no app build, no Google Play upload (the APK is carried over)."
+else
+    PLAY_VER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version",""))' android/play-release-notes.json)"
+    [[ "$PLAY_VER" == "$VER" ]] || { echo "android/play-release-notes.json is for '$PLAY_VER': write the Play notes for $VER (en-US + tr-TR) and commit them first" >&2; exit 1; }
+fi
+
+# Say in the notes whether updating to this release restarts Asterisk (the
+# updater decides the same way, scripts/asterisk-restart-needed.sh).
+PREV_TAG="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+if [[ -n "$PREV_TAG" ]]; then
+    RESTART="$(scripts/asterisk-restart-needed.sh "$ROOT" "$PREV_TAG" HEAD)"
+    if [[ "$RESTART" == no ]]; then
+        NOTES+=$'\n\n'"Update from $PREV_TAG: Asterisk is reloaded, not restarted; calls in progress stay up."
+    else
+        NOTES+=$'\n\n'"Update from $PREV_TAG: Asterisk is restarted (${RESTART#yes: }); calls in progress drop."
+    fi
+    echo "Asterisk on update from $PREV_TAG: $RESTART"
+fi
+
 echo "$VER" > VERSION
 git add VERSION CHANGELOG.md
 git diff --cached --quiet || git commit -q -m "release: v$VER"

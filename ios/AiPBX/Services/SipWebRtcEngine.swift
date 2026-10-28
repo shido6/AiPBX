@@ -18,10 +18,13 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
     @Published public private(set) var isMuted: Bool = false
     @Published public private(set) var isHeld: Bool = false
     @Published public private(set) var isReady: Bool = false
+    @Published public private(set) var incomingHasVideo: Bool = false
+    @Published public private(set) var isVideoActive: Bool = false
+    @Published public private(set) var isCameraEnabled: Bool = true
 
     public weak var delegate: SipWebRtcEngineDelegate?
 
-    private var webView: WKWebView?
+    public private(set) var webView: WKWebView?
     private var pendingRegistration: (() -> Void)?
     private var lastSipCredentials: SipCredentials?
     private var lastDisplayName: String?
@@ -52,13 +55,13 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
     }
 
     private func loadHtml() {
-        guard let url = Bundle.main.url(forResource: "phone_engine", withExtension: "html") else {
+        guard let htmlUrl = Bundle.main.url(forResource: "phone_engine", withExtension: "html") else {
             AppLogManager.shared.error("SipEngine", "phone_engine.html not found in bundle")
             return
         }
 
-        let accessUrl = url.deletingLastPathComponent()
-        webView?.loadFileURL(url, allowingReadAccessTo: accessUrl)
+        let accessUrl = htmlUrl.deletingLastPathComponent()
+        webView?.loadFileURL(htmlUrl, allowingReadAccessTo: accessUrl)
         AppLogManager.shared.info("SipEngine", "Loading phone_engine.html...")
     }
 
@@ -97,7 +100,16 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
         }
     }
 
-    public func makeCall(target: String) {
+    private func videoJsArg(_ video: VideoSettings?) -> String {
+        guard let video = video, video.enabled else { return "null" }
+        let parts = (video.resolution ?? "1280x720").split(separator: "x")
+        let w = parts.count == 2 ? (Int(parts[0]) ?? 1280) : 1280
+        let h = parts.count == 2 ? (Int(parts[1]) ?? 720) : 720
+        let fps = video.fps ?? 24
+        return "{w:\(w),h:\(h),fps:\(fps)}"
+    }
+
+    public func makeCall(target: String, video: VideoSettings? = nil) {
         guard let sip = lastSipCredentials else {
             AppLogManager.shared.warn("SipEngine", "Cannot make call: no active SIP credentials")
             return
@@ -110,31 +122,53 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
         let turnUrl = sip.turn?.urls?.first ?? ""
         let turnUser = sip.turn?.username ?? ""
         let turnPass = sip.turn?.credential ?? ""
+        let vArg = videoJsArg(video)
 
-        let js = "makeCall('\(escapeForJs(target))', '\(escapeForJs(sip.domain))', '\(escapeForJs(turnUrl))', '\(escapeForJs(turnUser))', '\(escapeForJs(turnPass))');"
+        let js = "makeCall('\(escapeForJs(target))', '\(escapeForJs(sip.domain))', '\(escapeForJs(turnUrl))', '\(escapeForJs(turnUser))', '\(escapeForJs(turnPass))', \(vArg));"
         evaluateJs(js)
 
         DispatchQueue.main.async {
             self.activeCallerName = target
             self.activeCallerNumber = target
+            self.isCameraEnabled = true
             self.callStatus = .connecting
             self.delegate?.engineDidUpdateCallStatus(.connecting)
         }
         AppLogManager.shared.info("SipEngine", "Calling target: \(target)")
     }
 
-    public func answerCall() {
+    public func answerCall(video: VideoSettings? = nil) {
         AudioSessionManager.shared.configureAudioSessionForCall()
-        evaluateJs("answerCall();")
+        let vArg = videoJsArg(video)
+        evaluateJs("answerCall(\(vArg));")
         DispatchQueue.main.async {
+            self.isCameraEnabled = true
             self.callStatus = .active
             self.delegate?.engineDidUpdateCallStatus(.active)
         }
         AppLogManager.shared.info("SipEngine", "Answering incoming call")
     }
 
+    public func transferCall(target: String) {
+        let domain = lastSipCredentials?.domain ?? ""
+        evaluateJs("transferCall('\(escapeForJs(target))', '\(escapeForJs(domain))');")
+        AppLogManager.shared.info("SipEngine", "Transferring call to: \(target)")
+    }
+
+    public func toggleCamera() {
+        let next = !isCameraEnabled
+        evaluateJs("toggleCamera(\(next ? "true" : "false"));")
+        DispatchQueue.main.async {
+            self.isCameraEnabled = next
+        }
+    }
+
+    public func switchCamera() {
+        evaluateJs("switchCamera();")
+    }
+
     public func terminateCall() {
-        evaluateJs("terminateCall();")
+        evaluateJs("hangupCall();")
         CallKitManager.shared.endCall()
         AudioSessionManager.shared.endAudioSession()
 
@@ -142,6 +176,9 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
             self.callStatus = .ended
             self.isMuted = false
             self.isHeld = false
+            self.incomingHasVideo = false
+            self.isVideoActive = false
+            self.isCameraEnabled = true
             self.delegate?.engineDidUpdateCallStatus(.ended)
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                 if self.callStatus == .ended {
@@ -153,21 +190,23 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
         AppLogManager.shared.info("SipEngine", "Call terminated")
     }
 
-    public func toggleMute() {
-        let newMute = !isMuted
-        evaluateJs("mute(\(newMute ? "true" : "false"));")
+    public func setMute(_ muted: Bool) {
+        evaluateJs("toggleMute(\(muted ? "true" : "false"));")
         DispatchQueue.main.async {
-            self.isMuted = newMute
-            AudioSessionManager.shared.setMuted(enabled: newMute)
+            self.isMuted = muted
+            AudioSessionManager.shared.setMuted(enabled: muted)
         }
     }
 
-    public func toggleHold() {
-        let newHold = !isHeld
-        evaluateJs("hold(\(newHold ? "true" : "false"));")
+    public func toggleMute() {
+        setMute(!isMuted)
+    }
+
+    public func setHold(_ held: Bool) {
+        evaluateJs("toggleHold(\(held ? "true" : "false"));")
         DispatchQueue.main.async {
-            self.isHeld = newHold
-            if newHold {
+            self.isHeld = held
+            if held {
                 self.callStatus = .onHold
             } else {
                 self.callStatus = .active
@@ -176,13 +215,18 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
         }
     }
 
+    public func toggleHold() {
+        setHold(!isHeld)
+    }
+
     public func sendDTMF(_ tone: String) {
-        evaluateJs("sendDTMF('\(escapeForJs(tone))');")
+        let escaped = escapeForJs(tone)
+        evaluateJs("sendDtmf('\(escaped)');")
         AppLogManager.shared.debug("SipEngine", "DTMF sent: \(tone)")
     }
 
     public func unregister() {
-        evaluateJs("unregister();")
+        evaluateJs("destroyUA();")
         DispatchQueue.main.async {
             self.connectionStatus = .disconnected
             self.delegate?.engineDidUpdateConnectionStatus(.disconnected)
@@ -205,6 +249,8 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
             .replacingOccurrences(of: "'", with: "\\'")
             .replacingOccurrences(of: "\n", with: "\\n")
             .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028")
+            .replacingOccurrences(of: "\u{2029}", with: "\\u2029")
     }
 
     // MARK: - WKScriptMessageHandler
@@ -262,6 +308,9 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
                 self.callStatus = .ended
                 self.isMuted = false
                 self.isHeld = false
+                self.incomingHasVideo = false
+                self.isVideoActive = false
+                self.isCameraEnabled = true
                 self.delegate?.engineDidUpdateCallStatus(.ended)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     if self.callStatus == .ended {
@@ -272,9 +321,29 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
             }
             AppLogManager.shared.info("SipEngine", "Call ended: \(cause)")
 
+        case "setIncomingVideo":
+            let hasVideo = body["hasVideo"] as? Bool ?? false
+            DispatchQueue.main.async {
+                self.incomingHasVideo = hasVideo
+            }
+
+        case "onVideoActive":
+            let active = body["active"] as? Bool ?? false
+            DispatchQueue.main.async {
+                self.isVideoActive = active
+                if active {
+                    AudioSessionManager.shared.setSpeaker(enabled: true)
+                }
+            }
+
+        case "onCameraUnavailable":
+            AppLogManager.shared.warn("SipEngine", L("Camera not available: the call continues with audio only."))
+
         case "onIncomingCall":
-            let name = body["name"] as? String ?? "Bilinmeyen Numara"
             let number = body["number"] as? String ?? ""
+            // The engine sends "" when the caller has no display name: show the number then.
+            let rawName = (body["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let name = !rawName.isEmpty ? rawName : (!number.isEmpty ? number : L("Unknown Number"))
             DispatchQueue.main.async {
                 self.activeCallerName = name
                 self.activeCallerNumber = number
@@ -290,7 +359,7 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
                 // Answered on the CallKit screen while the INVITE was on its way.
                 answerCall()
             case .reject:
-                evaluateJs("terminateCall();")
+                evaluateJs("rejectCall();")
                 DispatchQueue.main.async {
                     self.callStatus = .idle
                     self.delegate?.engineDidUpdateCallStatus(.idle)
@@ -299,6 +368,11 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
 
         case "onRemoteAudioPlaying":
             AppLogManager.shared.info("SipEngine", "Remote audio playback confirmed active")
+
+        case "onCallStatusChanged":
+            if let status = body["status"] as? String {
+                AppLogManager.shared.debug("SipEngine", "JS call status changed: \(status)")
+            }
 
         default:
             break
@@ -313,8 +387,14 @@ public final class SipWebRtcEngine: NSObject, ObservableObject, WKScriptMessageH
                         initiatedByFrame frame: WKFrameInfo,
                         type: WKMediaCaptureType,
                         decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-        AppLogManager.shared.info("SipEngine", "Granting media capture permission for WebRTC in WKWebView")
-        decisionHandler(.grant)
+        let proto = origin.protocol.lowercased()
+        if origin.host.isEmpty || proto == "file" || proto == "about" {
+            AppLogManager.shared.info("SipEngine", "Granting media capture permission for bundled WebRTC engine")
+            decisionHandler(.grant)
+        } else {
+            AppLogManager.shared.warn("SipEngine", "Denied media capture permission for external origin: \(origin.host)")
+            decisionHandler(.deny)
+        }
     }
 
     public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

@@ -173,7 +173,9 @@ function __syncFeatureCodesBody() {
 
             case 'cf_set':
                 $conf .= " same => n,Answer()\n";
-                $conf .= " same => n,Read(CFTARGET,,10,,3,10)\n";
+                // Up to 20 digits: a Turkish mobile number is 11 (0532…), with a trunk prefix 12;
+                // the old limit of 10 cut it off and saved a wrong forwarding number.
+                $conf .= " same => n,Read(CFTARGET,,20,,3,10)\n";
                 $conf .= " same => n,Set(CFTARGET=\${FILTER(0-9,\${CFTARGET})})\n";
                 $conf .= " same => n,GotoIf(\$[\"\${CFTARGET}\" = \"\"]?cfset_empty)\n";
                 $conf .= " same => n,System(/usr/local/bin/feature_code_action.php cf_set \${FILTER(0-9,\${CALLERID(num)})} \${CFTARGET} &)\n";
@@ -202,6 +204,7 @@ function __syncFeatureCodesBody() {
                 $conf .= " same => n,GotoIf(\$[\"\${PICKTARGET}\" != \"\"]?pickdir_go)\n";
                 $conf .= " same => n,Answer()\n";
                 $conf .= " same => n,Read(PICKTARGET,,10,,3,10)\n";
+                $conf .= " same => n,Set(PICKTARGET=\${FILTER(0123456789,\${PICKTARGET})})\n";
                 $conf .= " same => n,GotoIf(\$[\"\${PICKTARGET}\" = \"\"]?pickdir_empty)\n";
                 $conf .= " same => n(pickdir_go),PickupChan(PJSIP/\${PICKTARGET}-sip&PJSIP/\${PICKTARGET}-webrtc&PJSIP/\${PICKTARGET}-mob-webrtc)\n";
                 $conf .= " same => n,Hangup()\n";
@@ -217,8 +220,9 @@ function __syncFeatureCodesBody() {
             case 'spy':
                 $conf .= " same => n,Answer()\n";
                 $conf .= " same => n,Read(SPYTARGET,,10,,3,10)\n";
+                $conf .= " same => n,Set(SPYTARGET=\${FILTER(0123456789,\${SPYTARGET})})\n";
                 $conf .= " same => n,GotoIf(\$[\"\${SPYTARGET}\" = \"\"]?spy_empty)\n";
-                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET},b)\n";
+                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET}-,b)\n";
                 $conf .= " same => n,Hangup()\n";
                 $conf .= " same => n(spy_empty),Playback(beep)\n";
                 $conf .= " same => n,Hangup()\n";
@@ -227,8 +231,9 @@ function __syncFeatureCodesBody() {
             case 'spy_whisper':
                 $conf .= " same => n,Answer()\n";
                 $conf .= " same => n,Read(SPYTARGET,,10,,3,10)\n";
+                $conf .= " same => n,Set(SPYTARGET=\${FILTER(0123456789,\${SPYTARGET})})\n";
                 $conf .= " same => n,GotoIf(\$[\"\${SPYTARGET}\" = \"\"]?spy_w_empty)\n";
-                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET},qwb)\n";
+                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET}-,qwb)\n";
                 $conf .= " same => n,Hangup()\n";
                 $conf .= " same => n(spy_w_empty),Playback(beep)\n";
                 $conf .= " same => n,Hangup()\n";
@@ -237,8 +242,9 @@ function __syncFeatureCodesBody() {
             case 'spy_barge':
                 $conf .= " same => n,Answer()\n";
                 $conf .= " same => n,Read(SPYTARGET,,10,,3,10)\n";
+                $conf .= " same => n,Set(SPYTARGET=\${FILTER(0123456789,\${SPYTARGET})})\n";
                 $conf .= " same => n,GotoIf(\$[\"\${SPYTARGET}\" = \"\"]?spy_b_empty)\n";
-                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET},qBb)\n";
+                $conf .= " same => n,ChanSpy(PJSIP/\${SPYTARGET}-,qBb)\n";
                 $conf .= " same => n,Hangup()\n";
                 $conf .= " same => n(spy_b_empty),Playback(beep)\n";
                 $conf .= " same => n,Hangup()\n";

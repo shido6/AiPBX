@@ -50,6 +50,9 @@ class FaxSendService {
         if (!verifyCSRFToken($csrf_token)) {
             return ['success' => false, 'error' => t('common.invalid_csrf')];
         }
+        if (empty($sender_did) || !preg_match('/^\d+$/', (string)$sender_did)) {
+            return ['success' => false, 'error' => 'Sender extension is required.'];
+        }
         if (empty($dest_number)) {
             return ['success' => false, 'error' => t('srv_fax.err_to')];
         }
@@ -92,6 +95,13 @@ class FaxSendService {
         if (!is_dir($sent_archive_dir)) {
             @mkdir($sent_archive_dir, 0775, true);
             @chown($sent_archive_dir, 'asterisk');
+        }
+        // Group-writable whoever made it: mkdir's mode goes through the umask
+        // (0775 -> 0755), and once an upgrade hands the directory to asterisk
+        // (chown -R), the portal, which writes through group asterisk, could
+        // no longer save an upload ("Permission denied", live system 2026-10-22).
+        if (is_dir($sent_archive_dir) && (fileperms($sent_archive_dir) & 0020) === 0) {
+            @chmod($sent_archive_dir, 02775);
         }
 
         $spool_dir = FAX_OUTGOING_SPOOL; // /etc/ai-pbx.env
@@ -170,9 +180,22 @@ class FaxSendService {
         // picked another fax unit; for a regular fax user senderExt is their
         // own extension anyway, same behaviour as the old code).
         $db = getDB();
-        $stmt = $db->prepare("SELECT full_name, cid_external FROM sys_users WHERE extension = ?");
+        $stmt = $db->prepare("SELECT full_name, cid_external, permission_group_id, outbound_group FROM sys_users WHERE extension = ?");
         $stmt->execute([$senderExt]);
         $sender_row = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
+
+        $perm_grp = (int)($sender_row['permission_group_id'] ?? 0);
+        $out_grp = max(1, (int)($sender_row['outbound_group'] ?? 1));
+        if (empty($sender_row) && !empty($_SESSION['user_id'])) {
+            $uStmt = $db->prepare("SELECT permission_group_id, outbound_group FROM sys_users WHERE id = ?");
+            $uStmt->execute([(int)$_SESSION['user_id']]);
+            $uRow = $uStmt->fetch(PDO::FETCH_ASSOC);
+            if ($uRow) {
+                $perm_grp = (int)($uRow['permission_group_id'] ?? 0);
+                $out_grp = max(1, (int)($uRow['outbound_group'] ?? 1));
+            }
+        }
+        $dial_context = $out_grp > 1 ? "from-internal-desktop-{$out_grp}" : 'from-internal-desktop';
 
         $sender_name = trim(preg_replace('/[\r\n]+/', ' ', $sender_row['full_name'] ?? ''));
         $sender_name_var = $sender_name !== '' ? "{$sender_name} ({$senderExt})" : $senderExt;
@@ -196,8 +219,11 @@ class FaxSendService {
         // system's real numbering plan and outbound routes (pbx_outbound_routes)
         // over a native Local channel (Local/$dest@from-internal-pbx/n).
         $dest_dial = preg_replace('/[^0-9+*#]/', '', trim($destNumber));
+        $safe_fax_dest = preg_replace('/[^0-9+*#]/', '', trim($destNumber));
+        $safe_fax_sender = preg_replace('/[^0-9]/', '', trim($senderExt));
+        $safe_sender_name = str_replace(["\r", "\n"], '', (string)$sender_name_var);
 
-        $call_file_content = "Channel: Local/$dest_dial@from-internal-pbx/n\n" .
+        $call_file_content = "Channel: Local/$dest_dial@$dial_context/n\n" .
                              "CallerID: $caller_id_line\n" .
                              "MaxRetries: $max_retries\n" .
                              "RetryTime: $retry_time\n" .
@@ -205,11 +231,15 @@ class FaxSendService {
                              "Context: outbound-fax\n" .
                              "Extension: s\n" .
                              "Priority: 1\n" .
+                             ($perm_grp > 0 ? "SetVar: __PERMISSION_GROUP_ID=$perm_grp\n" : '') .
                              "SetVar: FAX_TIF_PATH=$tifPath\n" .
-                             "SetVar: FAX_DEST=$destNumber\n" .
-                             "SetVar: FAX_SENDER=$senderExt\n" .
-                             "SetVar: FAX_SENDER_NAME=$sender_name_var\n" .
-                             "SetVar: FAX_ID=$faxId\n";
+                             "SetVar: FAX_DEST=$safe_fax_dest\n" .
+                             "SetVar: FAX_SENDER=$safe_fax_sender\n" .
+                             "SetVar: FAX_SENDER_NAME=$safe_sender_name\n" .
+                             "SetVar: FAX_ID=$faxId\n" .
+                             // Inherited by the outbound leg: the route skips call recording
+                             // and the jitter buffer for a fax.
+                             "SetVar: __AIPBX_FAX=1\n";
 
         // The temp file is written on the SAME file system as the spool: only
         // then is rename() atomic — moving from /tmp becomes copy+delete and

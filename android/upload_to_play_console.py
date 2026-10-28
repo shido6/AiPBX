@@ -6,8 +6,6 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from googleapiclient.errors import HttpError
 
-import re
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -24,25 +22,22 @@ if not os.path.exists(KEY_FILE):
 
 PACKAGE_NAME = 'com.mhrgl.AiPBX'
 AAB_PATH = os.path.join(BASE_DIR, 'app', 'build', 'outputs', 'bundle', 'release', 'app-release.aab')
-TRACK = sys.argv[1] if len(sys.argv) > 1 else 'alpha'
+TRACK = sys.argv[1] if len(sys.argv) > 1 else 'production'
 DESIRED_STATUS = sys.argv[2] if len(sys.argv) > 2 else 'completed'
 
 
 def version_name():
-    """Reads versionName from app/build.gradle.kts.
+    """The app's versionName: the repo VERSION file (build.gradle.kts reads it too).
 
     Previously both the release name ('1.0.10') and the final success message ('1.0.9')
     were typed into the script BY HAND and did not match; they were also
     forgotten when the version was raised (2026-09-05).
     """
     try:
-        with open(os.path.join(BASE_DIR, 'app', 'build.gradle.kts'), encoding='utf-8') as f:
-            m = re.search(r'versionName\s*=\s*"([^"]+)"', f.read())
-            if m:
-                return m.group(1)
+        with open(os.path.join(BASE_DIR, '..', 'VERSION'), encoding='utf-8') as f:
+            return f.read().strip() or '?'
     except OSError:
-        pass
-    return '?'
+        return '?'
 
 
 def play_release_notes():
@@ -126,7 +121,7 @@ def upload_bundle():
                 print(f"    Mapping upload warning (optional): {map_err}")
 
         # --- TRACK ATAMA ---
-        track_label = "Kapali Test / Closed Testing" if TRACK == "alpha" else TRACK
+        track_label = "Uretim / Production" if TRACK == "production" else ("Kapali Test / Closed Testing" if TRACK == "alpha" else TRACK)
         print(f"4. Release -> '{TRACK}' ({track_label}) is being assigned to the track (status: {DESIRED_STATUS})...")
         release_notes = play_release_notes()
 

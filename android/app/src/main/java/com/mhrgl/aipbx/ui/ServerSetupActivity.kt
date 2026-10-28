@@ -11,8 +11,6 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
-import androidx.appcompat.app.AppCompatActivity
-import androidx.activity.enableEdgeToEdge
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
@@ -28,7 +26,7 @@ import com.mhrgl.aipbx.service.PbxForegroundService
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
-class ServerSetupActivity : AppCompatActivity() {
+class ServerSetupActivity : BaseActivity() {
 
     private lateinit var binding: ActivityServerSetupBinding
     private lateinit var prefs: AppPreferences
@@ -42,7 +40,6 @@ class ServerSetupActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         prefs = AppPreferences.getInstance(this)
 
@@ -58,20 +55,14 @@ class ServerSetupActivity : AppCompatActivity() {
 
         binding = ActivityServerSetupBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        com.mhrgl.aipbx.util.DisclaimerPrompt.showIfNeeded(this)
 
         // Edge-to-edge WindowInsets support
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
-            val systemBars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            val bottom = maxOf(systemBars.bottom, ime.bottom)
-            view.setPadding(systemBars.left, systemBars.top, systemBars.right, bottom)
-            insets
-        }
+        applyEdgeToEdgeInsets(binding.root, consumeIme = true)
 
         binding.btnQrScan.setOnClickListener {
             val options = ScanOptions().apply {
+                setCaptureActivity(QrCaptureActivity::class.java)
                 setPrompt(getString(R.string.qr_prompt_setup))
                 setBeepEnabled(true)
                 setOrientationLocked(false)
@@ -99,7 +90,7 @@ class ServerSetupActivity : AppCompatActivity() {
 
         binding.btnConnect.setOnClickListener {
             val url = binding.etServerUrl.text.toString().trim()
-            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+            if (!url.startsWith("https://", ignoreCase = true)) {
                 showError(getString(R.string.err_invalid_url))
                 return@setOnClickListener
             }
@@ -155,10 +146,10 @@ class ServerSetupActivity : AppCompatActivity() {
             val json = JSONObject(qrData)
             val type = json.optString("type")
             if (type == "aipbx_qr_login") {
-                val serverUrl = json.optString("server")
+                val serverUrl = json.optString("server").trim().trimEnd('/')
                 val qrToken = json.optString("qr_token")
-                if (serverUrl.isNotEmpty() && qrToken.isNotEmpty()) {
-                    performQrLogin(serverUrl, qrToken)
+                if (serverUrl.startsWith("https://", ignoreCase = true) && qrToken.isNotEmpty()) {
+                    confirmServerThen(serverUrl) { performQrLogin(serverUrl, qrToken) }
                 } else {
                     showError(getString(R.string.err_qr_missing_params))
                 }
@@ -168,6 +159,17 @@ class ServerSetupActivity : AppCompatActivity() {
         } catch (e: Exception) {
             showError(getString(R.string.err_qr_decode, e.message))
         }
+    }
+
+    private fun confirmServerThen(serverUrl: String, onConfirmed: () -> Unit) {
+        val host = Uri.parse(serverUrl).host ?: serverUrl
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(getString(R.string.mobile_login_title))
+            .setMessage(getString(R.string.confirm_server_login, host))
+            .setCancelable(false)
+            .setPositiveButton(getString(R.string.btn_login)) { _, _ -> onConfirmed() }
+            .setNegativeButton(getString(R.string.btn_cancel), null)
+            .show()
     }
 
     private fun performQrLogin(serverUrl: String, qrToken: String) {

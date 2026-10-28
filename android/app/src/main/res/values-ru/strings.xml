@@ -118,8 +118,10 @@
     <string name="btn_remove">Удалить</string>
     <string name="call_from_pbx">Звонок АТС</string>
     <string name="call_on_hold">На удержании</string>
+    <string name="cf_always">ПЕРЕАДР. (ВСЕГДА)</string>
     <string name="cf_busy">ПЕРЕАДР. (ЗАНЯТО)</string>
     <string name="cf_busy_noanswer">ПЕРЕАДР. (ЗАНЯТО/НЕТ ОТВЕТА)</string>
+    <string name="cf_noanswer">ПЕРЕАДР. (НЕТ ОТВЕТА)</string>
     <string name="chat_document">Документ</string>
     <string name="chat_extension_title">Добавочный #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Нет доступа к камере: разговор продолжается только со звуком.</string>
     <string name="err_camera_unavailable">Камера недоступна: разговор продолжается только со звуком.</string>
     <string name="contacts_extensions_listed">внутренних номеров</string>
+    <string name="api_fcm_token_failed">Не удалось отправить FCM-токен (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Не удалось удалить группу (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Сохранять префикс \'+\'</string>
+    <string name="pref_send_plus_desc">Отправлять международный префикс \'+\' на АТС для нормализации (ВКЛ) или преобразовывать в 00 (ВЫКЛ)</string>
 </resources>

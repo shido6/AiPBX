@@ -215,6 +215,605 @@ Remote monitoring and operations:
 - **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
   `pbx_signaling_events` and can forward them to the same portal. Off by default.
 
+## 1.50.19
+
+- **Asterisk RTP & Voicemail configuration compliance:**
+  - Aligned Asterisk ICE host candidate formatting in `SyncRtpSettings` (`<local_ip> => <external_ip>,include_local_address`), eliminating RTP syntax warnings on reload.
+  - Standardized `minsecs=3` and `maxsilence=2` defaults in `VoicemailPolicy` and `SyncVoicemail` to strictly satisfy Asterisk's `maxsilence < minsecs` constraint and prevent empty voicemail warnings.
+- **Desk-phone discovery & Cisco CallManager provisioning:**
+  - Moved the discovery tick lock file to `/var/lib/aipbx/engine/discovery.lock`, resolving permission failures when executing as `www-data`.
+  - Added CSRF validation and array response handling in `PhoneController` discovery settings to prevent `TypeError` during save.
+  - Added automatic TFTP file generation on phone approval and improved hyphenated model identification in `PhoneProvisionService`.
+- **Installer & system permissions hardening (`install.sh`):**
+  - Configured `/etc/asterisk` directory permissions (`02775 asterisk:asterisk`) and `0664` on managed conf files, enabling atomic writes by `www-data`.
+  - Added `systemd-journal` group to `www-data` for reading `dnsmasq` DHCP leases via `journalctl`.
+  - Added automated normalization of `/etc/asterisk/voicemail.conf` limits during installation and `--upgrade`.
+- **Test suite stability & flaky test elimination:**
+  - Transitioned `Fixtures::load()` from DDL `TRUNCATE` to DML `DELETE FROM` with `ON DUPLICATE KEY UPDATE` and automatic transaction rollback, eliminating MariaDB metadata lock timeouts and duplicate key violations across full test runs (971/971 clean).
+
+## 1.50.18
+
+- **Network desk-phone discovery & automatic pool provisioning (`/phones` & `engine/`):**
+  discovers desk phones on the local network every 5 minutes via DHCP leases, ARP tables,
+  `dnsmasq` journal logs, and an optional bounded UDP subnet sweep. Discovered phones can be
+  approved or ignored from the **Discovered on the network** panel, or provisioned automatically
+  from a configured extension pool (`provision_discovery_pool`) and vendor-to-model map
+  (`provision_discovery_models`).
+- **Cisco 7900/8800 CallManager-series phone provisioning & SCCP-to-SIP firmware switching:**
+  added 11 Cisco 7900/8800 models (`cisco-cm-*`), `SEP<MAC>.cnf.xml` XML configuration generation,
+  per-model SCCP-to-SIP firmware load switching (`provision_cisco_loads`), `.loads` manifest file
+  verification against `/var/lib/aipbx/tftp`, and firmware state tracking on `pbx_phones`.
+- **Health alarm quiet hours & incident deduplication (`/health`):** added configurable quiet hours
+  (`HH:MM-HH:MM`, may cross midnight) that hold warning and recovery emails until the window ends
+  while still sending critical `fail` alarms immediately, and deduplicated flapping checks within
+  `health_repeat_hours`.
+- **Installer & CI reliability:** bounded `apt-get` dpkg lock waits (`DPkg::Lock::Timeout`) and
+  wrapped `apt-get` and `composer install` in `stream_bounded` with wall-clock and download-progress
+  watchdogs; added smoke tests verifying that all admin-only JSON APIs reject non-admin roles with
+  HTTP 403 JSON responses; updated all 23 portal languages to 100% translation parity (`5,444` keys).
+
+## 1.50.17
+
+- **Queue recording label uniqueness in multi-branch dialplans:** when multiple branches of a
+  time condition routed to the same queue, duplicate priority labels caused Asterisk GotoIf jumps
+  to loop back to the first branch. Labels now use an incremental sequence number per invocation.
+- **Call forwarding (`*72`) target length:** extended maximum input digit length from 10 to 20 digits,
+  preventing truncation of 11-digit Turkish mobile numbers (`05xx...`) or trunk-prefixed external numbers.
+- **Incoming fax destination handling:** added matching for E.164 (`+X!`) numbers and `default` targets
+  in `[from-trunk-fax]`, preventing dropped faxes routed from IVR or time conditions, and preserved the
+  received DID in `${FAX_RX_EXTEN}` across the `h` extension for accurate email notifications.
+
+## 1.50.16
+
+- **Security hardening & input validation:** enforced caller dial permissions and internal channel
+  context restrictions on REST API originate actions; added channel name character sanitization on
+  hangup requests; restricted cURL protocols and redirects in AI webhooks; enforced audio file extension
+  and path traversal validation on prompt files; added 64 KB decompression ceiling to HEP packet parsing;
+  restricted cached FCM tokens to mode 0600; enforced admin role check on license acceptance.
+- **Dialplan destination & referential integrity:** added deletion safety guards across routes,
+  conferences, time conditions, ring groups, IVRs, hangup actions, sounds, AI apps, and queues to prevent
+  breaking polymorphic destination references and web widget mappings; automatic cleanup of orphaned
+  voicemail AI transcripts, TFTP configs, device keys, and scheduled task directories on deletion.
+- **Admin safety & session security:** prevented deactivation or deletion of the last active administrator
+  account; immediately invalidated active sessions (token epoch bump) upon user password changes;
+  added audit logging for auto-dialer campaign actions.
+- **Schema & updater reliability:** resolved database column and table mismatches across auto-dialer
+  and privacy compliance modules; updated `aipbx-update` script to dynamically read active database
+  credentials from system environment.
+- **Multi-language completeness:** eliminated hardcoded strings across role management, Microsoft Teams
+  integration, dial permissions, user controller, and push settings; updated all 23 supported language
+  translations to 100% parity.
+
+## 1.50.15
+
+- **Privacy & Compliance portal CSRF security and notification fixes:** all POST actions on
+  `/privacy` (`apply_profile`, `save_notice`, `save_retention`, `run_purge`, `erase_subject`,
+  `save_compliance`) now strictly verify the CSRF security token and return status indicators,
+  ensuring action notices are displayed properly.
+- **Asterisk SIP diagnostics security:** SIP debug enable/disable and log rotation actions now
+  enforce CSRF token verification and record security audit log entries.
+- **External database `#` literal protection:** query comment stripping now preserves `#` and `--`
+  characters inside quoted SQL string literals, avoiding syntax errors when filtering tags.
+- **Scheduled tasks alert cleanup:** deleting a scheduled task resolves any pending failure
+  notification in the top bar alert bell.
+- **IVR data step routing safeguards:** destination types and identifiers are sanitized upon save,
+  and steps are guarded against circular self-loop references.
+- **Multi-language completeness:** hardcoded strings across extension service, Asterisk sync
+  modules, call center actions, and feature codes were replaced with translated language keys.
+
+## 1.50.14
+
+- **REST API with a portal session:** an administrator signed in to the portal who opened an
+  `/api/v1/…` address (other than the OpenAPI file) got an error page instead of the answer; the
+  session check was only loaded for the portal pages.
+- **Tests:** 119 new tests for the REST API (keys, scopes, IP allowlist, validation, no secrets in
+  answers), sign-in (two-factor, recovery codes, passkeys, Google), fail2ban settings, health checks and
+  alarm mails, and the time condition, conference, IVR data step and transport configuration.
+
+## 1.50.13
+
+- **No more "restart Asterisk" warnings for harmless library updates.** The health check warned (and
+  e-mailed) whenever a system update replaced any library Asterisk uses, e.g. libsystemd or libudev,
+  although that changes nothing for calls, and a quiet weekend with no calls kept the warning up.
+  Now only security-relevant libraries count (OpenSSL, GnuTLS, the C library, SRTP, curl, libxml2 …),
+  and with the night restart window switched on there is no warning at all, only a note. The night
+  restart itself also happens only for those libraries.
+
+## 1.50.12
+
+Fixes from a review of the portal.
+
+- **Outbound calls without any outbound route** (a fresh install) went straight to the first trunk with
+  no dial permission check, no night protection, no trunk limits and no loop guard. That fallback now
+  has the same brakes as a route.
+- **Mobile sign-in with Google or a QR code** returned the SIP password and TURN access also to users
+  whose extension does not allow the mobile app (password sign-in already refused it): the app could
+  register and make calls. All three sign-ins now build the same response, so the rule is in one place.
+- **IVR data step:** a query using `:caller_id` or `:input` more than once failed on every call (the
+  timeout branch was taken). The HTTP lookup now pins the checked address, like webhooks, so a DNS
+  answer that changes after the check cannot reach an internal address.
+- **Scheduled tasks, database connections, IVR data steps:** names, script snippets and error messages
+  are escaped in the dialogs; the history dialog's texts are translated.
+- **REST API:** the `call.started` event of `/api/v1/calls/originate` no longer reports a caller ID that
+  was not applied.
+
+## 1.50.11
+
+Platform features of the post-freeze roadmap (wave 2).
+
+- **Scheduled tasks** (System → Scheduled tasks, administrators only, off by default): shell, PHP or
+  Python scripts on a cron schedule, started every minute by the root dispatcher (cron) in a systemd
+  sandbox as the unprivileged user `aipbx-task` — never root, never the web server; without systemd-run
+  or that user a task is not run at all. Only the task's own folder is writable, home folders and devices
+  are hidden, memory, CPU and run time are limited, and there is no network unless allowed. Run history
+  with exit codes and output, script versions, "Run now" (starts within a minute), every change in the
+  audit log, a failed run as an alert in the bell. Data access through curated views and per-task
+  credentials is still to come (see the roadmap).
+- **External database connections** (Integrations → Database connections, administrators only):
+  MySQL/MariaDB and PostgreSQL with the password stored encrypted and a test button. Every session is
+  read-only and each statement is limited to 2.5 s, whatever rights the account has; one statement per
+  query, no files written on the server. A connection used by an IVR data step cannot be deleted.
+- **IVR data step** (IVR page → Data steps, administrators only): during a call, look up the digits
+  entered or the caller's number in an external database or with an HTTP request (internal addresses
+  refused), put the answer (64 characters at most) into a channel variable and go on to *found*, *not
+  found* or *timeout*. A step that is a destination cannot be deleted.
+- **Per-trunk number format** (Trunks → edit): strip a prefix (such as +90) and/or prepend one (such as 0
+  or a carrier routing prefix) for the dialled number, applied on every trunk a call tries, failover
+  included.
+- **Fix:** trunk session timers offered "Never", which Asterisk does not know: such a trunk was refused
+  and did not work. It is now "No" (existing trunks are corrected); "Required" was added.
+- **PBX fine tuning & maintenance** (PBX settings → Tuning & Ops, and Trunks modal):
+  - Per-trunk DTMF mode (`rfc4733`, `inband`, `info`, `auto`), session timers (`yes`, `no`, `always`, `never`), 100rel PRACK (`yes`, `no`, `required`), and T.38 parameters.
+  - Adaptive jitter buffer size tuning (`sys_settings.jitterbuffer_max_size`, `jitterbuffer_initial_size`), or full disable.
+  - SIP timers: timer T1 (RTT estimate), timer B (INVITE timeout), and Max-Forwards limit in PJSIP transports configuration.
+  - 10-minute auto-disabling SIP debug button with live countdown badge, and on-demand Asterisk log rotation.
+  - Night restart window (e.g. 03:00–05:00): Asterisk is restarted there only when a system update
+    replaced libraries it still uses and no call is in progress — never when the call count cannot be
+    read, at most once a day.
+- **Failed registration alarm** (Health checks → Failed registrations): more failed SIP logins than the
+  threshold (default 10 in 15 min, from Asterisk's security log) alarms in the bell and by e-mail.
+
+## 1.50.10
+
+First items of the post-freeze roadmap (wave 1).
+
+- **Trunk limits.** Max calls per minute per trunk is new; max concurrent channels now counts inbound
+  calls too (it limited only outbound ones). A call over a limit is refused (inbound: cause 34;
+  outbound: the next trunk is tried), and the new health check *Trunk limits* alarms in the bell and
+  by e-mail. Stops call loops and toll fraud early.
+- **Voicemail settings** (PBX settings → Voicemail): longest and shortest message, messages per
+  mailbox, silence cut-off, wrong-PIN attempts, shortest PIN and "PIN may not be the extension". With
+  that rule on (default), a mailbox saved without a PIN gets a random one instead of the extension
+  number; the tab counts the mailboxes whose PIN still breaks the rules.
+- **IVR:** "Repeat the menu when no key is pressed" (per IVR, off for existing ones): "Please try
+  again." and the menu again, counted with wrong keys, then the timeout destination.
+- **Queues:** the position announcement can be switched off, and the periodic announcement has its
+  own frequency (0 = off) and file (until now fixed: every 45 s, the built-in prompts).
+- **Spoken status instead of tones** (PBX settings → Ringtone; busy, no answer and unreachable each
+  on or off, off by default): "The person at extension 3001 is on the phone. Please try again." in
+  the caller's language, played before answering, so trunk calls are not billed.
+- **Night dialling protection** (Dial permissions page, off by default): at night and at weekends
+  calls to protected prefixes (00, 0900 …) are blocked or need a night PIN; covers transit calls too.
+
+Every one of these can be switched off, and an update changes no behaviour until they are switched on
+(the voicemail defaults are what the stock configuration did) — with one exception on purpose: the
+voicemail rule "PIN may not be the extension" is on by default. Existing PINs are not touched; it
+applies when a PIN is saved and can be switched off under PBX settings → Voicemail.
+- **Audit log:** four changes left no trace: Google sign-in settings (the client secret itself is
+  never logged, only that it changed), deleting a time group, removing a waiting desk phone, and the
+  default e-mail language.
+
+## 1.50.9
+
+Call quality is part of AiPBX, and everything in the alert bell is e-mailed too.
+
+- **Reports → Call quality** (administrators): packet loss in both directions and jitter per trunk and
+  extension from the RTCP reports, the poor and fair calls of the last 24 hours, and which way the audio
+  is lost ("mostly on the way from the carrier"). Needs signaling capture on (PBX settings →
+  Signaling). Idea and first version: @shido6; it was a community plugin for a day.
+- **Health check "Call quality"**: a trunk or extension losing audio is an alarm like the others — in
+  the alert bell and e-mailed to the health recipients, with a "back to normal" mail.
+- **Health check "Other alerts"**: problems plugins report in the alert bell are e-mailed too.
+
+## 1.50.8
+
+An alert bell for administrators, signaling capture built in (and working), and smaller fixes from
+the IVR and voicemail check.
+
+- **Alert bell.** The top bar shows administrators what is wrong right now: every health check that
+  is warning or failed, problems plugins report, and the alarm path itself — no recipient chosen,
+  or the health checks stopped running. Items go away by themselves when fixed; the last 7 days of
+  changes are listed below them. It works without e-mail, so a PBX whose mail is not set up still
+  shows its problems. Thanks to @shido6, whose notices proposal (#121) gave the idea.
+- **Signaling capture is part of AiPBX** (PBX settings → Signaling: on/off, days kept, what arrived).
+  It never worked before: the capture daemon misread the HEPv3 format and stored every message as
+  "unknown", without its method or RTCP counters, and the signaling-capture plugin sent the capture
+  to a port nothing listens on. Both are fixed; the plugin is retired, and an installation that had
+  it on keeps capture on. Built by @shido6.
+- **Call quality** comes as a community plugin (AiPBX-plugins, `call-quality`): packet loss in both
+  directions and jitter per trunk and extension from the RTCP reports, with an alert in the bell.
+- **Health checks: call records.** A new check fails when Asterisk has handled calls since it
+  started but none reached the call history (the CDR database connection is broken), so a loss
+  like the 11 hours of 1.50.7 is noticed within 15 minutes.
+- **Health checks: Asterisk on replaced libraries.** Since 1.50.7 needrestart leaves Asterisk
+  alone; the Asterisk check now warns when a system update replaced libraries Asterisk still
+  uses, so it can be restarted when no calls are in progress.
+- **IVR:** a wrong key plays "Invalid choice." before the menu repeats; callers used to hear the
+  menu start again with no hint.
+- **Voicemail:** a message is stored once, as wav (the stock setting kept three copies: wav49, gsm
+  and wav).
+
+## 1.50.7
+
+Fixes found while checking the IVR and voicemail on a production PBX.
+
+- **Call records were lost after automatic system updates.** When unattended-upgrades updated a
+  library, needrestart restarted MariaDB and Asterisk together; Asterisk came up first, the CDR
+  backend found no database connection and wrote no call records until the next Asterisk
+  restart (11 hours on one PBX). The same happened on a reboot. Asterisk now starts after
+  MariaDB, and needrestart no longer restarts Asterisk at all: that also dropped the calls in
+  progress at 06:35. Asterisk picks up updated libraries on the next AiPBX update or reboot.
+- **Trunk loops are cut.** A call that came in on a trunk and matched an outbound route of the
+  same trunk was sent straight back; when the PBX behind the trunk routed the number to AiPBX
+  again, the call looped, thousands of times an hour. Such a call now counts as congestion on
+  that trunk (the next trunk of the route is tried). Call forwarding of an extension to a
+  number behind the same trunk still works.
+- **Voicemail:** the sample mailboxes of Asterisk's stock `voicemail.conf` (1234 with PIN 4242)
+  are disabled; anyone allowed the general voicemail code could log in to them.
+
+## 1.50.6
+
+Updates restart Asterisk only when they have to: most releases now keep calls up.
+
+- **Updates no longer drop calls when nothing Asterisk loads at start changed.** Every update
+  used to restart Asterisk, so it waited for an idle PBX. The updater now compares the installed
+  code with the release: when the Asterisk configuration files and the installer's
+  `ASTERISK_RESTART_EPOCH` are unchanged, Asterisk is only reloaded and the update runs even
+  while calls are in progress (verified with a call held across an update). System → System
+  Update says beforehand whether the update restarts Asterisk, and why. coturn is restarted only
+  when its configuration changed, so WebRTC calls through TURN stay up too.
+- **Release notes say whether updating restarts Asterisk.**
+- **IVR, inbound routes, time plans:** a queue destination stored by its number (as the REST API
+  and the services accept it) showed as "not found" although calls reached the queue.
+- **Docs:** the community plugins bundled with AiPBX (`ai-assistant`, `signaling-capture`) were
+  described as official; they now name their author.
+- **Android:** a release without app changes no longer builds or uploads the app to Google Play;
+  the previous APK stays available for download.
+
+## 1.50.5
+
+Fax: uploads work after an update, T.38 can pass the firewall, and outgoing faxes get their
+options right. Verified on a live system: two faxes sent to external fax machines.
+
+- **Fax uploads no longer fail with "Permission denied" after an update.** The year directory
+  (`/var/www/faxes/sent/2026`) was created without group write, and once an update handed it to
+  `asterisk` the portal could not save the uploaded PDF. The installer makes every fax directory
+  group-writable, and the portal and the fax processor create new ones that way.
+- **T.38 fax could never work through the firewall:** the installer opened the RTP ports but not
+  the UDPTL ports T.38 uses (4100–4999/udp), so a carrier that accepted T.38 got no answer.
+  They are opened on install, and on upgrade wherever the RTP range is open as installed.
+- **Outgoing faxes ran without the audio fallback option:** `SendFAX(…,d,f)` passed the options
+  wrongly (Asterisk: "Unrecognized option: ','"); now `df`.
+
+## 1.50.4
+
+Fax sending: works again on Ubuntu 26.04, a fax stuck in the handshake no longer holds the line,
+and faxes are neither recorded nor run through a jitter buffer.
+
+- **Sending faxes works again on Ubuntu 26.04.** The new AppArmor profile for Ghostscript
+  lets it open files only under HOME, /mnt, /media and /tmp, so every outgoing fax failed at the
+  PDF → TIFF conversion (and the TIFF → PDF fallback for received faxes failed the same way).
+  The installer now allows the two fax directories in `/etc/apparmor.d/local/gs`.
+- **A fax that cannot complete its handshake no longer holds the line.** Both ends used to wait
+  for each other for many minutes (seven on a live system). A fax session that has not moved a
+  single page two minutes after it started is now hung up and recorded as failed; a fax that
+  has sent or received a page is never cut, however long it is.
+- **Faxes are not recorded and get no jitter buffer:** a fax sent from the portal went through
+  the outbound route like a call (recording = modem noise, and the jitter buffer reshapes the
+  modem's timing), and a fax number with "record calls" on was recorded too.
+
+## 1.50.3
+
+Plugins: uploading a custom plugin works again, and the worker and Asterisk follow plugin
+changes at once; a sample plugin for plugin authors.
+
+- **Plugins: uploading a custom `.zip` plugin works again.** Every upload failed with "Failed to
+  move extracted plugin into plugins directory": the archive was unpacked in Apache's private
+  `/tmp`, and a directory cannot be moved from there to `/var/lib/aipbx/plugins`.
+- **Plugins: the worker sees plugin changes without a restart.** `aipbx-webhook-worker` kept the
+  plugin list it read at start: a plugin enabled or uploaded later got no events and no worker
+  ticks until the service restarted, and a disabled one kept getting both.
+- **Plugins: disabling or removing a plugin takes its Asterisk configuration out at once**
+  (dialplan, PJSIP, HEP reloaded); before, it stayed live until the next Apply.
+- **Docs:** a sample plugin that shows every hook, in AiPBX-plugins (`examples/sample-plugin`).
+
+## 1.50.2
+
+Incoming faxes: failed ones are visible, T.38 off for new trunks; trunks no longer drop out for a
+minute after one lost probe; webhook, updater and plugin sidebar fixes; documentation diagrams.
+
+- **Updater:** file mode changes no longer count as "Code was modified by hand". Installations on
+  1.34.0 – 1.34.2 could not update at all (their installer made `web/bin/aipbx_ops.php`
+  executable); on those, run `sudo git -C /opt/aipbx checkout -- web/bin/aipbx_ops.php` once
+  (see docs/troubleshooting.md).
+- **Incoming faxes that fail are no longer lost without a trace:** a fax that failed before its
+  first page left no file and no record. It is now in the Fax Inbox as *FAILED* with Asterisk's
+  reason (`FAXOPT(error)`), without view/download buttons; dashboard and daily summary count only
+  faxes that arrived. An unwritable fax log no longer drops the database write.
+- **T.38 is off for new trunks:** with a carrier that refuses T.38 every incoming fax failed (the
+  fallback to audio does not recover: "T.30 Non-ECM carrier not found"); reproduced on a live
+  system, where plain G.711 received the same fax. Existing trunks keep their setting; see
+  docs/troubleshooting.md, "Incoming faxes fail".
+- **Trunks no longer drop out for a minute after one lost probe:** with Asterisk's 3 s
+  `qualify_timeout` a 2-3 s network hiccup marked a trunk Unavailable until the next probe, and
+  every call to it failed meanwhile ("Could not create dialog to invalid URI '<trunk>'"; about
+  100 calls in two weeks on a live system). Trunks are probed with an 8 s timeout.
+- **Webhooks:** `fax.received` was never sent (the query used a column that does not exist), and
+  once a received fax existed it also stopped the `fax.sent` / `fax.failed` events. Fixed;
+  `fax.received` is sent only for faxes that arrived.
+- **Signaling capture keeps the RTCP counters:** packet loss (count and RFC 3550 fraction) and
+  jitter of the worst report block are stored in `pbx_signaling_events` (`rtcp_*` columns, `NULL`
+  when a report does not carry them), so call quality can be queried from the capture the PBX
+  already sends (@shido6, #116). Values outside the column range are dropped instead of failing
+  the whole batch.
+- **Plugins:** the sidebar shows a plugin's page as soon as it is enabled (and drops it when it is
+  disabled or removed); it used to need a full page reload.
+- **Documentation diagrams** are drawn with Mermaid (`docs/diagrams/`) and shown as SVG on GitHub,
+  in the portal's Help page and on aipbx.bid/docs.
+
+## 1.50.1
+
+Call normalization page reworked, presets follow each country's dialling plan, + numbers in
+routes and permissions, fixes from a full review, and real call-flow tests.
+
+- **Call normalization page (`/dialplan-rules`) reworked:** call normalization can be switched off
+  as a whole (every device then dials numbers as entered); the country is chosen from a list under
+  **Settings** and is empty until set — new installations start without any rules (no Turkey
+  default); the selected device tab is highlighted; the transformation column shows "Prepend 0"
+  instead of "-"; the simulator is a simple table below the rules; unused drag-to-reorder removed
+  (the most specific pattern wins, not the row order). Preset rules are English; rules still exactly
+  as loaded from the former Turkish presets are renamed to English by a migration.
+- **Plugin catalog:** no per-category search/paging boxes; hooks and permissions are folded under
+  "Technical details".
+- Translations: texts that were still English in the other languages are translated.
+- **Country presets follow each country's dialling plan:** `country_calling_codes.json` lists the
+  national and international prefixes of 104 countries (0/00 in Turkey and most of Europe, 1/011 in
+  the US and Canada, 8/810 in Russia, no national prefix in Italy or Spain, 0/0011 in Australia, …).
+  Presets used to assume 0/00 everywhere; countries whose plan is not listed get no presets.
+- **+ numbers:** outbound route and calling permission patterns may contain `+` (the mobile app sends
+  contacts as +E.164; without a normalization rule such calls matched no route, and a route for +
+  numbers was not covered by permission rules).
+- **Review fixes:** faxes to a pattern DID (`_X.`) reached the literal extension "EXTEN"; the
+  "extension = called DID" destination was offered in IVRs and time conditions too (only inbound DID
+  routes can use it); the AI voicemail plugin listened for an event nothing emits (`voicemail.received`)
+  and never ran; an auto-dialer campaign's caller ID only applied to the answered leg, not to the call
+  the callee sees; the auto-dialer dialplan is written with rollback like every other config.
+- **Android:** declining a call before the app had connected to its service could crash on Android 8+;
+  a chat room closed while it was being created kept its notifications silenced; the QR scanner's
+  padding grew on every layout pass. **iOS:** the caller's number is shown when there is no display name.
+- Tests: real call-flow checks in the e2e run (a SIP sink records what reaches the carrier) and unit
+  tests for the per-device call routing contexts.
+- Installer: Apache's PHP runs with `pcre.jit=0` (`99-aipbx.ini`); Ubuntu's apache2.service denies
+  executable memory, so the PCRE JIT failed and logged a warning for every new Apache process.
+
+## 1.50.0
+
+**Bridge release.** Later releases update only installations that run 1.50.0 or newer; an older
+installation updates to 1.50.0 first (from 1.50.0 on, `aipbx-update` does this step by itself).
+The Android app now has the same version number as the server.
+
+- **Call normalization fixes:** the desk phone rule "strip the outside-line 0" (`_00.`), switched on by
+  the 1.34.4 update, turned international numbers into national ones (`0049…` → `049…`) — also for
+  faxes and call forwarding. It is now off (on installations where it was not changed) and loads
+  switched off with the defaults. Turkey-only rules (`+90` → `0`, `5XXXXXXXXX` → `05…`) are switched
+  off on installations that are not set up for Turkey; load the defaults for your country on
+  **Trunks → Call Normalization**. The help text explains that the most specific pattern wins, not the row order.
+- **Plugins:** an uploaded plugin can no longer show itself as "Official"; the badge depends on where
+  the plugin is installed, not on its manifest.
+- **Installer & updater:** a failing Asterisk configuration sync is reported instead of being ignored;
+  `install.sh` records the installed version (`/var/lib/aipbx/installed-version`); a release can name
+  the oldest version it updates (`UPGRADE_FROM`) and `aipbx-update` goes through that bridge release first.
+- **Android app 1.50.0:**
+  - Version name and code come from the server version (versionCode `1500000`); Google Play gets the
+    build of each published release.
+  - No Android 15-deprecated window APIs in the app any more (also not inside libraries), so Google
+    Play's edge-to-edge warnings do not come back; CI checks the built app. Android 15+ is
+    edge-to-edge as before; Android 8–14 shows the regular status bar.
+  - Call screens keep the status bar readable in light mode; unused chat screens and the unused
+    `MANAGE_OWN_CALLS` permission were removed.
+- Auto-dialer: PHP 8.5 `str_getcsv()` deprecation fixed.
+
+## 1.34.8
+
+Android 15+ (targetSdk 35/36) Edge-to-Edge architectural compliance, eradication of deprecated window APIs, centralized `BaseActivity` pattern, and automated CI/test compliance guardrails (v1.0.81).
+
+- **Permanent BaseActivity Architectural Pattern:** Established `com.mhrgl.aipbx.ui.BaseActivity` centralizing standard zero-parameter `enableEdgeToEdge()` invocation prior to `super.onCreate()` and automatic context localization wrapping via `L10n.wrap()`. All 10 application UI activities migrated to inherit from `BaseActivity`.
+- **Eradication of Deprecated Window APIs:** Removed legacy `WindowCompat.setDecorFitsSystemWindows(win, false)` from `ImageViewerDialog` and stripped deprecated custom `SystemBarStyle.dark(...)` parameters from `IncomingCallActivity`, `CallActivity`, and `QrCaptureActivity` to eliminate Google Play Console edge-to-edge policy warnings.
+- **Unified WindowInsets Padding:** Standardized `applyEdgeToEdgeInsets(targetView, consumeIme)` across all screens to ensure UI elements, controls, and buttons correctly accommodate system bars, display cutouts, and software keyboards without overlapping or clipping.
+- **Automated Regression Guardrails:** Implemented `EdgeToEdgeComplianceTest` (JUnit) and `android/bin/edge_to_edge_audit.sh` enforcing that all activities extend `BaseActivity`, no deprecated edge-to-edge/window APIs exist in source files, and XML themes maintain compliance. Added Rule #4 to `AGENTS.md` and updated `ARCHITECTURE.md`.
+
+## 1.34.7
+
+Global country calling codes directory, dynamic country badge & autocomplete, and reliable preset loader execution on the Call Normalization page (`/dialplan-rules`).
+
+- **Global Country Calling Codes Directory (`web/config/country_calling_codes.json`):** Integrated standard ITU-T E.164 country calling code database with localized country names in Turkish and English, ISO 3166 alpha-2 identifiers, and national flags.
+- **Telecom Preset Form Action Fix:** Resolved form action dispatching in `DialplanRuleController` and `index.php` so clicking "Load Recommended Presets" with any country code (such as Austria `+43`, Germany `+49`, etc.) reliably replaces existing rules and updates `sys_settings` without being skipped by `handlePost`.
+- **Dynamic Country Name & Flag Display:** Connected a live country identifier badge and `<datalist>` autocomplete to the country code input on `/dialplan-rules`, dynamically showing the country name and flag (e.g. `🇦🇹 Avusturya`) as the user types or selects a code.
+- **Localized Rule Preset Titles:** Configured preset generator in `DialplanRuleService` to embed localized country names into generated normalization rule names (e.g. `Masaüstü: E.164 Avusturya (+43 -> 0)`).
+
+## 1.34.6
+
+CSRF token handling and real-time simulator AJAX resilience on the Call Normalization page (`/dialplan-rules`).
+
+- **Global Head CSRF Meta Tag:** Added `<meta name="csrf-token">` to the global application layout (`app_header.php`), providing standard CSRF token discovery across all frontend AJAX components.
+- **Resilient Frontend CSRF Token Discovery:** Implemented `getCsrfToken()` in `dialplan_rules.js` checking `window.CSRF_TOKEN`, `<meta name="csrf-token">`, and form input fallbacks; dispatched `X-CSRF-Token` HTTP headers on all live simulation and table reorder requests.
+- **Safe In-Memory Simulation Endpoint:** Hardened the simulation endpoint in `DialplanRuleController` to safely handle authenticated admin requests and eliminated duplicate initial simulation calls on DOMContentLoaded.
+
+## 1.34.5
+
+Country-code driven telecom presets, unified multi-device real-time dialplan simulator, Android configurable `+` prefix toggle (v1.0.80), and mobile i18n synchronization across 22 languages.
+
+- **Country-Code Driven Telecom Presets (`/dialplan-rules`):** Added a dedicated country-code configuration field on the Call Normalization page (`+ [ 90 ]`, saved in `sys_settings`) that dynamically generates and loads tailored E.164 normalization rules (`_+<CC>.` -> `0`, `_+X.` -> `00`) for desktop, mobile, and web clients based on the specified country code.
+- **Unified Multi-Device Live Number Simulator:** Redesigned the Live Number Test Simulator to eliminate client dropdown selection and render real-time normalization results for all client types (Desktop, Mobile, and Web) simultaneously stacked side-by-side/vertically with matched patterns, regex breakdowns, and transformation paths.
+- **Configurable `+` Prefix in Mobile App (Android v1.0.80, build 80):** Added a user-configurable toggle in Android dialer settings (`sendPlusPrefix`, default: `true`). When enabled, preserves `+` (e.g. `+90...`) so server-side normalization rules handle country-code formatting; when disabled, automatically converts `+` to `00` for legacy trunk compatibility.
+- **Mobile Translation Coverage (22 Languages):** Synchronized Android `pref_send_plus` settings strings across all 21 localized XML resources (`check_mobile_lang.py` 100% clean).
+- **Telephony & Fax Script Hardening:** Fixed tab-delimited parsing in outgoing fax result processor (`process_outgoing_fax_result.sh`) and hardened Phinx migration rollback.
+
+## 1.34.4
+
+Universal Ingress Call Normalization Rules (`/dialplan-rules`), Android configurable `+` prefix toggle (v1.0.80), route group context isolation, web dialer / call forwarding / fax outbound normalization, transactional DML safety, and pattern specificity simulation.
+
+- **Ingress Call Normalization Rules (`/dialplan-rules`):** Pre-filters and transforms outbound numbers at ingress before reaching trunk outbound routes based on client device type (`desktop`, `mobile`, `web`). Internal extensions (`101`), queues, IVRs, and feature codes (`*97`, etc.) remain strictly isolated and unaffected.
+- **Configurable `+` Prefix in Mobile App (Android v1.0.80, build 80):** Added a user-configurable toggle in Android dialer settings (`sendPlusPrefix`, default: `true`). When enabled, preserves `+` (e.g. `+90...`) so server-side normalization rules handle country-code formatting; when disabled, automatically converts `+` to `00` for legacy trunk compatibility.
+- **Route Group Context Isolation (V3-01):** Fixed route group context assignment so subscribers with `outbound_group > 1` properly route into their dedicated device contexts (`from-internal-desktop-N`, `from-internal-mobile-N`, `from-internal-web-N`) rather than being pinned to group 1.
+- **DML Permission Safety & Preset Loader (V3-02):** Replaced `TRUNCATE TABLE` with transactional `DELETE FROM pbx_dialplan_rules` wrapped in PDO rollback safety, allowing production installations with least-privilege DML-only DB users to load telecom presets without requiring `DROP` privileges.
+- **Web Softphone & CRM Normalization Presets (V3-03):** Seeded complete web dialplan normalization rules (`_+90.`, `_+X.`, `_5XXXXXXXXX`) and desktop international rules in Phinx migrations and unified single-source preset definitions.
+- **Real Outbound Call Path Normalization (V3-04):** Extended normalization pipeline to web dialer and CRM AMI originates (`from-internal-web[-N]`), call forwarding (`from-internal-desktop[-N]`), and native fax sending. Preserved `+` in call forwarding target destinations.
+- **Pattern Specificity Matching Simulator (V3-07):** Upgraded the live number normalization simulator to score Asterisk pattern specificity (exact literal characters > range subsets > wildcards), aligning preview results with Asterisk dialplan engine evaluation.
+- **Pattern Validation & Security Constraints (V3-10):** Added validation checks for Asterisk pattern syntax (dialplan prefix `_`, balanced and non-empty brackets, character set constraints, wildcard tail placement), strip ranges (0..32), and duplicate pattern detection per device type.
+- **23-Language Portal i18n & Documentation (V3-08, V3-09):** Synchronized all new simulation and error strings across all 23 interface languages (`lint_lang.php` 100% clean); updated `docs/call-normalization.md` with accurate single-pass ingress pre-filter architecture and circuit breaker documentation.
+
+## 1.34.3
+
+Auto-dialer loopback callback fix, official vs. community plugin architecture, mobile admin footer responsiveness, universal E.164 dialing normalization, and full 23-language i18n synchronization.
+
+- **Auto-Dialer Telephony Loopback Callback:** added `/api/plugins/` exception to Port 80 Apache vhost in `install.sh` and live configuration, preventing 301 HTTPS redirects on Asterisk `CURL()` calls and ensuring real-time `dial_failed`, `answered`, and `hangup` event delivery to the PBX database without stuck dialing recovery drops.
+- **Plugin System & Author Metadata:** added first-class distinction between Official (`type: official`) and Community (`type: community`) plugins, visual badge indicators in the catalog, manifest author metadata (`author`, `author_url`) with safe HTTP/HTTPS URL scheme validation and enum verification, and dedicated standalone plugins repository.
+- **Inbound DID Pattern Routing & Dynamic Extension Target:** documented Asterisk pattern wildcards (`_`, `X`, `Z`, `N`, `.`) and dynamic destination dispatching (`__did__`) to route full blocks of DIDs directly to matching extensions in `docs/inbound-routes.md`.
+- **Mobile Web Portal UX & Responsive Footer:** streamlined admin footer bar by removing redundant live clock element, responsive wrapping into two clean lines on mobile screens without overflowing or cramping, and safe area inset support.
+- **23-Language Portal i18n Synchronization:** added missing badge and attribution keys (`plugins.badge_official`, `plugins.badge_community`, `common.by`) across all 23 supported interface languages, restoring a 100% clean CI lint status (`lint_lang.php`).
+- **Android Universal E.164 Dialpad Normalization:** replaced legacy country-specific SIM ISO normalization assumptions with standard international E.164 (`+` → `00`) prefix dialing, contacts layout alignment with chat, and permission state hardening.
+
+## 1.34.2
+
+Security and reliability hardening, Android v1.0.78 release, mobile 22-language translation synchronization, multi-call busy handling, and GitHub Sponsors integration.
+
+- **Security & Media Handling:** authenticated chat attachment download with Bearer token validation, temporary file hash naming, and sandboxed `FileProvider` URI generation; preserved whitespace characters in user passwords on mobile login; universal E.164 phone number dialpad normalization (`+` → `00`) replacing country-specific SIM assumptions.
+- **Mobile Reliability & Multi-Call Handling (Android v1.0.78, build 78):** rejected second incoming SIP calls with `486 Busy Here` when already active on a call; added exception safety guards against `ForegroundServiceStartNotAllowedException` during background resurrection and notification dispatch; added empty caller name fallback handling in incoming call notifications; isolated chat typing indicator state per active conversation; cleaned up FCM push tokens and local state on logout.
+- **Diacritics & Accent Normalization:** comprehensive Unicode NFD accent and diacritic stripping (including Croatian/Serbian `đ/Đ` normalization) across contacts and chat search indexing.
+- **Mobile i18n Synchronization:** synchronized missing call forwarding strings (`cf_always`, `cf_noanswer`) across all 22 supported mobile languages.
+- **GitHub Sponsors & Open Source Support:** enabled GitHub Sponsors configuration (`.github/FUNDING.yml`) for `@mahirgul`, added Sponsor badge and documentation section in `README.md`, and integrated sponsor links in the PBX portal layout.
+
+## 1.34.1
+
+Optional Global Privacy & Telecom Compliance (`/privacy`), live AGI/AI PII & PCI-DSS redaction, universal table filtering & pagination, mobile web UX, modular service architecture, and cross-platform mobile v1.0.74 release.
+
+- **Optional Global Privacy & Telecom Compliance (`/privacy` — KVKK / GDPR / CCPA / HIPAA / PCI-DSS / LGPD):** built-in, 100% opt-in privacy module (all rules disabled by default) with one-click regulatory presets, inbound pre-call disclosure announcements, Opt-Out (`Press 9 for unrecorded call`) and Explicit Consent Opt-In (`Press 1 to allow recording`), FCC periodic recording beep (`MixMonitor B(15)`), live AGI/AI transcript PII & Luhn payment card redaction (`[REDACTED-CARD]`), automated nightly data retention purge (`privacy_purge.php`) and dual-DB CDR PII anonymization (`REDACTED`), Subject Access Request (SAR) JSON export, Right to Erasure (`PRIVACY_ERASURE`), and Cross-Border Cloud AI Lock.
+- **Open Source License & Telecom Disclaimer (Web, CLI, Android & iOS v1.0.74):** added explicit Emergency Calling (112/911/999), Toll Fraud, and GDPR/KVKK Recording & AI Privacy notice to `LICENSE`, `install.sh`, a one-time first-login admin acceptance modal across all 23 portal languages, and a first-launch acceptance screen on the Android and iOS mobile apps (`v1.0.74`, build `74`).
+- **Portal UX, Audit Log & Modular Architecture:** universal live filtering, column sorting, and pagination (`datatable_enhancer.js`) across `/system-users`, `/trunks`, and all multi-record tables; responsive mobile drawer and table layouts; language switcher preserves clean routes and active sidebar state; Dialplan Editor (`/assistant`) packaged as an opt-in plugin (`ai-assistant`); modularized `ApiV1Controller`, `DialplanService`, `PrivacyService`, and `PhoneProvisionService`.
+- **Installer, Updater & Backup Hardening:** `install.sh` symlinks `/usr/local/bin/privacy_purge.php`; `aipbx-update` runs post-upgrade `smoke.php` verification as `www-data`; `aipbx-backup` includes uploaded plugins (`var/lib/aipbx/plugins`).
+
+## 1.34.0
+
+REST API v1, Outbound Webhooks, First-Class Plugin System, Dialplan Editor & SIP Signaling Capture (**@shido6**, #114), Android & iOS improvements, and security/reliability hardening across the entire stack.
+
+- **REST API v1 (`/api/v1/*`) & API Keys (`/api-keys`):** stateless REST API with 100+ endpoints and OpenAPI 3.1 specification (`/api/v1/openapi.json`), scoped Bearer tokens (`apbx_...`), IPv4/IPv6 CIDR allowlists, per-token rate limiting, secret-column sanitization (`sip_password`, `auth_password`, `voicemail_pin`), and allowlisted public system settings.
+- **Outbound Webhooks (`/webhooks`):** HMAC-SHA256 signed event delivery with background retry daemon (`aipbx-webhook-worker.service`), composite CDR/Fax sweep cursors, delivery logs, and DNS-pinned SSRF protection.
+- **First-Class Plugin System (`/plugins`):** modular integration catalog (`google-auth`, `ms-teams`, `web-widgets`, `ai-cloud`, `ai-tts`, `ai-apps`, `ai-models`, `ai-voicemail`, `ai-assistant`, `signaling-capture`), custom `.zip` plugin installer, encrypted secret settings, bounded KV storage, public plugin endpoints (`/api/plugins/<slug>/*`), and a 5-error **Safe Mode** circuit breaker.
+- **Dialplan editor (`/assistant`) & SIP signaling capture (`signaling/`):** plain-language PBX change planner with dry-run preview before apply, safety validation, audit trail and one-click undo (`pbx_ai_changes`), plus the Echo diagnostic reporter and opt-in loopback HEPv3 capture daemon (`aipbx-signaling.service` → `pbx_signaling_events`) (@shido6, #114).
+- **Mobile apps (Android & iOS):** fixed in-app language switching across all 23 languages on Android (Play App Bundle language split disabled, `L10n.wrap` context attachment across all Activities, `LocaleManager` sync, and tab state preservation); iOS `CallKitManager` fulfills `CXStartCallAction` on outgoing calls and scopes WebView media capture permission to the local app bundle.
+- **Installer, Updater & Security Hardening:** `aipbx-update` passes `-c safe.directory` to `git`, re-execs from `/run`, and verifies `aipbx-webhook-worker`; atomic file writes in `aipbx-update` and `aipbx-sounds`; sticky-bit protection on `/var/lib/aipbx` (`1755`) and `/var/log/aipbx` (`1750`); `mysql.Config.FormatDSN()` in `aipbx-chat`; bounded cloud LLM/STT responses and serialized model downloads in `aipbx_ai`.
+
+## 1.33.4
+
+Fixes from a full security and reliability review across the web portal, dialplan, chat, local AI, mobile apps and system helpers, plus three fixes by **@tomck** (#113).
+
+- **Dial permissions in priority order:** group rules now run as an ordered `REGEX()` chain so the first matching rule in priority order wins instead of Asterisk's most-specific-match; a prefix rule also matches the bare prefix itself (@tomck, #113).
+- **Ring groups (`random`):** the `random` strategy now picks a target per call in the dialplan (`RAND()`) instead of freezing a sync-time shuffle that rang everybody at once (@tomck, #113).
+- **Direct chat reopen check:** reopening an existing direct conversation enforces the same active, non-fax user check as creating a new one (@tomck, #113).
+- **Boss–secretary & call forwarding:** blind and attended transfers from a secretary or whitelisted extension reach the boss without looping back to the secretary; a secretary's personal voicemail no longer intercepts the boss's call (`__SKIP_VM`); call-forwarding legs carry the forwarding extension's permission group and outbound route group (`from-internal-gN`).
+- **Sign-in & account security:** passkey and Google sign-in honour mandatory password resets (`/force-reset`) and build redirect/RP URLs from the configured portal domain instead of `Host` / `X-Forwarded-Host` headers; passkey registration and deletion require POST + CSRF; QR sign-in status checks are scoped to the signed-in user; WebRTC and mobile login only hand out SIP credentials when the corresponding phone mode (`web` / `mobil`) is enabled.
+- **Call center & CDRs:** call notes and CDR deletions verify that the call belongs to the agent's extension unless the user has full CDR access; active-call draft notes are claimed with a CSRF header check.
+- **MS Teams & webhooks:** test webhooks validate that the target resolves to a public IPv4/IPv6 address and pin resolution (`CURLOPT_RESOLVE`); PowerShell script generation strips control characters and escapes single quotes.
+- **Chat & local AI hardening:** internal chat endpoints require `X-AiPBX-Internal`; group leave and last-admin checks run transactionally; S3 upload failures roll back cleanly; local AI serialises model downloads, checks magic bytes before extracting archives, bounds cloud LLM/STT responses and cleans up temporary WAV files.
+- **System helpers (`aipbx-priv`, `aipbx-cert`, `aipbx-update`):** Postfix SASL credentials are staged through `/var/lib/aipbx/sasl_passwd` (`0600`) and validated before `postmap`; custom certificates verify key match before staging; update status files are written atomically without following symlinks.
+- **Mobile apps (Android & iOS):** server setup, deep links and QR sign-in require `https://` and ask for confirmation before switching to a different PBX server; Android encrypts stored tokens and SIP passwords with `EncryptedSharedPreferences`.
+
+## 1.33.3
+
+Fixes from a third code review.
+
+- **Configuration injection:** a fax destination (IVR, time condition, ring
+  group, announcement fallback), a queue recording format, a voicemail e-mail
+  address and a ring-group caller-name prefix were written into Asterisk's
+  configuration as typed. A line break in them could add lines of its own,
+  including commands run by Asterisk. Each is now limited to what it can
+  contain; a comma in a name no longer shifts the voicemail fields.
+- **My phone:** the "Call" button of the call history put the caller's number
+  into the page unescaped; a crafted caller ID could run script in the
+  browser. Every inline button now passes its values safely (`jsArg()`),
+  which also fixes confirmation dialogs whose translation has an apostrophe.
+- **Sign-in tokens:** the mobile and chat tokens are no longer signed with the
+  database password when no token key is set (the service refuses to start
+  instead); a QR code can be used only once even when scanned twice at the
+  same moment. The tokens get their own key (`CHAT_JWT_SECRET`, added by the
+  update; they were signed with the TURN key): **every mobile app and the web
+  chat sign in again once after this update.**
+- **Chat:** a direct chat can be started only with an active chat user (not
+  any number, not a fax-only user); internal errors are logged instead of
+  being sent to the app; the web page no longer replaces the safe
+  `escapeHtml()` with a weaker one.
+- Hardening: the command-line tools in `web/bin` refuse to run over HTTP (the
+  folder is already closed by the web server); the extension list in the page
+  header is encoded for a script block.
+
+## 1.33.2
+
+Fixes from a second code review, and two follow-ups by **@tomck** (#110).
+
+- **Call restrictions now work on phones:** the dial-permission group of a
+  user never reached the phone's endpoint, so every phone, softphone and web
+  phone call was unrestricted, whatever group the user was in. A user in a
+  disabled or deleted group has no restriction (as before).
+- **Certificates:** the certificate tool (root) wrote its status through a
+  fixed temporary file in a folder the web server can write; a planted link
+  could make it overwrite another file. A failed copy of the certificate is
+  now reported as an error instead of "OK".
+- **Chat:** an image that claims a huge size gets no thumbnail (it could
+  exhaust the memory of the chat service); the sign-in cookie is only used
+  for media, so another website cannot open a chat connection or call the
+  chat API as the signed-in user; expired sign-in cache entries are dropped.
+- **Local AI:** the model list no longer fails while a model is added or
+  removed.
+- **Fax:** a failed database update is logged as an error instead of
+  "Updated"; the settings file is read without running it as a script (no
+  more "PBX: command not found" in the fax logs).
+- **Dial permissions:** a rule is deleted only within its own group; a SIP
+  password reset needs at least 6 characters, as on the Extensions page
+  (@tomck, #110).
+- Hardening: voicemail takes only digits as the extension number; network
+  addresses for TFTP/FTP/syslog/NTP/DHCP are checked strictly
+  (0-255, /0-32); the sync lock folder is open only to the PBX's own users.
+
+## 1.33.1
+
+Fixes from two code reviews. Thanks to **@tomck** for the review and fixes in
+#107 / #108.
+
+- **SIP password:** a password changed on the Extensions page or by a reset
+  now reaches Asterisk. Before, the old password stayed valid and the mobile
+  app, which got the new one, could not register (@tomck).
+- **Call restrictions:** click-to-call (call center) and the external members
+  of a ring group now follow the caller's restrictions; click-to-call could
+  reach barred numbers (@tomck). Inbound calls forwarded to a mobile or an
+  external destination work as before.
+- **Ring groups:** a 6-digit extension in a ring group is rung as an extension,
+  not dialled out; a ring group used by an IVR, time condition, announcement
+  or fallback can no longer be deleted (@tomck).
+- **Local AI:** removing a model waits for a running synthesis or
+  transcription; it could crash the AI service during a call.
+- **Phones:** the file preview also hides passwords with `&`, `<` or `>` and
+  NEC's shortened password; phones imported from CSV get their TFTP/FTP files
+  at once instead of within 5 minutes.
+- **Update and scripts:** command-line scripts exit with an error when the
+  database is unreachable (they reported success); a rolled-back update also
+  restores `/etc/asterisk` from its backup; configuration sync locks are
+  shared by the portal, cron and root (`/var/lib/aipbx/sync-locks`).
+- **HTTP:** the redirect to HTTPS checks the resolved path (hardening; such
+  requests were already refused).
+- Translations: new texts can be added in English first; the other languages
+  show English until they are translated.
+
 ## 1.33.0
 
 Network settings and a tidier menu:

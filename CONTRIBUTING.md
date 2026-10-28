@@ -21,13 +21,17 @@ AI PBX is organized as a unified monorepo:
 
 | Directory | Component | Tech Stack |
 |---|---|---|
-| `web/` | Web Management Portal &amp; API | PHP 8.x MVC, JavaScript, CSS |
+| `web/` | Web Management Portal, REST API v1 &amp; Built-in Privacy Engine | PHP 8.x MVC, JavaScript, CSS |
+| `plugins/` | Official First-Class Modular Plugins | PHP 8.x, JSON Manifests |
 | `asterisk-config/` | PBX Dialplan &amp; PJSIP Configs | Asterisk 22, PJSIP, SpanDSP |
 | `chat/` | High-Concurrency Chat Engine | Go (Gorilla WebSocket) |
-| `android/` | Mobile Application | Kotlin, WebRTC, Jetpack, FCM |
-| `docs/` | Images used by the README and docs (the aipbx.bid website is maintained separately) | PNG, JPG |
-| `sounds/`, `asterisk-core-sounds-tr-*.tar.xz` | Bundled sounds, Turkish prompt texts and packages | `scripts/build_tr_sounds.sh` |
-| `install.sh` | Turnkey Auto-Installer | Bash (Ubuntu 26.04 LTS) |
+| `ai/` | Local &amp; Cloud AI Runtime (`aipbx-ai`) | Python |
+| `signaling/` | Local Loopback HEPv3 SIP Signaling Capture (`aipbx-signaling`) | Python |
+| `android/` | Android Mobile Application | Kotlin, WebRTC, Jetpack, FCM |
+| `ios/` | iOS Mobile Application | SwiftUI, CallKit, WebRTC, PushKit |
+| `docs/` | Built-in Offline System Guide (`/help`) &amp; Documentation | Markdown, Mermaid diagrams (SVG), PNG, JPG |
+| `sounds/` | Bundled Sounds &amp; Turkish Prompt Packages | `scripts/build_tr_sounds.sh` |
+| `install.sh` | Turnkey Auto-Installer &amp; Upgrader | Bash (Ubuntu 26.04 LTS) |
 
 ---
 
@@ -46,11 +50,12 @@ Before every push (CI runs the same checks):
 
 ```bash
 cd web
-php bin/lint_lang.php                    # tr/en language keys
+php bin/lint_lang.php                    # 23-language key parity check
 php bin/smoke.php                        # every page renders, RBAC, conventions
 php vendor/bin/phinx migrate -e testing  # test database (tests/.env.test)
 set -a; . tests/.env.test; set +a; php vendor/bin/phpunit
 php -d memory_limit=2G vendor/bin/phpstan analyse
+(cd ../signaling && python3 -m unittest discover -s tests -v)
 (cd ../chat && gofmt -l . && go vet ./... && go test ./...)
 ```
 
@@ -117,6 +122,11 @@ Please adhere to the [Conventional Commits](https://www.conventionalcommits.org/
 - **Page scripts and styles** live in `web/assets/js/<page>.js` and `web/assets/css/pages/<page>.css`;
   PHP values reach them through a small data block (`window.X = {...}`), not PHP inside the script.
 - **Sidebar** entries are data in `web/templates/sidebar_menu.php`.
+- **Asterisk restarts on update:** `aipbx-update` restarts Asterisk only when the update needs it
+  (`scripts/asterisk-restart-needed.sh`): when a file in `asterisk-config/` (outside `pbx/`) changed,
+  or `ASTERISK_RESTART_EPOCH` at the top of `install.sh` was raised. Raise it in a change that needs
+  a restart to take effect — a new Asterisk package or module, the service unit, anything read only
+  at start. Everything else is reloaded and calls stay up.
 
 ### 4. Security First 🔒
 - **Zero Static Passwords**: Never hardcode credentials or tokens anywhere in the codebase.
@@ -124,6 +134,19 @@ Please adhere to the [Conventional Commits](https://www.conventionalcommits.org/
 - **Input Validation**: Sanitize and validate all user inputs (CSRF, XSS, SQL injection protection).
 
 ---
+
+## 📐 Diagrams in the documentation
+
+Draw diagrams with [Mermaid](https://mermaid.js.org/), not with ASCII arrows: the source goes to
+`docs/diagrams/<name>.mmd` (start it with `%% @classes` for the shared colours), then
+
+```bash
+scripts/render-diagrams.sh <name>   # writes docs/img/<name>.svg (needs Node and Chrome/Chromium)
+```
+
+and put `![What it shows](img/<name>.svg)` on a line of its own in the document. Commit the `.mmd`
+and the `.svg` together. The SVG is shown as it is on GitHub, in the portal's Help page (offline)
+and on aipbx.bid/docs; no JavaScript is needed to read it.
 
 ## 🌍 Translations
 
@@ -134,6 +157,22 @@ your translation (placeholders, HTML tags) and writes the file. Step-by-step
 guide: [docs/translating.md](docs/translating.md).
 
 ## 🔄 Submitting a Pull Request (PR)
+
+### One topic per pull request
+
+Every PR must be about **one** bug fix or **one** feature. Do not mix in
+unrelated fixes, refactors, renames, reformatting or translations — send each
+of them as its own PR. A small, focused PR can be reviewed and tested on a real
+PBX in minutes; a PR that mixes many changes waits a long time and is usually
+asked to be split.
+
+- If you found three bugs, open three PRs (or one issue per bug).
+- Keep the diff to what the change needs: no editor-wide reformatting.
+- A PR that touches many parts of the project or is very large (roughly more than
+  ~1000 changed lines or ~40 files) is labelled `needs-split` automatically.
+  If it really is a single change, say so in a comment.
+
+### Steps
 
 1. Ensure your code is formatted and tested.
 2. Push your branch to your GitHub fork:

@@ -2,23 +2,25 @@
 /**
  * Inbound & Outbound Route Service
  */
+require_once __DIR__ . '/../helpers.php';
 
 class RouteService {
     public static function saveDIDRoute($data) {
         return PBXHelper::handleAction($data['csrf_token'] ?? '', function() use ($data) {
             $route_id = intval($data['route_id'] ?? 0);
-            $did_number = preg_replace('/[^0-9]/', '', trim($data['did_number'] ?? ''));
+            $raw_did = ltrim(strtoupper(trim($data['did_number'] ?? '')), '_');
+            $did_number = preg_replace('/[^0-9XZN.!]/', '', $raw_did);
             $title = trim($data['title'] ?? '');
             $dest_type = sanitizeDestType($data['dest_type'] ?? 'time_condition');
             $dest_id = trim($data['dest_id'] ?? '');
-            $record_call = isset($data['record_call']) ? 1 : 0;
-            $is_active = isset($data['is_active']) ? intval($data['is_active']) : 1;
+            $record_call = PBXHelper::boolFlag($data, 'record_call', 0);
+            $is_active = PBXHelper::boolFlag($data, 'is_active', 1);
             $language = trim($data['language'] ?? '');
             if ($language !== '' && !in_array($language, getAvailableLanguages(), true)) {
                 $language = '';
             }
 
-            if (empty($did_number) || empty($title)) {
+            if ($did_number === '' || !preg_match('/[0-9XZN]/', $did_number) || empty($title)) {
                 throw new \Exception(t('srv_route.err_did'));
             }
 
@@ -53,17 +55,17 @@ class RouteService {
         return PBXHelper::handleAction($data['csrf_token'] ?? '', function() use ($data) {
             $route_id = intval($data['route_id'] ?? 0);
             $route_name = trim($data['route_name'] ?? '');
-            $match_pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#-]/', '', trim($data['match_pattern'] ?? ''));
+            $match_pattern = preg_replace('/[^0-9NXZnxz.\[\]_!*#+-]/', '', trim($data['match_pattern'] ?? ''));
             $prepend = preg_replace('/[^0-9]/', '', trim($data['prepend'] ?? ''));
             $append = preg_replace('/[^0-9]/', '', trim($data['append'] ?? ''));
             $strip_front = intval($data['strip_front'] ?? 0);
             $strip_back = intval($data['strip_back'] ?? 0);
-            $is_internal = isset($data['is_internal']) ? 1 : 0;
+            $is_internal = PBXHelper::boolFlag($data, 'is_internal', 0);
             // Outbound route group: which user group may use this route.
             // 1 is the default; an invalid value falls back to 1 so the route
             // does not land in an unreachable group and silently vanish.
             $route_group = max(1, min(99, intval($data['route_group'] ?? 1)));
-            $is_active = isset($data['is_active']) ? intval($data['is_active']) : 1;
+            $is_active = PBXHelper::boolFlag($data, 'is_active', 1);
 
             // Trunks: no primary/backup split — a list added one by one and tried in
             // order. Every row can have its own caller ID masking value.
@@ -121,6 +123,32 @@ class RouteService {
     public static function deleteOutboundRoute($route_id, $csrf_token) {
         return PBXHelper::handleAction($csrf_token, function() use ($route_id) {
             $route_id = intval($route_id);
+            $sid = (string)$route_id;
+            $refs = (int)DBHelper::fetchColumn(
+                "SELECT COUNT(*) FROM (
+                    SELECT id FROM pbx_web_widgets WHERE outbound_route_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_dids WHERE dest_type = 'outbound_route' AND dest_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_ivr_entries WHERE dest_type = 'outbound_route' AND dest_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_ivrs WHERE (timeout_dest_type = 'outbound_route' AND timeout_dest_id = ?) OR (invalid_dest_type = 'outbound_route' AND invalid_dest_id = ?)
+                    UNION ALL
+                    SELECT id FROM pbx_time_conditions WHERE (match_dest_type = 'outbound_route' AND match_dest_id = ?) OR (nomatch_dest_type = 'outbound_route' AND nomatch_dest_id = ?) OR rules_json LIKE ? OR rules_json LIKE ?
+                    UNION ALL
+                    SELECT id FROM pbx_announcements WHERE post_dest_type = 'outbound_route' AND post_dest_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_boss_secretary_groups WHERE fallback_dest_type = 'outbound_route' AND fallback_dest_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_ring_groups WHERE fallback_dest_type = 'outbound_route' AND fallback_dest_id = ?
+                    UNION ALL
+                    SELECT id FROM pbx_ivr_data_steps WHERE (found_dest_type = 'outbound_route' AND found_dest_id = ?) OR (not_found_dest_type = 'outbound_route' AND not_found_dest_id = ?) OR (timeout_dest_type = 'outbound_route' AND timeout_dest_id = ?)
+                ) refs",
+                [$route_id, $sid, $sid, $sid, $sid, $sid, $sid, '%"match_dest_type":"outbound_route","match_dest_id":"' . $sid . '"%', '%"nomatch_dest_type":"outbound_route","nomatch_dest_id":"' . $sid . '"%', $sid, $sid, $sid, $sid, $sid, $sid]
+            );
+            if ($refs > 0) {
+                throw new \Exception(t('srv_tc.err_in_use'));
+            }
             $route_name = DBHelper::fetchColumn("SELECT route_name FROM pbx_outbound_routes WHERE id = ?", [$route_id]);
             DBHelper::delete('pbx_outbound_routes', 'id', $route_id);
             markPendingSync('outbound_dialplan', 'outbound_route', $route_name ?: ('id_' . $route_id), "Outbound route: " . ($route_name ?: $route_id) . " (deleted)", 'delete', $_SESSION['user_id'] ?? null);

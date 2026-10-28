@@ -118,8 +118,10 @@
     <string name="btn_remove">Eltávolítás</string>
     <string name="call_from_pbx">Alközponti hívás</string>
     <string name="call_on_hold">Tartásban</string>
+    <string name="cf_always">ÁTIR. (MINDIG)</string>
     <string name="cf_busy">ÁTIR. (FOGLALT)</string>
     <string name="cf_busy_noanswer">ÁTIR. (FOGLALT/NEM FOGADOTT)</string>
+    <string name="cf_noanswer">ÁTIR. (NEM FOGADOTT)</string>
     <string name="chat_document">Dokumentum</string>
     <string name="chat_extension_title">%1$s. mellék</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Nincs kameraengedély: a hívás csak hanggal folytatódik.</string>
     <string name="err_camera_unavailable">A kamera nem érhető el: a hívás csak hanggal folytatódik.</string>
     <string name="contacts_extensions_listed">mellék listázva</string>
+    <string name="api_fcm_token_failed">Nem sikerült elküldeni az FCM tokent (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Nem sikerült törölni a csoportot (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">\'+\' előhívó megőrzése</string>
+    <string name="pref_send_plus_desc">Nemzetközi \'+\' közvetlen küldése a PBX-nek normalizáláshoz (BE) vagy átalakítás 00-ra (KI)</string>
 </resources>

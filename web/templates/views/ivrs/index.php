@@ -6,6 +6,11 @@
             <i class="fas fa-microphone-alt u-primary"></i> <?php echo t('ivr.title'); ?>
         </div>
         <div class="u-flex-gap">
+            <?php if (hasModulePermission('external_dbs', 'access')): ?>
+            <a href="/ivr-data-steps" class="btn btn-secondary btn-sm" title="<?php echo htmlspecialchars(t('ivr_data.page_title')); ?>">
+                <i class="fas fa-database"></i> <?php echo htmlspecialchars(t('ivr_data.nav_button')); ?>
+            </a>
+            <?php endif; ?>
             <button type="button" class="btn-help" onclick="toggleModuleHelp('ivrHelpBox')" title="<?php echo t('common.module_guide'); ?>">
                 <i class="fas fa-question-circle"></i>
             </button>
@@ -81,10 +86,10 @@
                             <?php echo uiStatusToggleForm($ivr['id'], $ivr['is_active'], 'ivr_id'); ?>
                         </td>
                         <td style="text-align: right; display: flex; gap: 6px; justify-content: flex-end;">
-                            <button class="btn btn-secondary btn-sm" onclick='openIvrFlowModal(<?php echo (int) $ivr['id']; ?>, "<?php echo htmlspecialchars($ivr['title'], ENT_QUOTES); ?>")' title="<?php echo htmlspecialchars(t('ivr_flow.title')); ?>">
+                            <button class="btn btn-secondary btn-sm" onclick='openIvrFlowModal(<?php echo (int) $ivr['id']; ?>, <?php echo jsArg($ivr['title']); ?>)' title="<?php echo htmlspecialchars(t('ivr_flow.title')); ?>">
                                 <i class="fas fa-project-diagram"></i>
                             </button>
-                            <button class="btn btn-secondary btn-sm" onclick='openIvrEntriesModal(<?php echo $ivr['id']; ?>, "<?php echo htmlspecialchars($ivr['title'], ENT_QUOTES); ?>")' title="<?php echo htmlspecialchars(t('ivr.entries_map_tooltip')); ?>">
+                            <button class="btn btn-secondary btn-sm" onclick='openIvrEntriesModal(<?php echo (int) $ivr['id']; ?>, <?php echo jsArg($ivr['title']); ?>)' title="<?php echo htmlspecialchars(t('ivr.entries_map_tooltip')); ?>">
                                 <i class="fas fa-th"></i>
                             </button>
                             <?php echo uiEditButton($ivr, 'openEditIvrModal'); ?>
@@ -144,6 +149,11 @@
                         <label class="form-label"><?php echo t('ivr.field_max_failures'); ?></label>
                         <input type="number" name="max_failures" id="modal_max_failures" class="form-control" value="3" min="1" max="10">
                         <small class="u-hint"><?php echo t('ivr.max_failures_help'); ?></small>
+                        <label style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 8px;">
+                            <input type="checkbox" name="timeout_repeat" id="modal_timeout_repeat" value="1" class="u-check">
+                            <span><?php echo t('ivr.field_timeout_repeat'); ?></span>
+                        </label>
+                        <small class="u-hint"><?php echo t('ivr.timeout_repeat_help'); ?></small>
                     </div>
                     <div class="form-group">
                         <label class="form-label" style="display: inline-flex; align-items: center; gap: 8px; cursor: pointer; margin-top: 8px;">
@@ -259,7 +269,7 @@
                                     <strong style="font-size: 12px; min-width: 54px;"><?php echo t('ivr.key_label'); ?> <?php echo htmlspecialchars($en_l['digit']); ?>:</strong>
                                     <span class="u-fs-12 u-flex-1"><?php echo IvrRepository::destBadge($en_l['dest_type'], $en_l['dest_id'], $destResolveCache); ?></span>
                                     <form method="POST" autocomplete="off" class="u-m-0 u-inline"
-                                          onsubmit="return confirm('<?php echo htmlspecialchars(sprintf(t('ivr.entry_delete_confirm'), $en_l['digit']), ENT_QUOTES); ?>');">
+                                          onsubmit="return confirm(<?php echo jsArg(sprintf(t('ivr.entry_delete_confirm'), $en_l['digit'])); ?>);">
                                         <input type="hidden" name="csrf_token" value="<?php echo getCSRFToken(); ?>">
                                         <input type="hidden" name="delete_ivr_entry" value="1">
                                         <input type="hidden" name="entry_id" value="<?php echo (int) $en_l['id']; ?>">

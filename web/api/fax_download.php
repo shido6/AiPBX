@@ -43,7 +43,8 @@ if ($type === 'sent') {
     $stmt->execute([$fax_id]);
     $fax = $stmt->fetch();
     
-    if (!$fax) {
+    // A fax that failed before its first page is recorded without a file.
+    if (!$fax || (string)$fax['pdf_path'] === '') {
         http_response_code(404);
         die(t('api.err_fax_not_found'));
     }
@@ -59,6 +60,8 @@ if ($type === 'sent') {
 
     $db->prepare('UPDATE fax_received SET is_read = 1 WHERE id = ?')->execute([$fax_id]);
 }
+
+session_write_close();
 
 // In the S3 bucket (#69): streamed through the chat service, after the checks above.
 if (BucketFiles::isRemote($fax['pdf_path'])) {

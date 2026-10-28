@@ -84,6 +84,19 @@ final class PhoneProvisionTest extends TestCase
 
     // ------------------------------------------------------------ templates
 
+    public function testPreviewHidesEveryFormOfThePassword(): void
+    {
+        $forms = PhoneProvisionService::secretForms(['P@ss&<1234', str_repeat('a', 40), 'abc']);
+        $this->assertContains('P@ss&<1234', $forms);
+        $this->assertContains('P@ss&amp;&lt;1234', $forms, 'XML-escaped form');
+        $this->assertContains(str_repeat('a', 31), $forms, 'cut to 31 (NEC)');
+        $this->assertNotContains('abc', $forms, 'too short to mask');
+        $lengths = array_map('strlen', $forms);
+        $sorted = $lengths;
+        rsort($sorted);
+        $this->assertSame($sorted, $lengths, 'longest first');
+    }
+
     public function testYealinkRendersAccountKeysAndExpansionModule(): void
     {
         $out = (new YealinkTemplate())->render($this->context('yealink-t46u', [
@@ -433,6 +446,11 @@ final class PhoneProvisionTest extends TestCase
             ['nec', 'dt-0060b9ef609f-local.cfg', '0060b9ef609f'],
             ['nec', 'dt-0060B9EF609F-phone.cfg', '0060b9ef609f'],
             ['nec', 'dt-sip.cfg', ''],
+            ['cisco-cm', 'SEP001565AABBCC.cnf.xml', '001565aabbcc'],
+            ['cisco-cm', 'SEP001565aabbcc.cnf.xml', '001565aabbcc'],
+            ['cisco-cm', 'SEP001565AABBCC.cnf', ''],          // not the .cnf.xml these phones ask for
+            ['cisco-cm', 'SIPDefault.cnf.xml', ''],           // a shared file, never a phone's
+            ['cisco-cm', 'SEP001565AABBCC.cnf.xml.sample', ''],
         ];
     }
 
@@ -583,6 +601,12 @@ final class PhoneProvisionTest extends TestCase
         $this->assertSame('yealink-t46u', PhoneProvisionService::modelFromText('yealink-t46u'));
         $this->assertSame('yealink-t46u', PhoneProvisionService::modelFromText('Yealink T46U'));
         $this->assertSame('grandstream-gxp2170', PhoneProvisionService::modelFromText('gxp2170'));
+        $this->assertSame('cisco-cm-7962g', PhoneProvisionService::modelFromText('cisco-cm-7962g'));
+        $this->assertSame('cisco-cm-7962g', PhoneProvisionService::modelFromText('Cisco 7962G'));
+        $this->assertSame('cisco-cm-7962g', PhoneProvisionService::modelFromText('7962G'));
+        $this->assertSame('cisco-cm-8861', PhoneProvisionService::modelFromText('Cisco 8861'));
+        $this->assertSame('cisco-cm-8861', PhoneProvisionService::modelFromText('8861'));
+        $this->assertSame('cisco-spa525g', PhoneProvisionService::modelFromText('Cisco SPA525G2'));
         $this->assertSame('', PhoneProvisionService::modelFromText('T99'));
     }
 
@@ -679,6 +703,8 @@ final class PhoneProvisionTest extends TestCase
         $this->assertStringContainsString('Outbound_Proxy_1_', (new CiscoSpaTemplate())->render($ctx));
         $this->assertStringContainsString('reg.1.outboundProxy.address="10.23.3.70"', (new PolyTemplate())->render($ctx));
         $this->assertStringContainsString('10.23.3.70', (new NecTemplate())->render($ctx));
+        $this->assertStringContainsString('<outboundProxy>10.23.3.70</outboundProxy>', (new CiscoCallManagerTemplate())->render($ctx));
+        $this->assertStringContainsString('<outboundProxyPort>5060</outboundProxyPort>', (new CiscoCallManagerTemplate())->render($ctx));
         // Without a proxy nothing is switched on.
         $this->assertStringContainsString('account.1.outbound_proxy_enable = 0', (new YealinkTemplate())->render($this->context('yealink-t46u')));
     }

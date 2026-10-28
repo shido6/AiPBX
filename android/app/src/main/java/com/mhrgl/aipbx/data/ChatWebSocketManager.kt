@@ -36,7 +36,8 @@ class ChatWebSocketManager private constructor() {
     private val gson = Gson()
     private val listeners = CopyOnWriteArrayList<ChatEventListener>()
     @Volatile private var webSocket: WebSocket? = null
-    @Volatile private var isConnected = false
+    @Volatile var isConnected = false
+        private set
     /** So a second connect() call during the handshake does not open a new socket. */
     @Volatile private var isConnecting = false
     private var isManuallyClosed = false
@@ -100,8 +101,7 @@ class ChatWebSocketManager private constructor() {
     fun connect(baseUrl: String, token: String) {
         if (baseUrl.isEmpty() || token.isEmpty()) return
 
-        // ChatListActivity, ChatActivity, DialerActivity and PbxForegroundService
-        // all call connect(). A call arriving during the handshake used to cancel
+        // DialerActivity and PbxForegroundService both call connect(). A call arriving during the handshake used to cancel
         // the old socket and open a new one: the server counted the same phone as
         // two devices, and the cancelled socket's late onFailure wiped the new
         // connection's online list (everyone looked "Offline").

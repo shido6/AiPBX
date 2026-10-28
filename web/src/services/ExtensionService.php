@@ -3,6 +3,10 @@
  * Extension Service
  */
 
+require_once __DIR__ . '/../helpers.php';
+require_once __DIR__ . '/../internal_numbers.php';
+require_once __DIR__ . '/../sip_helper.php';
+
 class ExtensionService {
     public static function saveExtension($data) {
         return PBXHelper::handleAction($data['csrf_token'] ?? '', function () use ($data) {
@@ -17,16 +21,16 @@ class ExtensionService {
             // user does not land in a context that does not exist and become
             // unable to call out at all.
             $outbound_group = max(1, min(99, intval($data['outbound_group'] ?? 1)));
-            $sip_auth_digest = isset($data['sip_auth_digest']) ? (intval($data['sip_auth_digest']) ? 1 : 0) : 1;
+            $sip_auth_digest = PBXHelper::boolFlag($data, 'sip_auth_digest', 1);
             $cid_internal = trim($data['cid_internal'] ?? '');
             $cid_external = trim($data['cid_external'] ?? '');
-            $is_active = isset($data['is_active']) ? 1 : 0;
+            $is_active = PBXHelper::boolFlag($data, 'is_active', 0);
 
             if (!preg_match('/^\d{3,6}$/', $extension)) {
                 throw new \Exception(t('srv_ext.err_number'));
             }
             if (empty($full_name)) {
-                throw new \Exception('Ad Soyad zorunludur!');
+                throw new \Exception(t('srv_user.err_required'));
             }
             // Fax users never register over SIP (no PJSIP endpoint is generated).
             // A password is required for SIP extensions with digest auth.
@@ -34,7 +38,8 @@ class ExtensionService {
                 throw new \Exception(t('srv_ext.err_password'));
             }
 
-            // The extension number must be unique
+            // The extension number must not collide with other internal numbers or extensions
+            internalNumberValidate($extension, 'user', $user_id);
             $stmt = $db->prepare('SELECT id FROM sys_users WHERE extension = ? AND id != ?');
             $stmt->execute([$extension, $user_id]);
             if ($stmt->fetch()) {
@@ -57,9 +62,18 @@ class ExtensionService {
             $vmSwitch = fn(string $k): int => isset($data[$k]) ? (intval($data[$k]) ? 1 : 0) : (int)($current[$k] ?? 1);
             $voicemail_enabled = $vmSwitch('voicemail_enabled');
             $voicemail_email_notify = $vmSwitch('voicemail_email_notify');
+            // An empty PIN becomes the extension number, which anyone can guess;
+            // with the rule "PIN may not be the extension" (PBX settings →
+            // Voicemail, on by default) it becomes a random PIN instead. A
+            // typed PIN must pass the rules.
+            require_once __DIR__ . '/VoicemailPolicy.php';
             $voicemail_pin = preg_replace('/[^0-9]/', '', trim($data['voicemail_pin'] ?? ''));
-            if (empty($voicemail_pin)) {
-                $voicemail_pin = $extension;
+            if ($voicemail_pin === '') {
+                $voicemail_pin = VoicemailPolicy::settings()['vm_pin_not_extension']
+                    ? VoicemailPolicy::randomPin((string) $extension)
+                    : (string) $extension;
+            } elseif ($extension_type !== 'fax' && ($pinError = VoicemailPolicy::pinError($voicemail_pin, (string) $extension)) !== null) {
+                throw new \Exception($pinError);
             }
             $voicemail_email = trim($data['voicemail_email'] ?? '');
             $voicemail_attach_audio = $vmSwitch('voicemail_attach_audio');
@@ -85,6 +99,13 @@ class ExtensionService {
 
             // Save/Update Extension
             if ($user_id > 0) {
+                $old_role = DBHelper::fetchColumn('SELECT role FROM sys_users WHERE id = ?', [$user_id]);
+                if ($old_role === 'admin' && $is_active == 0) {
+                    $other_admins = DBHelper::fetchColumn("SELECT COUNT(*) FROM sys_users WHERE role = 'admin' AND is_active = 1 AND id != ?", [$user_id]);
+                    if (intval($other_admins) < 1) {
+                        throw new \Exception(t('srv_user.err_last_admin_role'));
+                    }
+                }
                 // Existing record: clean up the old extension file too (the number may change)
                 $old_ext = DBHelper::fetchColumn('SELECT extension FROM sys_users WHERE id = ?', [$user_id]);
                 DBHelper::update('sys_users', [
@@ -110,7 +131,20 @@ class ExtensionService {
                     'cid_external' => $cid_external,
                     'is_active' => $is_active
                 ], 'id', $user_id);
-                SIPHelper::setSettings($extension, ['auth_digest' => $sip_auth_digest ? 'yes' : 'no']);
+                // The SIP secret must follow the panel password: SyncExtensions
+                // prefers sip.secret over sys_users.sip_password, so writing
+                // only auth_digest here left the PJSIP endpoint on the OLD
+                // secret (and the old secret stayed valid). A non-SIP (fax)
+                // extension has no endpoint, so any leftover row is removed.
+                if ($extension_type === 'sip') {
+                    SIPHelper::setSettings($extension, [
+                        // Without digest auth the password may be empty: keep the old one.
+                        'secret' => $sip_password !== '' ? $sip_password : null,
+                        'auth_digest' => $sip_auth_digest ? 'yes' : 'no',
+                    ]);
+                } else {
+                    SIPHelper::deleteSettings($extension);
+                }
                 if ($old_ext && $old_ext !== $extension) {
                     SIPHelper::deleteSettings($old_ext);
                     markPendingSync('extensions', 'extension', $old_ext, "Extension: {$old_ext} (number changed, removed)", 'delete', $_SESSION['user_id'] ?? null);
@@ -181,9 +215,51 @@ class ExtensionService {
             }
             // Remove the extension (the user account is kept)
             DBHelper::update('sys_users', ['extension' => null, 'sip_password' => null], 'id', $user_id);
-            markPendingSync('extensions', 'extension', $old_ext, "Extension: {$old_ext} (removed)", 'delete', $_SESSION['user_id'] ?? null);
-            markPendingSync('general_dialplan', 'general_dialplan', 'dialplan', "Extension dialplan ({$old_ext} removed)", 'update', $_SESSION['user_id'] ?? null);
-            markPendingSync('ivrs', 'ivrs', 'all', "IVR direct extension dialing ({$old_ext} removed)", 'update', $_SESSION['user_id'] ?? null);
+            SIPHelper::deleteSettings($old_ext);
+            $db = getDB();
+            try {
+                $db->prepare('UPDATE pbx_phones SET user_id = NULL WHERE user_id = ?')->execute([$user_id]);
+                $db->prepare('DELETE FROM pbx_phone_keys WHERE user_id = ?')->execute([$user_id]);
+                if (is_file(__DIR__ . '/PhoneProvisionService.php')) {
+                    require_once __DIR__ . '/PhoneProvisionService.php';
+                    PhoneProvisionService::exportTftpQuietly();
+                }
+            } catch (\Throwable $e) {
+            }
+            $queues = $db->query("SELECT id, queue_name, members_json, static_members_json, supervisors_json, supervisor_extension FROM pbx_queues")->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($queues as $q) {
+                $m_list = json_decode($q['members_json'] ?? '[]', true) ?: [];
+                $s_list = json_decode($q['supervisors_json'] ?? '[]', true) ?: [];
+                $st_list = array_map('strval', json_decode($q['static_members_json'] ?? '[]', true) ?: []);
+                $m_new = array_values(array_diff(array_map('strval', $m_list), [(string)$old_ext]));
+                $s_new = array_values(array_diff(array_map('strval', $s_list), [(string)$old_ext]));
+                $st_new = array_values(array_diff($st_list, [(string)$old_ext]));
+                $update_data = [
+                    'members_json' => json_encode($m_new),
+                    'static_members_json' => json_encode($st_new),
+                    'supervisors_json' => json_encode($s_new),
+                ];
+                if (count($st_new) !== count($st_list)) {
+                    markPendingSync('queues', 'queue', $q['queue_name'], "Queue: {$q['queue_name']} (static agent {$old_ext} removed)", 'update', $_SESSION['user_id'] ?? null);
+                }
+                if ((string)$q['supervisor_extension'] === (string)$old_ext) {
+                    $update_data['supervisor_extension'] = !empty($s_new) ? $s_new[0] : null;
+                }
+                DBHelper::update('pbx_queues', $update_data, 'id', $q['id']);
+            }
+            require_once __DIR__ . '/../queue_helper.php';
+            $stmt_all_q = $db->query("SELECT queue_name FROM pbx_queues WHERE is_active = 1");
+            if ($stmt_all_q) {
+                foreach ($stmt_all_q->fetchAll(PDO::FETCH_COLUMN) as $qn) {
+                    QueueHelper::setMembership($old_ext, $qn, false);
+                }
+            }
+            $uid = $_SESSION['user_id'] ?? null;
+            markPendingSync('extensions', 'extension', $old_ext, "Extension: {$old_ext} (removed)", 'delete', $uid);
+            markPendingSync('general_dialplan', 'general_dialplan', 'dialplan', "Extension dialplan ({$old_ext} removed)", 'update', $uid);
+            markPendingSync('ivrs', 'ivrs', 'all', "IVR direct extension dialing ({$old_ext} removed)", 'update', $uid);
+            markPendingSync('voicemail', 'voicemail', 'all', "Voicemail ({$old_ext} removed)", 'update', $uid);
+            markPendingSync('permissions', 'permissions', 'all', "Permission groups ({$old_ext} removed)", 'update', $uid);
             return sprintf(t('srv_ext.removed'), $old_ext);
         });
     }

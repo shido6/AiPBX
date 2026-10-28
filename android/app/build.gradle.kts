@@ -14,8 +14,17 @@ android {
         applicationId = "com.mhrgl.AiPBX"
         minSdk = 26
         targetSdk = 36
-        versionCode = 71
-        versionName = "1.0.71"
+        // The app has the PBX's version (repo VERSION file, e.g. 1.50.0):
+        // versionCode = MAJOR*1_000_000 + MINOR*10_000 + PATCH*100 + androidBuild.
+        // androidBuild (0..99, -PandroidBuild=N) is only for an Android-only
+        // rebuild of the same release: Play takes every versionCode once.
+        val pbxVersion = rootProject.file("../VERSION").readText().trim()
+        val (major, minor, patch) = pbxVersion.split(".").map { it.toInt() }
+        val androidBuild = (project.findProperty("androidBuild") as String?)?.toInt() ?: 0
+        require(androidBuild in 0..99) { "androidBuild must be 0..99" }
+        require(minor < 100 && patch < 100) { "VERSION $pbxVersion does not fit the versionCode scheme" }
+        versionCode = major * 1_000_000 + minor * 10_000 + patch * 100 + androidBuild
+        versionName = pbxVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -85,21 +94,29 @@ android {
         viewBinding = true
         buildConfig = true
     }
+
+    bundle {
+        language {
+            // Keep all 23 translations in the base APK so the in-app language
+            // switcher works even when Google Play installs from an App Bundle.
+            enableSplit = false
+        }
+    }
 }
 
 dependencies {
-    implementation("androidx.core:core-ktx:1.12.0")
-    implementation("androidx.appcompat:appcompat:1.6.1")
-    implementation("androidx.activity:activity-ktx:1.8.2")
-    implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
+    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.activity:activity-ktx:1.10.1")
+    implementation("com.google.android.material:material:1.12.0")
+    implementation("androidx.constraintlayout:constraintlayout:2.2.0")
     implementation("androidx.cardview:cardview:1.0.0")
 
     // Lifecycle & Coroutines
-    implementation("androidx.lifecycle:lifecycle-service:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.7.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
     // Networking & JSON
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

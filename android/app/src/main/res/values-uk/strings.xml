@@ -118,8 +118,10 @@
     <string name="btn_remove">Видалити</string>
     <string name="call_from_pbx">Дзвінок з АТС</string>
     <string name="call_on_hold">На утриманні</string>
+    <string name="cf_always">ПЕРЕАДР. (ЗАВЖДИ)</string>
     <string name="cf_busy">ПЕРЕАДР. (ЗАЙНЯТО)</string>
     <string name="cf_busy_noanswer">ПЕРЕАДР. (ЗАЙНЯТО/НЕМАЄ ВІДПОВІДІ)</string>
+    <string name="cf_noanswer">ПЕРЕАДР. (НЕМАЄ ВІДПОВІДІ)</string>
     <string name="chat_document">Документ</string>
     <string name="chat_extension_title">Внутрішній #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Немає дозволу на камеру: розмова триває лише зі звуком.</string>
     <string name="err_camera_unavailable">Камера недоступна: розмова триває лише зі звуком.</string>
     <string name="contacts_extensions_listed">внутрішніх номерів</string>
+    <string name="api_fcm_token_failed">Не вдалося надіслати FCM-токен (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Не вдалося видалити групу (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Зберігати префікс \'+\'</string>
+    <string name="pref_send_plus_desc">Надсилати міжнародний префікс \'+\' на АТС для нормалізації (УВІМК) або перетворювати на 00 (ВИМК)</string>
 </resources>

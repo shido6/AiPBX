@@ -10,11 +10,30 @@ function syncVoicemail() {
 function __syncVoicemailBody() {
     $db = getDB();
     $users = $db->query(
-        "SELECT extension, full_name, email, voicemail_enabled, voicemail_pin, voicemail_email, voicemail_email_notify, voicemail_attach_audio 
+        "SELECT id, extension, full_name, email, voicemail_enabled, voicemail_pin, voicemail_email, voicemail_email_notify, voicemail_attach_audio 
          FROM sys_users 
          WHERE extension IS NOT NULL AND extension != '' AND is_active = 1 AND extension_type = 'sip'
-         ORDER BY extension ASC"
+         ORDER BY extension ASC, id ASC"
     )->fetchAll(PDO::FETCH_ASSOC);
+
+    // Deduplicate extensions so conflicting rows don't produce duplicate mailboxes in voicemail_pbx.conf
+    $unique = [];
+    $kept_id = [];
+    foreach ($users as $row) {
+        $key = preg_replace('/[^0-9]/', '', (string)$row['extension']);
+        if ($key === '') {
+            $unique[] = $row;
+            continue;
+        }
+        if (isset($kept_id[$key])) {
+            error_log("syncVoicemail: extension {$key} appears in more than one user row"
+                . " — keeping user id {$kept_id[$key]}, skipping id {$row['id']}");
+            continue;
+        }
+        $kept_id[$key] = $row['id'];
+        $unique[] = $row;
+    }
+    $users = $unique;
 
     // 1. Ensure /etc/asterisk/voicemail.conf includes pbx/voicemail_pbx.conf
     $main_vm_conf = ASTERISK_CONF_DIR . '/voicemail.conf';
@@ -37,6 +56,20 @@ function __syncVoicemailBody() {
             $vm_content = preg_replace('/^\[general\][^\n]*$/m', "$0\n#include \"pbx/voicemail_general.conf\"", $vm_content, 1);
             @file_put_contents($main_vm_conf, $vm_content);
         }
+        // The stock file ships sample mailboxes (1234, PIN 4242, in [default]):
+        // anyone allowed the general voicemail code could log in to it.
+        $vm_content = @file_get_contents($main_vm_conf);
+        if ($vm_content !== false) {
+            $samples = '/^(1234 => 4242,Example Mailbox,root@localhost|1234@devices => 1234@default|1234 => 5678,Company2 User,root@localhost)\s*$/m';
+            $cleaned = preg_replace($samples, ';$1 ; sample mailbox, disabled by AiPBX', $vm_content);
+            // Asterisk app_voicemail warns if maxsilence >= minsecs:
+            // ensure stock voicemail.conf entries do not conflict (minsecs=3, maxsilence=2).
+            $cleaned = preg_replace('/^[; ]*minsecs\s*=.*/m', 'minsecs=3', $cleaned);
+            $cleaned = preg_replace('/^[; ]*maxsilence\s*=.*/m', 'maxsilence=2', $cleaned);
+            if ($cleaned !== $vm_content) {
+                @file_put_contents($main_vm_conf, $cleaned);
+            }
+        }
     }
     require_once dirname(__DIR__) . '/file_helper.php';
     FileHelper::writeFile(ASTERISK_PBX_DIR . '/voicemail_general.conf', voicemailGeneralConf());
@@ -55,8 +88,14 @@ function __syncVoicemailBody() {
         $pin = !empty($u['voicemail_pin']) ? preg_replace('/[^0-9]/', '', (string)$u['voicemail_pin']) : $ext;
         if ($pin === '') $pin = $ext;
 
-        $name = toCleanAscii($u['full_name']);
+        // One line per mailbox, fields split by commas: a comma or line break
+        // in a value shifted the fields or added lines of its own (e.g. a
+        // [general] mailcmd, which runs a command).
+        $name = str_replace(',', ' ', toCleanAscii($u['full_name']));
         $email = trim($u['voicemail_email'] ?? '') ?: trim($u['email'] ?? '');
+        if ($email !== '' && (filter_var($email, FILTER_VALIDATE_EMAIL) === false || preg_match('/[,|\s]/', $email))) {
+            $email = '';
+        }
         // E-mail notification switched off: no address, Asterisk sends no mail.
         if (isset($u['voicemail_email_notify']) && intval($u['voicemail_email_notify']) === 0) {
             $email = '';
@@ -79,18 +118,23 @@ function __syncVoicemailBody() {
  */
 function voicemailGeneralConf(): string
 {
+    require_once dirname(__DIR__) . '/services/VoicemailPolicy.php';
     $script = realpath(dirname(__DIR__, 2) . '/bin/voicemail_mail.php') ?: dirname(__DIR__, 2) . '/bin/voicemail_mail.php';
     $body = 'AIPBX-VM\\nmailbox=${VM_MAILBOX}\\nname=${VM_NAME}\\nmsgnum=${VM_MSGNUM}\\nduration=${VM_DUR}'
         . '\\ncidnum=${VM_CIDNUM}\\ncidname=${VM_CIDNAME}\\ncallerid=${VM_CALLERID}\\ndate=${VM_DATE}\\n';
     return "; Managed by AiPBX (SyncVoicemail) - changes are overwritten.\n"
         . "; Voicemail e-mails use the \"voicemail\" template: Admin -> E-Mail -> Templates.\n"
         . "mailcmd=/usr/bin/php {$script}\n"
+        // One file per message: the stock wav49|gsm|wav kept three copies, and
+        // the portal and the apps play the wav.
+        . "format=wav\n"
         . "charset=UTF-8\n"
         . "emaildateformat=%d.%m.%Y %H:%M\n"
         . "emailsubject=Voicemail \${VM_MAILBOX}\n"
         . "emailbody={$body}\n"
         // Messages listened to or deleted outside Asterisk (portal, mobile app)
         // update the voicemail lamp of the phones within 15 s.
+        . VoicemailPolicy::generalConf()
         . "pollmailboxes=yes\n"
         . "pollfreq=15\n"
         // New message → notification in the mobile apps (bin/voicemail_notify.php).

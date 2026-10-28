@@ -7,6 +7,10 @@
  * Native columns: time (datetime string), callid, queuename, agent, event, data1..data5.
  * Target: `cc_queue_logs` — the table the portal reports read: time_id (epoch int), call_id, queue_name, ...
  */
+if (PHP_SAPI !== 'cli') {   // cron/dialplan tool; never over HTTP
+    http_response_code(404);
+    exit;
+}
 require_once dirname(__DIR__) . '/config.php';
 
 try {
@@ -60,6 +64,19 @@ try {
             trim($r['data4'] ?? ''),
             trim($r['data5'] ?? ''),
         ]);
+        if ($event === 'ABANDON') {
+            try {
+                require_once dirname(__DIR__) . '/src/services/WebhookService.php';
+                WebhookService::emit('queue.caller_abandoned', [
+                    'queue_name'   => $queue_name,
+                    'call_id'      => $call_id,
+                    'position'     => (int)trim($r['data1'] ?? '0'),
+                    'orig_pos'     => (int)trim($r['data2'] ?? '0'),
+                    'wait_seconds' => (int)trim($r['data3'] ?? '0'),
+                ]);
+            } catch (\Throwable $e) {
+            }
+        }
         $inserted++;
     }
 

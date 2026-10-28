@@ -123,9 +123,8 @@ final class VoicemailAiService
     /** Signature of the internal request (same secret as the mobile tokens). */
     public static function internalToken(): string
     {
-        $secret = (defined('CHAT_JWT_SECRET') && CHAT_JWT_SECRET !== '') ? CHAT_JWT_SECRET
-            : ((defined('TURN_SECRET') && TURN_SECRET !== '') ? TURN_SECRET : (defined('DB_PASS') ? DB_PASS : ''));
-        return hash_hmac('sha256', 'internal:voicemail-ai', (string) $secret);
+        require_once __DIR__ . '/../../api/mobile/auth_helper.php';
+        return hash_hmac('sha256', 'internal:voicemail-ai', getMobileTokenSecret());
     }
 
     /** The stored result of a message, or null. */
@@ -160,7 +159,9 @@ final class VoicemailAiService
         if ($text === '') {
             return null;
         }
-        $summary = self::summaryOn() ? self::summarize($text, $lang) : '';
+        require_once __DIR__ . '/PrivacyService.php';
+        $text = PrivacyService::redactTranscriptIfEnabled($text);
+        $summary = self::summaryOn() ? PrivacyService::redactTranscriptIfEnabled(self::summarize($text, $lang)) : '';
         try {
             getDB()->prepare('INSERT IGNORE INTO voicemail_ai (mailbox, origtime, transcript, summary, engine) VALUES (?, ?, ?, ?, ?)')
                 ->execute([$mailbox, $origtime, $text, mb_substr($summary, 0, 500), $engine]);

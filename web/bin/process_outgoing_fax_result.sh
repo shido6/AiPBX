@@ -7,13 +7,22 @@
 # ==========================================================
 
 LOGFILE="/var/log/fax_outgoing.log"
+# An unwritable log must not cost the result: every `2>>"$LOGFILE"` below would
+# fail, and with it the database update it is attached to.
+if ! { : >>"$LOGFILE"; } 2>/dev/null; then
+    LOGFILE=/dev/null
+fi
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') [FAX-TX] $*" | tee -a "$LOGFILE"
 }
 
 # Environment fallbacks — no static values in code (rule: AGENTS.md)
+# Read KEY=value lines; the file is not sourced: values such as
+# "SITE_NAME=AI PBX Portal" are not shell syntax ("PBX: command not found").
 if [ -r /etc/ai-pbx.env ]; then
-    . /etc/ai-pbx.env
+    while IFS= read -r line || [ -n "$line" ]; do
+        [[ "$line" =~ ^([A-Z_][A-Z0-9_]*)=(.*)$ ]] && export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+    done < /etc/ai-pbx.env
 fi
 
 FAX_ID="$1"
@@ -46,7 +55,7 @@ MYSQL_EXEC="mysql -h${DB_HOST:-localhost} -u${DB_USER} ${DB_NAME:-asterisk}"
 MYSQL_QUERY="$MYSQL_EXEC -N -s"
 
 # 1. Update MySQL fax_sent table
-$MYSQL_EXEC <<EOF 2>/dev/null
+if $MYSQL_EXEC <<EOF 2>>"$LOGFILE"
 UPDATE fax_sent 
 SET status = '$ST', 
     error_message = '$ESCAPED_ERR', 
@@ -54,8 +63,11 @@ SET status = '$ST',
     completed_at = NOW() 
 WHERE id = $FAX_ID;
 EOF
-
-log "Updated DB record #$FAX_ID: status=$ST"
+then
+    log "Updated DB record #$FAX_ID: status=$ST"
+else
+    log "ERROR: could not update DB record #$FAX_ID (status=$ST)"
+fi
 
 # 2. Fetch dynamic mail configuration from sys_settings
 TX_ENABLED=$($MYSQL_QUERY -e \
@@ -70,10 +82,7 @@ FAX_INFO=$($MYSQL_QUERY -e \
    WHERE s.id = $FAX_ID LIMIT 1;" 2>/dev/null)
 
 if [ -n "$FAX_INFO" ]; then
-    SENDER_EXT=$(echo "$FAX_INFO" | awk '{print $1}')
-    DEST_NUM=$(echo "$FAX_INFO" | awk '{print $2}')
-    PDF_PATH=$(echo "$FAX_INFO" | awk '{print $3}')
-    SENDER_EMAIL=$(echo "$FAX_INFO" | awk '{print $4}')
+    IFS=$'\t' read -r SENDER_EXT DEST_NUM PDF_PATH SENDER_EMAIL FULL_NAME <<< "$FAX_INFO"
     
     log "FAX #$FAX_ID Info -> Sender DID: $SENDER_EXT | Dest: $DEST_NUM | Email: ${SENDER_EMAIL:-NONE}"
     

@@ -81,7 +81,14 @@ define('TURN_HOST', portalEnv('TURN_HOST', 'pbx.example.com'));
 define('TURNS_PORT', portalEnv('TURNS_PORT', '443'));
 
 // Hardened Session Configuration for Public Security
-if (session_status() === PHP_SESSION_NONE) {
+// Stateless /api/v1/* requests carrying an Authorization header use an in-memory
+// $_SESSION array so they never write session files or emit Set-Cookie headers.
+$_reqUriPath = (string)parse_url($_SERVER['REQUEST_URI'] ?? '', PHP_URL_PATH);
+if (str_starts_with($_reqUriPath, '/api/v1/') && !empty($_SERVER['HTTP_AUTHORIZATION'])) {
+    if (!isset($_SESSION)) {
+        $_SESSION = [];
+    }
+} elseif (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_httponly', '1');
     ini_set('session.cookie_secure', '1');
     // Lax, not Strict: the browser must send the session cookie when Google
@@ -92,6 +99,16 @@ if (session_status() === PHP_SESSION_NONE) {
     ini_set('session.cookie_samesite', 'Lax');
     ini_set('session.use_strict_mode', '1');
     session_start();
+}
+
+/**
+ * A session idle for over an hour no longer counts as signed in. Here and not
+ * in auth.php: the REST API (session fallback in ApiRequestContext) runs
+ * before auth.php is loaded and died with "undefined function".
+ */
+function _isSessionActivityFresh() {
+    $idle_limit = 3600;
+    return !isset($_SESSION['last_activity']) || (time() - $_SESSION['last_activity']) <= $idle_limit;
 }
 
 /**
@@ -108,6 +125,12 @@ if (session_status() === PHP_SESSION_NONE) {
 function renderFatalErrorPage($title, $message, $logDetail = '', $httpCode = 503) {
     if ($logDetail !== '') {
         error_log('[AI PBX Fatal] ' . $logDetail);
+    }
+    // Command line (cron, smoke test, aipbx-update): no HTML, and a non-zero
+    // exit code so the caller sees the failure (exit; returned 0).
+    if (PHP_SAPI === 'cli') {
+        fwrite(STDERR, $title . ': ' . $message . "\n");
+        exit(1);
     }
     http_response_code($httpCode);
 
@@ -226,6 +249,14 @@ function getSystemSetting($key, $default = '') {
     } catch (Exception $e) {
         return $default;
     }
+}
+
+function setSystemSetting(string $key, string $value): void {
+    try {
+        $db = getDB();
+        $stmt = $db->prepare("INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
+        $stmt->execute([$key, $value]);
+    } catch (\Throwable $e) {}
 }
 
 /**
@@ -363,6 +394,15 @@ function logLoginAttempt($ip, $username, $status) {
         // for www-data (/etc/fail2ban/jail.d/aipbx-web.local watches this file).
         $log_line = sprintf("%s - [%s] FAILED_LOGIN user=%s\n", $ip, date(DATE_ATOM), $safe_username);
         @file_put_contents('/var/log/aipbx/web_login_failures.log', $log_line, FILE_APPEND);
+        try {
+            require_once __DIR__ . '/src/services/WebhookService.php';
+            WebhookService::emit('security.login_failed', [
+                'ip_address' => (string)$ip,
+                'username'   => (string)$safe_username,
+                'user_agent' => (string)$ua,
+            ]);
+        } catch (\Throwable $e) {
+        }
     }
 }
 
@@ -409,6 +449,22 @@ function asset(string $path): string {
     return $cache[$path];
 }
 
+/** Queue recording formats (MixMonitor file extension); written into the dialplan. */
+const QUEUE_RECORD_FORMATS = ['wav', 'wav49', 'gsm', 'ulaw', 'alaw', 'sln', 'g722'];
+
+/**
+ * A PHP value as a JavaScript string literal for an inline handler
+ * (onclick="f(<?php echo jsArg($v); ?>)"). htmlspecialchars() alone is not
+ * enough there: the browser turns &#039; back into ' before the script runs,
+ * so a quote in the value ended the string (a caller number or a title could
+ * run script; a translation with an apostrophe broke the dialog).
+ */
+function jsArg($value): string {
+    $val = (is_array($value) || is_object($value)) ? $value : (string) $value;
+    $json = json_encode($val, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    return htmlspecialchars($json === false ? '""' : $json, ENT_QUOTES, 'UTF-8');
+}
+
 function toCleanAscii($str) {
     if ($str === null || $str === '') return '';
 
@@ -429,7 +485,7 @@ function toCleanAscii($str) {
  * config-injection vector.
  */
 function sanitizeDestType($type) {
-    $valid = ['queue', 'ivr', 'time_condition', 'extension', 'fax', 'announcement', 'hangup', 'ring_group', 'conference', 'voicemail', 'outbound_route', 'ai_app'];
+    $valid = ['queue', 'ivr', 'ivr_data', 'time_condition', 'extension', 'fax', 'announcement', 'hangup', 'ring_group', 'conference', 'voicemail', 'outbound_route', 'ai_app'];
     $type = trim((string)$type);
     return in_array($type, $valid, true) ? $type : 'hangup';
 }

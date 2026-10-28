@@ -3,6 +3,8 @@
  * User & Extension Service
  */
 
+require_once __DIR__ . '/../sip_helper.php';
+
 class UserService {
     /**
      * Readable temporary password shown to the admin once (no confusable
@@ -34,14 +36,17 @@ class UserService {
             $extension = trim($data['extension'] ?? '');
             $cid_internal = trim($data['cid_internal'] ?? '');
             $cid_external = trim($data['cid_external'] ?? '');
-            $pickup_group = trim($data['pickup_group'] ?? '');
-            $can_listen = isset($data['can_listen_recordings']) ? 1 : 0;
-            $can_view_cdrs = isset($data['can_view_all_cdrs']) ? 1 : 0;
-            $can_view_queue_monitor = isset($data['can_view_queue_monitor']) ? 1 : 0;
-            $is_active = isset($data['is_active']) ? intval($data['is_active']) : 1;
+            $pickup_group = preg_replace('/[^A-Za-z0-9_-]/', '', trim($data['pickup_group'] ?? '')) ?? '';
+            $can_listen = PBXHelper::boolFlag($data, 'can_listen_recordings', 0);
+            $can_view_cdrs = PBXHelper::boolFlag($data, 'can_view_all_cdrs', 0);
+            $can_view_queue_monitor = PBXHelper::boolFlag($data, 'can_view_queue_monitor', 0);
+            $is_active = PBXHelper::boolFlag($data, 'is_active', 1);
 
             if (empty($username) || empty($full_name)) {
                 throw new \Exception(t('srv_user.err_required'));
+            }
+            if ($extension !== '' && !preg_match('/^\d{3,6}$/', $extension)) {
+                throw new \Exception(t('srv_ext.err_number'));
             }
 
             if (isset($data['allowed_phone_modes']) && is_array($data['allowed_phone_modes'])) {
@@ -119,6 +124,9 @@ class UserService {
                     $save_data['sip_password'] = $sip_password;
                 }
                 DBHelper::save('sys_users', $save_data);
+                if (!empty($password)) {
+                    getDB()->prepare('UPDATE sys_users SET token_epoch = token_epoch + 1 WHERE id = ?')->execute([$user_id]);
+                }
                 $msg = sprintf(t('srv_user.updated'), $username);
                 writeAuditLog(null, 'user_account', $user_id, "User: {$username} ({$full_name}, role: {$role})", 'update', $_SESSION['user_id'] ?? null);
             } else {
@@ -178,6 +186,10 @@ class UserService {
                 $db = getDB();
                 $cur_pass = DBHelper::fetchColumn("SELECT sip_password FROM sys_users WHERE extension = ?", [$extension]);
                 $effective_sip_pass = !empty($sip_password) ? $sip_password : (!empty($cur_pass) ? $cur_pass : SIPHelper::generateStrongSIPPassword());
+                if (empty($cur_pass) && !empty($effective_sip_pass)) {
+                    $updPass = $db->prepare("UPDATE sys_users SET sip_password = ? WHERE id = ?");
+                    $updPass->execute([$effective_sip_pass, $user_id]);
+                }
                 SIPHelper::syncExtensionToSIP($extension, $full_name, $effective_sip_pass);
                 markPendingSync('extensions', 'extension', $extension, "Extension: {$extension} ({$full_name})", 'update', $uid);
                 markPendingSync('general_dialplan', 'extension', $extension, "Extension dialplan: {$extension}", 'update', $uid);
@@ -217,7 +229,20 @@ class UserService {
 
             $target_user = DBHelper::fetchOne("SELECT username, full_name, extension FROM sys_users WHERE id = ?", [$user_id]);
             $ext = $target_user['extension'] ?? null;
+            try {
+                $db = getDB();
+                $db->prepare('UPDATE pbx_phones SET user_id = NULL WHERE user_id = ?')->execute([$user_id]);
+                $db->prepare('DELETE FROM pbx_phone_keys WHERE user_id = ?')->execute([$user_id]);
+            } catch (\Throwable $e) {
+            }
             DBHelper::delete('sys_users', 'id', $user_id);
+            try {
+                if (is_file(__DIR__ . '/PhoneProvisionService.php')) {
+                    require_once __DIR__ . '/PhoneProvisionService.php';
+                    PhoneProvisionService::exportTftpQuietly();
+                }
+            } catch (\Throwable $e) {
+            }
             writeAuditLog(null, 'user_account', $user_id, "User: " . ($target_user['username'] ?? $user_id) . " (" . ($target_user['full_name'] ?? '') . ", deleted)", 'delete', $_SESSION['user_id'] ?? null);
 
             if (!empty($ext)) {
@@ -260,7 +285,12 @@ class UserService {
                         QueueHelper::setMembership($ext, $qn, false);
                     }
                 }
-                markPendingSync('extensions', 'extension', $ext, "Extension: {$ext} (user deleted)", 'delete', $_SESSION['user_id'] ?? null);
+                $uid = $_SESSION['user_id'] ?? null;
+                markPendingSync('extensions', 'extension', $ext, "Extension: {$ext} (user deleted)", 'delete', $uid);
+                markPendingSync('general_dialplan', 'general_dialplan', 'dialplan', "Extension dialplan ({$ext} deleted)", 'update', $uid);
+                markPendingSync('ivrs', 'ivrs', 'all', "IVR direct extension dialing ({$ext} deleted)", 'update', $uid);
+                markPendingSync('voicemail', 'voicemail', 'all', "Voicemail ({$ext} deleted)", 'update', $uid);
+                markPendingSync('permissions', 'permissions', 'all', "Permission groups ({$ext} deleted)", 'update', $uid);
                 return t('srv_user.deleted_apply');
             }
             return t('srv_user.deleted');
@@ -275,6 +305,15 @@ class UserService {
 
             if ($user_id <= 0 || (empty($new_password) && empty($new_sip_password))) {
                 throw new \Exception(t('srv_user.err_no_password'));
+            }
+
+            // Same floor as the Extensions page: with digest auth on, a SIP
+            // secret shorter than 6 characters must not be set anywhere.
+            if (!empty($new_sip_password)) {
+                $digest = (int) (DBHelper::fetchColumn('SELECT sip_auth_digest FROM sys_users WHERE id = ?', [$user_id]) ?? 1);
+                if ($digest === 1 && strlen($new_sip_password) < 6) {
+                    throw new \Exception(t('srv_ext.err_password'));
+                }
             }
 
             $up_fields = [];
@@ -300,6 +339,10 @@ class UserService {
 
             $u_ext = DBHelper::fetchColumn("SELECT extension FROM sys_users WHERE id = ?", [$user_id]);
             if (!empty($u_ext) && !empty($new_sip_password)) {
+                // SyncExtensions prefers sip.secret over sys_users.sip_password:
+                // without this the reset never reaches the PJSIP endpoint and
+                // the old secret stays valid despite the rotation.
+                SIPHelper::setSettings($u_ext, ['secret' => $new_sip_password]);
                 markPendingSync('extensions', 'extension', $u_ext, "Extension: {$u_ext} (SIP password changed)", 'update', $_SESSION['user_id'] ?? null);
                 return t('srv_user.pw_updated_apply');
             }

@@ -10,8 +10,8 @@
  * The Markdown is turned into HTML here (no library, no CDN): only what the
  * documents use — headings with GitHub-style anchors, paragraphs, lists (one
  * level of nesting), tables, fenced code, block quotes, rules, inline code,
- * bold, italics and links. All text is HTML-escaped first, so a document can
- * never inject markup. Links to other documents (troubleshooting.md#capturing-sip)
+ * bold, italics, links and diagrams (docs/img/*.svg). All text is HTML-escaped
+ * first, so a document can never inject markup. Links to other documents (troubleshooting.md#capturing-sip)
  * become /help?doc=troubleshooting#capturing-sip; other links open in a new tab.
  *
  * Single source: the same docs/*.md are read on GitHub, in the portal and on
@@ -21,8 +21,21 @@
  */
 class DocsService
 {
-    /** Shown first in the document list; the rest follow alphabetically. */
+    /** Shown first in the document list; core docs follow alphabetically, then PLUGINS at the bottom. */
     private const FIRST = ['system-map', 'troubleshooting', 'README'];
+
+    /** Documentation pages for optional plugins, grouped at the bottom of the Help sidebar. */
+    private const PLUGINS = [
+        'plugin-development',
+        'auto-dialer',
+        'ai-apps',
+        'assistant',
+        'cloud-ai',
+        'cloud-tts',
+        'local-ai',
+        'signaling',
+        'web-widgets',
+    ];
 
     /** Prefix of a link to another document: the portal uses /help?doc=, the website /docs/. */
     public static string $docUrl = '/help?doc=';
@@ -40,14 +53,18 @@ class DocsService
     }
 
     /**
-     * @return list<array{name: string, title: string}>
+     * @return list<array{name: string, title: string, plugin?: bool}>
      */
     public static function list(): array
     {
         $out = [];
         foreach (glob(self::dir() . '/*.md') ?: [] as $file) {
             $name = basename($file, '.md');
-            $out[$name] = ['name' => $name, 'title' => self::title($file) ?: $name];
+            $out[$name] = [
+                'name' => $name,
+                'title' => self::title($file) ?: $name,
+                'plugin' => in_array($name, self::PLUGINS, true),
+            ];
         }
         uksort($out, function (string $a, string $b): int {
             $ia = array_search($a, self::FIRST, true);
@@ -55,10 +72,23 @@ class DocsService
             if ($ia !== false || $ib !== false) {
                 return ($ia === false ? 99 : $ia) <=> ($ib === false ? 99 : $ib);
             }
+            $pa = in_array($a, self::PLUGINS, true);
+            $pb = in_array($b, self::PLUGINS, true);
+            if ($pa !== $pb) {
+                return $pa <=> $pb;
+            }
+            if ($pa && $pb) {
+                if ($a === 'plugin-development' || $b === 'plugin-development') {
+                    return $a === 'plugin-development' ? -1 : 1;
+                }
+            }
             return strcasecmp($a, $b);
         });
         return array_values($out);
     }
+
+    /** Root-level Markdown files linked from docs/*.md as ../INSTALL.md etc. */
+    private const ROOT_DOCS = ['INSTALL', 'ARCHITECTURE', 'CHANGELOG', 'CONTRIBUTING', 'SECURITY'];
 
     /** The Markdown of a document, or null (unknown name or not a docs/ file). */
     public static function source(string $name): ?string
@@ -67,7 +97,16 @@ class DocsService
             return null;
         }
         $file = self::dir() . '/' . $name . '.md';
-        return is_file($file) ? (string) file_get_contents($file) : null;
+        if (is_file($file)) {
+            return (string) file_get_contents($file);
+        }
+        if (in_array($name, self::ROOT_DOCS, true)) {
+            $rootFile = dirname(self::dir()) . '/' . $name . '.md';
+            if (is_file($rootFile)) {
+                return (string) file_get_contents($rootFile);
+            }
+        }
+        return null;
     }
 
     /**
@@ -174,6 +213,12 @@ class DocsService
             // A line of bare HTML with no text (the centred logo of README.md): GitHub
             // shows it, here it is left out rather than printed as escaped markup.
             if (preg_match('/^\s*<(p|div|img|picture|br)\b[^>]*>/i', $line) && trim(strip_tags($line)) === '') {
+                $i++;
+                continue;
+            }
+            // A diagram on its own line: ![alt](img/name.svg).
+            if (preg_match('~^\s*!\[([^\]]*)\]\((?:\.\./)?(?:docs/)?img/([a-z0-9-]+)\.svg\)\s*$~', $line, $m)) {
+                $html .= self::diagram($m[2], $m[1]);
                 $i++;
                 continue;
             }
@@ -357,6 +402,30 @@ class DocsService
                 . $inner . '</a>';
         }
         return $inner . ' <code>' . self::e($path) . '</code>';
+    }
+
+    /**
+     * docs/img/<name>.svg, rendered from docs/diagrams/<name>.mmd by
+     * scripts/render-diagrams.sh, put into the page as it is: the portal does not
+     * serve docs/ as files, and an inline SVG needs no extra URL on the website.
+     * Only a plain SVG is taken (no script, event handler or embedded HTML);
+     * anything else is shown as its alt text.
+     */
+    private static function diagram(string $name, string $alt): string
+    {
+        $svg = @file_get_contents(self::dir() . '/img/' . $name . '.svg');
+        $svg = is_string($svg) ? trim((string) preg_replace('/^<\?xml[^>]*>\s*/', '', $svg)) : '';
+        if (!str_starts_with($svg, '<svg') || preg_match('/<script|<foreignObject|\son\w+\s*=|javascript:/i', $svg)) {
+            return '<p><em>' . self::e($alt !== '' ? $alt : $name) . "</em></p>\n";
+        }
+        // Fit the column, but never below 80 % of the drawn size: the text would
+        // become unreadable; the figure scrolls sideways instead.
+        $svg = (string) preg_replace_callback('/style="max-width:\s*([\d.]+)px;\s*/', function ($m) {
+            $w = (float) $m[1];
+            return sprintf('style="width: clamp(%dpx, 100%%, %dpx); max-width: none; ', (int) ($w * 0.8), (int) ceil($w));
+        }, $svg, 1);
+        $label = $alt !== '' ? ' role="img" aria-label="' . self::e($alt) . '"' : '';
+        return '<figure class="doc-diagram"' . $label . '>' . $svg . "</figure>\n";
     }
 
     private static function e(string $s): string

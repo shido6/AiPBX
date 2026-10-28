@@ -7,6 +7,10 @@
 #   aipbx-update --yes                no confirmation (portal / automation)
 #   aipbx-update --allow-calls        continue even with active calls (they will drop)
 #
+# Asterisk is restarted only when the update needs it
+# (scripts/asterisk-restart-needed.sh of the target release decides); otherwise it
+# is reloaded and the update runs even while calls are in progress.
+#
 # Flow: checks → backup (database, /etc/ai-pbx.env, /etc/asterisk) → check out
 # the tag → `install.sh --upgrade` (migrations, permissions, service settings;
 # secrets are never regenerated) → verification. If any step fails, code,
@@ -20,12 +24,12 @@ export LC_ALL=C.UTF-8
 
 # During the update install.sh replaces the copy in /usr/local/sbin; overwriting
 # a running bash script corrupts it, so we run from a temporary copy.
-if [[ -z "${AIPBX_UPDATE_REEXEC:-}" ]]; then
-    tmp="$(mktemp /tmp/aipbx-update.XXXXXX)"
+if [[ -z "${AIPBX_UPDATE_REEXEC:-}" && -z "${AIPBX_UPDATE_COPIED:-}" ]]; then
+    tmp="$(mktemp /run/aipbx-update.XXXXXX 2>/dev/null || mktemp /tmp/aipbx-update.XXXXXX)"
     cp "$0" "$tmp" && chmod 700 "$tmp"
-    AIPBX_UPDATE_REEXEC="$tmp" exec bash "$tmp" "$@"
+    AIPBX_UPDATE_COPIED=1 AIPBX_UPDATE_REEXEC="$tmp" exec /bin/bash "$tmp" "$@"
 fi
-trap 'rm -f "$AIPBX_UPDATE_REEXEC"' EXIT
+trap 'rm -f "${AIPBX_UPDATE_REEXEC:-}"' EXIT
 
 INSTALL_DIR="${AIPBX_INSTALL_DIR:-/opt/aipbx}"
 STATE_DIR=/var/lib/aipbx
@@ -53,10 +57,21 @@ done
 
 mkdir -p "$STATE_DIR" "$(dirname "$LOG_FILE")" "$BACKUP_ROOT"
 chmod 700 "$BACKUP_ROOT"
-touch "$LOG_FILE"; chgrp www-data "$LOG_FILE" 2>/dev/null; chmod 640 "$LOG_FILE"
+[[ -L "$LOG_FILE" ]] && rm -f "$LOG_FILE"
+[[ -f "$LOG_FILE" ]] || install -m 0640 -o root -g www-data /dev/null "$LOG_FILE" 2>/dev/null || touch "$LOG_FILE"
+chown root:www-data "$LOG_FILE" 2>/dev/null || true
+chmod 640 "$LOG_FILE"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | tee -a "$LOG_FILE"; }
 json_str() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'; }
+
+write_check_file() {
+    local tmpc; tmpc="$(mktemp "$STATE_DIR/.update-check.XXXXXX")"
+    cat > "$tmpc"
+    chmod 644 "$tmpc"
+    [[ -L "$CHECK_FILE" ]] && rm -f "$CHECK_FILE"
+    mv -f "$tmpc" "$CHECK_FILE"
+}
 
 # state: running | done | failed | rolled_back
 status() {
@@ -65,10 +80,12 @@ status() {
     printf '{"state":%s,"step":%s,"from":%s,"to":%s,"updated_at":%s}\n' \
         "$(json_str "$state")" "$(json_str "$step")" "$(json_str "${FROM_VERSION:-${CURRENT:-}}")" \
         "$(json_str "${TARGET:-}")" "$(json_str "$(date -Iseconds)")" > "$tmpf"
-    chmod 644 "$tmpf"; mv -f "$tmpf" "$STATUS_FILE"
+    chmod 644 "$tmpf"
+    [[ -L "$STATUS_FILE" ]] && rm -f "$STATUS_FILE"
+    mv -f "$tmpf" "$STATUS_FILE"
 }
 
-git_in() { git -C "$INSTALL_DIR" "$@"; }
+git_in() { git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" "$@"; }
 ver_of() { echo "${1#v}"; }
 # a < b ?  (version comparison)
 ver_lt() { [[ "$(ver_of "$1")" != "$(ver_of "$2")" && "$(printf '%s\n%s\n' "$(ver_of "$1")" "$(ver_of "$2")" | sort -V | head -1)" == "$(ver_of "$1")" ]]; }
@@ -83,10 +100,19 @@ CURRENT_COMMIT="$(git_in rev-parse HEAD)"
 if ! git_in fetch --quiet --tags --force --prune --prune-tags origin 2>>"$LOG_FILE"; then
     log "ERROR: could not reach GitHub (git fetch)"
     [[ "$MODE" == check ]] && printf '{"ok":false,"error":"GitHub unreachable","current":%s,"checked_at":%s}\n' \
-        "$(json_str "$CURRENT")" "$(json_str "$(date -Iseconds)")" > "$CHECK_FILE" && chmod 644 "$CHECK_FILE"
+        "$(json_str "$CURRENT")" "$(json_str "$(date -Iseconds)")" | write_check_file
     exit 2
 fi
 LATEST="$(git_in tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)"
+
+# "no" or "yes: <reason>" for an update from the installed code to release $1.
+# The target release's own rules decide; a release without them restarts.
+restart_needed() {
+    local script
+    script="$(git_in show "$1:scripts/asterisk-restart-needed.sh" 2>/dev/null)"
+    if [[ -z "$script" ]]; then echo "yes: $1 does not say"; return; fi
+    bash -c "$script" _ "$INSTALL_DIR" "$CURRENT_COMMIT" "$1" 2>/dev/null || echo "yes: check failed"
+}
 
 if [[ "$MODE" == check ]]; then
     available=false; notes=""
@@ -98,10 +124,14 @@ if [[ "$MODE" == check ]]; then
             notes+="## ${t}"$'\n'"$(git_in tag -l --format='%(contents)' "$t")"$'\n\n'
         done < <(git_in tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname)
     fi
-    printf '{"ok":true,"current":%s,"latest":%s,"available":%s,"notes":%s,"checked_at":%s}\n' \
-        "$(json_str "$CURRENT")" "$(json_str "${LATEST:-}")" "$available" "$(json_str "$notes")" \
-        "$(json_str "$(date -Iseconds)")" > "$CHECK_FILE"
-    chmod 644 "$CHECK_FILE"
+    restart=true; restart_reason=""
+    if [[ "$available" == true ]]; then
+        r="$(restart_needed "$LATEST")"
+        [[ "$r" == no ]] && restart=false || restart_reason="${r#yes: }"
+    fi
+    printf '{"ok":true,"current":%s,"latest":%s,"available":%s,"restart":%s,"restart_reason":%s,"notes":%s,"checked_at":%s}\n' \
+        "$(json_str "$CURRENT")" "$(json_str "${LATEST:-}")" "$available" "$restart" "$(json_str "$restart_reason")" \
+        "$(json_str "$notes")" "$(json_str "$(date -Iseconds)")" | write_check_file
     echo "Installed: $CURRENT   Latest: ${LATEST:-none}   $([[ $available == true ]] && echo 'UPDATE AVAILABLE' || echo 'up to date')"
     exit 0
 fi
@@ -116,9 +146,26 @@ if ! ver_lt "$CURRENT" "$TARGET"; then
     echo "Installed version ($CURRENT) is already $TARGET or newer."; exit 0
 fi
 
+# Bridge release: a release with an UPGRADE_FROM file applies only to that
+# version or newer (install.sh --upgrade refuses older ones). An older
+# installation goes to the bridge release first, then on to the target.
+FINAL_TARGET=""
+need_from="$(git_in show "$TARGET:UPGRADE_FROM" 2>/dev/null | tr -d '[:space:]')"
+if [[ -n "$need_from" ]] && ver_lt "$CURRENT" "v$need_from"; then
+    if [[ -z "$(git_in tag -l "v$need_from")" ]]; then
+        echo "$TARGET needs AiPBX $need_from first, but release v$need_from was not found." >&2; exit 1
+    fi
+    log "$TARGET needs $need_from or newer: updating to the bridge release v$need_from first"
+    FINAL_TARGET="$TARGET"
+    TARGET="v$need_from"
+fi
+
 # ------------------------------------------------------------------ pre-checks
 # Hand-edited code would be overwritten by the update.
-dirty="$(git_in status --porcelain --untracked-files=no)"
+# File mode changes do not count: an installer that chmods a script (1.34.0-1.34.2
+# did that with web/bin/aipbx_ops.php) must not block every later update; the
+# checkout below restores the modes anyway.
+dirty="$(git_in -c core.fileMode=false status --porcelain --untracked-files=no)"
 if [[ -n "$dirty" ]]; then
     echo "Files under $INSTALL_DIR were modified; the update would discard them:" >&2
     echo "$dirty" >&2
@@ -127,8 +174,14 @@ if [[ -n "$dirty" ]]; then
     exit 1
 fi
 
+RESTART_REASON="$(restart_needed "$TARGET")"
+if [[ "$RESTART_REASON" == no ]]; then
+    export AIPBX_ASTERISK_RESTART=no
+else
+    export AIPBX_ASTERISK_RESTART=yes
+fi
 calls="$(asterisk -rx 'core show channels count' 2>/dev/null | sed -n 's/^\([0-9]\+\) active call.*/\1/p')"
-if [[ "${calls:-0}" -gt 0 && "$ALLOW_CALLS" != true ]]; then
+if [[ "$AIPBX_ASTERISK_RESTART" == yes && "${calls:-0}" -gt 0 && "$ALLOW_CALLS" != true ]]; then
     echo "${calls} call(s) in progress; the update restarts Asterisk and they would drop." >&2
     echo "Try again when the calls have ended, or force it with --allow-calls." >&2
     status failed "Calls in progress (${calls})"
@@ -141,16 +194,26 @@ if [[ "$ASSUME_YES" != true ]]; then
 fi
 
 log "===== Update started: $CURRENT → $TARGET ====="
+if [[ "$AIPBX_ASTERISK_RESTART" == no ]]; then
+    log "Asterisk: reload only, calls in progress stay up"
+else
+    log "Asterisk: restart (${RESTART_REASON#yes: })"
+fi
 status running "Taking a backup"
 
 # ------------------------------------------------------------------ backup
+DB_NAME="$(grep -m1 '^DB_NAME=' /etc/ai-pbx.env 2>/dev/null | cut -d= -f2- | tr -d "\"'" || true)"
+[[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]] || DB_NAME=asterisk
 BACKUP_DIR="$BACKUP_ROOT/$(date +%Y%m%d-%H%M%S)_${CURRENT}"
 mkdir -p "$BACKUP_DIR"
 echo "$CURRENT_COMMIT" > "$BACKUP_DIR/commit"
 echo "$CURRENT" > "$BACKUP_DIR/version"
 cp -p /etc/ai-pbx.env "$BACKUP_DIR/ai-pbx.env"
 tar czf "$BACKUP_DIR/etc-asterisk.tgz" -C / etc/asterisk 2>>"$LOG_FILE"
-mysqldump --single-transaction --routines --triggers --databases asterisk 2>>"$LOG_FILE" | gzip > "$BACKUP_DIR/asterisk-db.sql.gz"
+if [[ -d /var/lib/aipbx/plugins ]]; then
+    tar czf "$BACKUP_DIR/custom-plugins.tgz" -C / var/lib/aipbx/plugins 2>>"$LOG_FILE" || true
+fi
+mysqldump --single-transaction --routines --triggers --databases "$DB_NAME" 2>>"$LOG_FILE" | gzip > "$BACKUP_DIR/asterisk-db.sql.gz"
 if ! zcat "$BACKUP_DIR/asterisk-db.sql.gz" 2>/dev/null | tail -n 1 | grep -q 'Dump completed'; then
     log "ERROR: database backup failed, nothing was changed"
     status failed "Database backup failed"
@@ -169,7 +232,7 @@ rollback() {
     # migrations are not in the dump, so the database is dropped first — but
     # ONLY when the dump is complete.
     if zcat "$BACKUP_DIR/asterisk-db.sql.gz" | tail -n 1 | grep -q 'Dump completed'; then
-        if mysql -e 'DROP DATABASE IF EXISTS asterisk' 2>>"$LOG_FILE" \
+        if mysql -e "DROP DATABASE IF EXISTS \`${DB_NAME}\`" 2>>"$LOG_FILE" \
            && zcat "$BACKUP_DIR/asterisk-db.sql.gz" | mysql 2>>"$LOG_FILE"; then
             log "Database restored from backup"
         else
@@ -179,11 +242,21 @@ rollback() {
         log "WARNING: backup looks incomplete, database left untouched: $BACKUP_DIR"
     fi
     cp -p "$BACKUP_DIR/ai-pbx.env" /etc/ai-pbx.env
+    # install.sh below rewrites most of /etc/asterisk again; the backup also
+    # brings back files it does not write (keys, hand-edited files).
+    if [[ -s "$BACKUP_DIR/etc-asterisk.tgz" ]]; then
+        tar xzf "$BACKUP_DIR/etc-asterisk.tgz" -C / 2>>"$LOG_FILE" \
+            && log "Asterisk configuration restored from backup" \
+            || log "WARNING: /etc/asterisk restore failed — by hand: tar xzf $BACKUP_DIR/etc-asterisk.tgz -C /"
+    fi
+    if [[ -s "$BACKUP_DIR/custom-plugins.tgz" ]]; then
+        tar xzf "$BACKUP_DIR/custom-plugins.tgz" -C / 2>>"$LOG_FILE" || true
+    fi
     bash "$INSTALL_DIR/install.sh" --upgrade >>"$LOG_FILE" 2>&1 \
         || log "WARNING: could not re-apply the previous release's system settings"
     log "===== Rolled back to $CURRENT ($1) ====="
     status rolled_back "$1"
-    bash "$AIPBX_UPDATE_REEXEC" --check >/dev/null 2>&1 || true
+    /bin/bash "${AIPBX_UPDATE_REEXEC:-$0}" --check >/dev/null 2>&1 || true
     exit 1
 }
 
@@ -215,13 +288,15 @@ fi
 # ------------------------------------------------------------------ verification
 status running "Verifying"
 sleep 3
-for svc in mariadb apache2 nginx asterisk; do
+for svc in mariadb apache2 nginx asterisk aipbx-webhook-worker; do
     systemctl is-active --quiet "$svc" || rollback "$svc is not running"
 done
-domain="$(grep -m1 '^PORTAL_DOMAIN=' /etc/ai-pbx.env | cut -d= -f2-)"
-code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve "${domain}:443:127.0.0.1" "https://${domain}/login")"
+domain="$(grep -m1 '^PORTAL_DOMAIN=' /etc/ai-pbx.env 2>/dev/null | cut -d= -f2- | tr -d "\"'" || true)"
+domain="${domain#[\"\']}"; domain="${domain%[\"\']}"
+[[ -z "$domain" ]] && domain=127.0.0.1
+code="$(curl -sk -o /dev/null -w '%{http_code}' --max-time 15 --resolve "${domain}:443:127.0.0.1" "https://${domain}/login" || echo 000)"
 [[ "$code" == 200 ]] || rollback "Portal not responding (HTTP $code)"
-if ! (cd "$INSTALL_DIR/web" && timeout 900 php bin/smoke.php >>"$LOG_FILE" 2>&1); then
+if ! (cd "$INSTALL_DIR/web" && timeout 900 sudo -n -u www-data php bin/smoke.php >>"$LOG_FILE" 2>&1); then
     rollback "Page tests (smoke) failed"
 fi
 
@@ -229,5 +304,15 @@ log "===== Update completed: $CURRENT → $TARGET ====="
 FROM_VERSION="$CURRENT"
 status done "Updated: $CURRENT → $TARGET"
 # Refresh the portal's "update available" information.
-bash "$AIPBX_UPDATE_REEXEC" --check >/dev/null 2>&1 || true
+/bin/bash "${AIPBX_UPDATE_REEXEC:-$0}" --check >/dev/null 2>&1 || true
 echo "AiPBX updated to $TARGET. Backup: $BACKUP_DIR"
+
+# Continue from the bridge release to the requested one with the bridge's own
+# (just installed) updater.
+if [[ -n "$FINAL_TARGET" ]]; then
+    log "Bridge release $TARGET installed, continuing to $FINAL_TARGET"
+    next=(--to "$FINAL_TARGET" --yes)
+    [[ "$ALLOW_CALLS" == true ]] && next+=(--allow-calls)
+    rm -f "${AIPBX_UPDATE_REEXEC:-}"
+    exec env -u AIPBX_UPDATE_REEXEC -u AIPBX_UPDATE_COPIED /usr/local/sbin/aipbx-update "${next[@]}"
+fi

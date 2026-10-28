@@ -118,8 +118,10 @@
     <string name="btn_remove">Eliminați</string>
     <string name="call_from_pbx">Apel PBX</string>
     <string name="call_on_hold">În așteptare</string>
+    <string name="cf_always">RA (ÎNTOTDEAUNA)</string>
     <string name="cf_busy">RA (OCUPAT)</string>
     <string name="cf_busy_noanswer">RA (OCUPAT/FĂRĂ RĂSPUNS)</string>
+    <string name="cf_noanswer">RA (FĂRĂ RĂSPUNS)</string>
     <string name="chat_document">Document</string>
     <string name="chat_extension_title">Interior #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Fără permisiune pentru cameră: apelul continuă doar cu sunet.</string>
     <string name="err_camera_unavailable">Camera nu este disponibilă: apelul continuă doar cu sunet.</string>
     <string name="contacts_extensions_listed">interioare listate</string>
+    <string name="api_fcm_token_failed">Nu s-a putut trimite tokenul FCM (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Nu s-a putut șterge grupul (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Păstrează prefixul \'+\'</string>
+    <string name="pref_send_plus_desc">Trimite \'+\' internațional direct la PBX pentru normalizare (ACTIVAT) sau convertește în 00 (DEZACTIVAT)</string>
 </resources>

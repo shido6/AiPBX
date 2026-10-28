@@ -41,7 +41,7 @@ import com.mhrgl.aipbx.model.CallStatus
 import com.mhrgl.aipbx.model.ChatMessage
 import com.mhrgl.aipbx.model.ConnectionStatus
 import com.mhrgl.aipbx.ui.CallActivity
-import com.mhrgl.aipbx.ui.ChatActivity
+import com.mhrgl.aipbx.ui.ChatKeys
 import com.mhrgl.aipbx.ui.DialerActivity
 import com.mhrgl.aipbx.ui.IncomingCallActivity
 import kotlinx.coroutines.CoroutineScope
@@ -711,13 +711,13 @@ class PbxForegroundService : Service(), SipEngineListener, ChatEventListener {
         val builder = NotificationCompat.Builder(this, CHANNEL_ID_SERVICE)
             .setContentTitle(title)
             .setContentText(content.ifEmpty { null })
-            .setSmallIcon(R.drawable.ic_phone)
+            .setSmallIcon(R.drawable.ic_stat_aipbx)
             .setContentIntent(pendingOpen)
             .setOngoing(true)
             .setCategory(if (isCallActive) NotificationCompat.CATEGORY_CALL else NotificationCompat.CATEGORY_SERVICE)
-            // Accent of the icon: green while connected, amber while connecting, red when cut off.
+            // Accent of the icon: AiPBX brand blue while connected, amber while connecting, red when cut off.
             .setColor(when {
-                isCallActive || status == ConnectionStatus.CONNECTED -> 0xFF16A34A.toInt()
+                isCallActive || status == ConnectionStatus.CONNECTED -> 0xFF0284C7.toInt()
                 status == ConnectionStatus.CONNECTING -> 0xFFD97706.toInt()
                 else -> 0xFFDC2626.toInt()
             })
@@ -805,10 +805,13 @@ class PbxForegroundService : Service(), SipEngineListener, ChatEventListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        val effectiveName = callerName.takeIf { it.isNotBlank() } ?: callerNumber.takeIf { it.isNotBlank() } ?: getString(R.string.vm_unknown_caller)
+        val effectiveNumber = if (callerNumber.isNotBlank() && callerNumber != effectiveName) callerNumber else ""
         val builder = NotificationCompat.Builder(this, CHANNEL_ID_CALLS)
-            .setContentTitle(getString(R.string.notif_incoming_call_title, callerName))
-            .setContentText(getString(R.string.notif_incoming_call_desc, callerNumber))
-            .setSmallIcon(R.drawable.ic_phone)
+            .setContentTitle(getString(R.string.notif_incoming_call_title, effectiveName))
+            .setContentText(if (effectiveNumber.isNotEmpty()) getString(R.string.notif_incoming_call_desc, effectiveNumber) else getString(R.string.call_from_pbx))
+            .setSmallIcon(R.drawable.ic_stat_aipbx)
+            .setColor(0xFF0284C7.toInt())
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setFullScreenIntent(fullScreenPending, true)
@@ -848,7 +851,7 @@ class PbxForegroundService : Service(), SipEngineListener, ChatEventListener {
             return
         }
         // Do not post a notification while the user is on that chat screen (they see it live)
-        if (ChatActivity.activeConversationId == message.conversationId) {
+        if (ChatKeys.activeConversationId == message.conversationId) {
             return
         }
 
@@ -955,10 +958,14 @@ class PbxForegroundService : Service(), SipEngineListener, ChatEventListener {
 
         fun start(context: Context) {
             val intent = Intent(context, PbxForegroundService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot start PbxForegroundService from current context: ${e.message}")
             }
         }
 
@@ -966,10 +973,14 @@ class PbxForegroundService : Service(), SipEngineListener, ChatEventListener {
             val intent = Intent(context, PbxForegroundService::class.java).apply {
                 this.action = action
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot start PbxForegroundService with action $action: ${e.message}")
             }
         }
     }

@@ -15,7 +15,6 @@ require_once __DIR__ . '/../SipProbeService.php';
 require_once __DIR__ . '/../ai/SipfrontClient.php';
 require_once __DIR__ . '/../ai/HepSettingsService.php';
 require_once __DIR__ . '/../SshAccessService.php';
-require_once __DIR__ . '/../CallQualityService.php';
 
 final class HealthChecks
 {
@@ -29,17 +28,21 @@ final class HealthChecks
         'chat' => 5,
         'trunks' => 5,
         'sip_calltest' => 60,
+        'trunk_limits' => 5,
         'disk' => 60,
         'memory' => 15,
         'mail' => 60,
         'pending_changes' => 60,
         'fax_queue' => 60,
+        'call_records' => 15,
+        'call_quality' => 5,
+        'alerts' => 5,
+        'failed_registrations' => 15,
         'network_services' => 15,
         'server_address' => 60,
         'ssh_access' => 1440,
         'local_ai' => 15,
         'hep_collector' => 15,
-        'call_quality' => 5,
         'certificate' => 1440,
         'backup' => 1440,
         'installation' => 1440,
@@ -60,17 +63,21 @@ final class HealthChecks
                 'chat' => self::service('aipbx-chat'),
                 'trunks' => self::trunks(),
                 'sip_calltest' => self::sipCalltest(),
+                'trunk_limits' => self::trunkLimits(),
                 'disk' => self::disk(),
                 'memory' => self::memory(),
                 'mail' => self::mail(),
                 'pending_changes' => self::pendingChanges(),
                 'fax_queue' => self::faxQueue(),
+                'call_records' => self::callRecords(),
+                'call_quality' => self::callQuality(),
+                'alerts' => self::alerts(),
+                'failed_registrations' => self::failedRegistrations(),
                 'network_services' => self::networkServices(),
                 'server_address' => self::serverAddress(),
                 'ssh_access' => self::sshAccess(),
                 'local_ai' => self::localAi(),
                 'hep_collector' => self::hepCollector(),
-                'call_quality' => self::callQuality(),
                 'certificate' => self::certificate(),
                 'backup' => self::backup(),
                 'installation' => self::installation(),
@@ -88,33 +95,6 @@ final class HealthChecks
     private static function hepCollector(): array
     {
         return HepSettingsService::health();
-    }
-
-    /**
-     * RTCP packet loss on recent calls. Read-only: the automatic trunk move
-     * happens in the quality cron, never here, so a health run (and the
-     * self-test) cannot change a route.
-     */
-    private static function callQuality(): array
-    {
-        if (!CallQualityService::available()) {
-            return ['off', t('health.msg_quality_off')];
-        }
-        $summary = CallQualityService::summary();
-        if ($summary['measured'] === 0) {
-            return ['info', t('health.msg_quality_none')];
-        }
-        if ($summary['poor'] > 0) {
-            $worst = $summary['worst'];
-            $loss = sprintf('%.2f%%', $worst['verdict']['loss_pct']);
-            $where = $worst['trunk']['trunk_name'] ?? (string) ($worst['peers'][0] ?? 'unknown peer');
-            $widespread = $summary['poor'] >= 3 && $summary['poor'] * 2 >= $summary['measured'];
-            if ($widespread) {
-                return ['fail', sprintf(t('health.msg_quality_fail'), $summary['poor'], $summary['measured'])];
-            }
-            return ['warn', sprintf(t('health.msg_quality_warn'), $summary['poor'], $summary['measured'], $loss, $where)];
-        }
-        return ['ok', sprintf(t('health.msg_quality_ok'), $summary['measured'])];
     }
 
     /**
@@ -142,7 +122,19 @@ final class HealthChecks
         }
         $calls = self::sh('asterisk -rx "core show channels count"');
         $n = preg_match('/(\d+) active call/', $calls, $c) ? (int) $c[1] : 0;
-        return ['ok', sprintf(t('health.msg_asterisk_ok'), self::duration((int) $m[1]), $n)];
+        $msg = sprintf(t('health.msg_asterisk_ok'), self::duration((int) $m[1]), $n);
+        // needrestart leaves Asterisk alone (it dropped calls): after a library
+        // update it keeps running on the replaced files until restarted. Only a
+        // security fix is worth a note, and no alarm when the night restart
+        // window will load it anyway: a quiet weekend is not a problem.
+        if ($libs = AsteriskHelper::replacedSecurityLibraries()) {
+            $list = implode(', ', array_slice($libs, 0, 5));
+            if (getSystemSetting('night_restart_enabled', '0') === '1') {
+                return ['ok', $msg . ' ' . sprintf(t('health.msg_asterisk_libs_night'), $list)];
+            }
+            return ['warn', $msg . ' ' . sprintf(t('health.msg_asterisk_old_libs'), $list)];
+        }
+        return ['ok', $msg];
     }
 
     private static function database(): array
@@ -369,6 +361,126 @@ final class HealthChecks
     {
         $n = (int) getDB()->query('SELECT COUNT(*) FROM sys_pending_sync WHERE changed_at < NOW() - INTERVAL 1 HOUR')->fetchColumn();
         return $n > 0 ? ['warn', sprintf(t('health.msg_pending'), $n)] : ['ok', t('health.msg_pending_ok')];
+    }
+
+    /**
+     * Calls Asterisk handled since it started must be in the call history. On
+     * 2026-10-21 Asterisk started before MariaDB, the CDR backend found no
+     * connection and wrote nothing for 11 hours.
+     */
+    private static function callRecords(): array
+    {
+        $up = self::sh('asterisk -rx "core show uptime seconds"');
+        if (!preg_match('/System uptime:\s*(\d+)/', $up, $u)) {
+            return ['off', t('health.msg_asterisk_down')];
+        }
+        $calls = self::sh('asterisk -rx "core show channels count"');
+        $processed = preg_match('/(\d+) calls? processed/', $calls, $c) ? (int) $c[1] : 0;
+        $st = getDB()->prepare('SELECT COUNT(*) FROM asteriskcdr WHERE calldate >= NOW() - INTERVAL ? SECOND');
+        $st->execute([(int) $u[1]]);
+        return self::callRecordsStatus((int) $u[1], $processed, (int) $st->fetchColumn());
+    }
+
+    /** @return array{0: string, 1: string} Pure, so the rule is tested on its own. */
+    public static function callRecordsStatus(int $uptime, int $processed, int $records): array
+    {
+        // A few calls and 15 minutes first: a call in progress has no record yet.
+        if ($uptime >= 900 && $processed >= 3 && $records === 0) {
+            return ['fail', sprintf(t('health.msg_cdr_missing'), $processed, self::duration($uptime))];
+        }
+        return ['ok', sprintf(t('health.msg_cdr_ok'), $records, self::duration($uptime))];
+    }
+
+    /**
+     * Calls a trunk refused over its channel or calls-per-minute limit in the
+     * last 15 minutes (sub-trunk-limit counts them in astdb trunkblock/<trunk>).
+     */
+    private static function trunkLimits(): array
+    {
+        $limited = (int) getDB()->query('SELECT COUNT(*) FROM pbx_trunks WHERE is_active = 1 AND (max_channels > 0 OR max_calls_per_minute > 0)')->fetchColumn();
+        if ($limited === 0) {
+            return ['off', t('health.msg_trunk_limits_none')];
+        }
+        return self::trunkLimitsStatus(self::sh('asterisk -rx "database show trunkblock"'), time());
+    }
+
+    /** @return array{0: string, 1: string} Pure: `database show trunkblock` output → result. */
+    public static function trunkLimitsStatus(string $astdb, int $now): array
+    {
+        // Asterisk always answers "N results found."; nothing at all means it
+        // could not be asked (the Asterisk check reports that one).
+        if (!str_contains($astdb, 'results found')) {
+            return ['info', t('health.msg_trunk_limits_unread')];
+        }
+        $refused = [];
+        if (preg_match_all('#^/trunkblock/(\S+)\s*:\s*(\d+):(\d+):(channels|rate):(\d+)\s*$#m', $astdb, $m, PREG_SET_ORDER)) {
+            foreach ($m as [, $trunk, $first, $count, $reason, $last]) {
+                if ($now - (int) $last < 900) {
+                    $refused[] = sprintf(t('health.msg_trunk_limits_refused'), $trunk, (int) $count,
+                        t('health.limit_' . $reason), date('H:i', (int) $first));
+                }
+            }
+        }
+        return $refused ? ['warn', implode(' ', $refused)] : ['ok', t('health.msg_trunk_limits_ok')];
+    }
+
+    /** Trunks/extensions losing audio now (CallQualityService, from RTCP). */
+    private static function callQuality(): array
+    {
+        if (getSystemSetting('signaling_capture', '0') !== '1') {
+            return ['off', t('health.msg_cq_off')];
+        }
+        require_once dirname(__DIR__) . '/CallQualityService.php';
+        $problems = CallQualityService::problems();
+        if (!$problems) {
+            return ['ok', t('health.msg_cq_ok')];
+        }
+        $lines = array_map(fn($g) => CallQualityService::alertTitle($g) . ': ' . CallQualityService::alertMessage($g), $problems);
+        return ['warn', implode(' ', $lines)];
+    }
+
+    /** Problems other parts raised in the alert bell (plugins), so they are e-mailed too. */
+    private static function alerts(): array
+    {
+        require_once dirname(__DIR__) . '/NoticeService.php';
+        $open = NoticeService::openNotices();
+        if (!$open) {
+            return ['ok', t('health.msg_alerts_ok')];
+        }
+        $fail = in_array('fail', array_column($open, 'severity'), true);
+        return [$fail ? 'fail' : 'warn', implode('; ', array_map(fn($n) => $n['title'] . ($n['message'] !== '' ? ': ' . $n['message'] : ''), $open))];
+    }
+
+    /** Failure lines with an EventTV time stamp at or after $since. */
+    public static function countRecentFailures(string $lines, int $since): int
+    {
+        $n = 0;
+        foreach (explode("\n", $lines) as $line) {
+            if (preg_match('/EventTV="([^"]+)"/', $line, $tv) && ($ts = strtotime($tv[1])) && $ts >= $since) {
+                $n++;
+            }
+        }
+        return $n;
+    }
+
+    public static function failedRegistrations(): array
+    {
+        $threshold = max(1, (int)getSystemSetting('failed_reg_threshold', '10'));
+        $logFile = '/var/log/asterisk/security.log';
+        if (!is_readable($logFile)) {
+            return ['off', t('health.msg_failed_reg_nolog')];
+        }
+        // The log also holds every successful registration (hundreds a
+        // minute on a busy PBX): the failures are filtered first, then the
+        // last 15 minutes are counted by their own time stamp.
+        $out = self::sh('tail -n 200000 ' . escapeshellarg($logFile)
+            . ' | grep -E \'SecurityEvent="(InvalidAccountID|ChallengeResponseFailed|InvalidPassword|FailedACL)"\' | tail -n 5000');
+        $failedCount = self::countRecentFailures((string) $out, time() - 900);
+        if ($failedCount >= $threshold) {
+            return ['warn', sprintf(t('health.msg_failed_reg_warn'), $failedCount, $threshold)];
+        }
+
+        return ['ok', sprintf(t('health.msg_failed_reg_ok'), $failedCount)];
     }
 
     private static function faxQueue(): array

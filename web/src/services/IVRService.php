@@ -24,6 +24,7 @@ class IVRService {
             // the first wrong key), while a huge value could keep the caller
             // in a near-endless loop.
             $max_failures = max(1, min(10, intval($data['max_failures'] ?? 3)));
+            $timeout_repeat = !empty($data['timeout_repeat']) ? 1 : 0;
             $allow_direct_dial = isset($data['allow_direct_dial']) ? intval($data['allow_direct_dial']) : 0;
             $digit_timeout = max(1, min(10, intval($data['digit_timeout'] ?? 3)));
 
@@ -44,6 +45,7 @@ class IVRService {
                 'language' => $language ?: null,
                 'timeout_seconds' => $timeout_seconds,
                 'max_failures' => $max_failures,
+                'timeout_repeat' => $timeout_repeat,
                 'allow_direct_dial' => $allow_direct_dial,
                 'digit_timeout' => $digit_timeout,
                 'timeout_dest_type' => $timeout_dest_type,
@@ -89,15 +91,17 @@ class IVRService {
                     SELECT id FROM pbx_ivrs WHERE id != ? AND ((timeout_dest_type = 'ivr' AND timeout_dest_id = ?) OR (invalid_dest_type = 'ivr' AND invalid_dest_id = ?))
                     UNION ALL
                     SELECT id FROM pbx_time_conditions WHERE (match_dest_type = 'ivr' AND match_dest_id = ?) OR (nomatch_dest_type = 'ivr' AND nomatch_dest_id = ?) OR rules_json LIKE ?
+                    UNION ALL
+                    SELECT id FROM pbx_web_widgets WHERE dest_type = 'ivr' AND dest_id = ?
                 ) refs",
-                [(string)$ivr_id, (string)$ivr_id, $ivr_id, $ivr_id, (string)$ivr_id, (string)$ivr_id, (string)$ivr_id, (string)$ivr_id, '%"match_dest_type":"ivr","match_dest_id":"' . $ivr_id . '"%']
+                [(string)$ivr_id, (string)$ivr_id, $ivr_id, $ivr_id, (string)$ivr_id, (string)$ivr_id, (string)$ivr_id, (string)$ivr_id, '%"match_dest_type":"ivr","match_dest_id":"' . $ivr_id . '"%', (string)$ivr_id]
             );
             if ($refs > 0) {
                 throw new \Exception(t('srv_ivr.err_in_use'));
             }
             $removed_number = (string) (DBHelper::fetchColumn("SELECT internal_number FROM pbx_ivrs WHERE id = ?", [$ivr_id]) ?? '');
             DBHelper::delete('pbx_ivrs', 'id', $ivr_id);
-            markPendingSync('ivrs', 'ivr', $ivr_id, "IVR: " . ($ivr_title ?: $ivr_id) . " (silindi)", 'delete', $_SESSION['user_id'] ?? null);
+            markPendingSync('ivrs', 'ivr', $ivr_id, "IVR: " . ($ivr_title ?: $ivr_id) . " (deleted)", 'delete', $_SESSION['user_id'] ?? null);
             if ($removed_number !== '') {
                 markPendingSync('internal_numbers', 'ivr', $ivr_id,
                     "Internal number removed: {$removed_number}", 'delete',

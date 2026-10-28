@@ -1,9 +1,19 @@
 # Signaling capture
 
+> Built by Gregory Merriweather ([@shido6](https://github.com/shido6)). Part of AiPBX itself since 1.50.8:
+> **PBX settings → Signaling**. Until then it was switched by the bundled `signaling-capture` plugin, which
+> pointed Asterisk at a port nothing listened on; the update turns capture on when that plugin was on and
+> removes it.
+
 AiPBX ships an optional signaling pipeline: what crosses the SIP stack can
-be captured, kept on this server and read by the dialplan editor's Echo box.
-Capture is opt-in: `asterisk-config/hep.conf` ships with `enabled = no`, so
-a normal installation captures nothing and pays no overhead.
+be captured, kept on this server and read by the dialplan editor's Echo box
+and [Call quality](call-quality.md).
+Capture is opt-in and off by default, so a normal installation captures
+nothing and pays no overhead.
+
+**Turning it on:** PBX settings → **Signaling** → Capture **On**, Save. It takes effect at once (only
+`res_hep` is reloaded; calls are not touched). The same tab sets how many days the messages are kept
+and shows how many arrived in the last 24 hours.
 
 Nothing on this path can affect a call. The capture is a UDP datagram that
 Asterisk sends and moves on; the daemon writes to the database in batches
@@ -11,18 +21,7 @@ and survives the database going away (events are lost, capture continues).
 
 ## The chain
 
-```
-Asterisk (res_hep, res_hep_pjsip, res_hep_rtcp)
-    │  HEPv3 over UDP, loopback only
-    ▼
-aipbx-signaling (systemd: aipbx-signaling.service, 127.0.0.1:9061)
-    │  parsed -> batched rows
-    ▼
-MariaDB: pbx_signaling_events
-    │  read
-    ▼
-AI → Dialplan editor (Echo box)
-```
+![Signaling capture chain](img/signaling.svg)
 
 **Asterisk side** — `hep.conf`:
 
@@ -35,10 +34,10 @@ capture_id = 1001
 ```
 
 `modules.conf` loads `res_hep.so`, `res_hep_pjsip.so`, `res_hep_rtcp.so`.
-Turning capture on: `enabled = yes` (one word), reload Asterisk. The address
-stays loopback unless you deliberately point it elsewhere — a capture port
-open to a network turns a PBX into a free SIP sniffer for anyone who finds
-it.
+`hep.conf` is replaced on every update; the portal's switch is
+`/etc/asterisk/pbx/hep_aipbx.conf` (`[general] enabled = yes|no`, included
+after it). The address stays loopback — a capture port open to a network
+turns a PBX into a free SIP sniffer for anyone who finds it.
 
 **Daemon side** — `python -m aipbx_signaling` (installed by `install.sh`,
 and therefore by `aipbx-update` on every upgrade, as
@@ -48,11 +47,40 @@ comes from `sys_settings` (default when absent, clamped 1..3650):
 
 | setting                    | meaning                                 |
 |----------------------------|-----------------------------------------|
-| `signaling_retention_days` | delete events older than this (1–3650)  |
+| `signaling_retention_days` | delete events older than this (1–3650; PBX settings → Signaling) |
 
-A Signaling page that edits this in the portal is a follow-up; today the
-setting is written to `sys_settings` directly, and whether Asterisk captures
-at all is the `hep.conf` switch above.
+The daemon reads HEPv3 as specified: a 6-byte packet header and chunks with
+a 6-byte header (vendor, type, length). Until 1.50.8 it read 4-byte chunk
+headers, lost the last chunk — the message itself — and stored every capture
+as `unknown`; a live Asterisk 22 datagram is now part of its tests.
+
+**Storage** — `pbx_signaling_events`: `ts, call_id, method, proto,
+transport, src, dst, from_uri, to_uri, cseq, status_code, first_line, line,
+capture_id, rtcp_ssrc, rtcp_lost, rtcp_fraction_lost, rtcp_jitter`. Message
+text is kept in `first_line`/`line` (bounded); phones still show in
+`from_uri`. Rows are pruned by the retention setting.
+
+**RTCP counters** — an RTP stream reports its own quality. `res_hep_rtcp`
+sends each Sender/Receiver Report through the same datagram path, and the
+daemon keeps the worst report block of each report in four columns, so a
+quality question can be answered from the stream the PBX already sent:
+
+| column               | what it is                                                     |
+|----------------------|----------------------------------------------------------------|
+| `rtcp_ssrc`          | source SSRC of the worst report block                          |
+| `rtcp_lost`          | that block's cumulative packet count                            |
+| `rtcp_fraction_lost` | RFC 3550's 8-bit fraction (255 = 100 %), exactly as reported    |
+| `rtcp_jitter`        | `ia_jitter`, in RTP timestamp units — **not** milliseconds      |
+
+The sample rate is not part of a report, so jitter is stored raw: converting
+it to milliseconds would be a guess dressed up as a measurement. `NULL` means
+the report did not carry that counter; it is never stored as `0`, which would
+look healthy. SIP rows leave all four `NULL`.
+
+One report can carry several blocks (one per source) and a call is as good as
+its lossiest stream, so the block with the highest `fraction_lost` is the one
+kept. The full JSON body is still not stored — the counters are the part a
+decision needs.
 
 ## Correlation tools: HOMER, VoIPmonitor, or both
 
@@ -107,17 +135,6 @@ Two collectors on one host need different UDP ports — the card defaults to
 HOMER 9060 and VoIPmonitor 9062. Neither product is installed or started by
 the portal; both must already be running.
 
-### Reaching a centralized collector
-
-When one collector serves several PBXs, its SSH login is the key to all of
-them: use **keys only** — `PasswordAuthentication no`,
-`KbdInteractiveAuthentication no`, `PubkeyAuthentication yes` — and copy the
-key before switching passwords off. Greg asks for that key before walking
-through a remote collector install and never asks for a password. The daily
-*SSH key-only login* health check warns while a password path is still open;
-the commands and the lockout-safe order are in
-[security.md](security.md#ssh).
-
 **Cost.** This is the most expensive choice: each collector processes the full
 stream, so their combined CPU, RAM and disk use is roughly double one
 collector's. On a small PBX, put one or both collectors on another host; the
@@ -139,86 +156,6 @@ Sources: [HOMER 7 setup guide](https://github.com/sipcapture/homer/wiki/homer-se
 [VoIPmonitor scaling](https://www.voipmonitor.org/doc/Scaling),
 [VoIPmonitor hardware](https://www.voipmonitor.org/doc/Hardware).
 
-**Storage** — `pbx_signaling_events`: `ts, call_id, method, proto,
-transport, src, dst, from_uri, to_uri, cseq, status_code, first_line, line,
-capture_id, rtcp_ssrc, rtcp_lost, rtcp_fraction_lost, rtcp_jitter`. Message
-text is kept in `first_line`/`line` (bounded); phones still show in
-`from_uri`. Rows are pruned by the retention setting.
-
-## Call quality (RTCP)
-
-`res_hep_rtcp` sends every Sender and Receiver Report through the same
-capture, so the numbers that describe media quality are already here. The
-daemon keeps the **worst report block** of each datagram (a call is as good as
-its lossiest stream):
-
-- `rtcp_fraction_lost` — RFC 3550's 8-bit fraction, 255 = 100 %. 13 is about
-  5 %.
-- `rtcp_lost` — cumulative packets lost for that stream, as reported.
-- `rtcp_jitter` — `ia_jitter` in **RTP timestamp units**. The sample rate is
-  not in the report, so it is not converted to milliseconds; a conversion
-  would be a guess that changes with the codec.
-- `rtcp_ssrc` — the source SSRC of the worst block.
-
-**No audio is captured or analysed.** Greg sees counters, not speech. He is
-told plainly that he did not listen and cannot listen in.
-
-A call is **poor** when two RTCP reports in the last 15 minutes are at 5 %
-loss or more, **fair** with any loss above 1 %, otherwise **good**. One spike
-is not enough. This is deliberately conservative: a brief burst on a
-congested Wi-Fi link should not move a carrier.
-
-*Admin → Health checks* has **Call quality (RTCP)** every 5 minutes: a
-warning for poor calls, a failure when at least three calls and half of the
-measured calls are poor (the loss is then network- or carrier-wide). The
-check is read-only.
-
-**The one automatic change.** The `aipbx_quality.php` cron runs every five
-minutes. When a poor call's media peer is a trunk (`pbx_trunks.ip_address`),
-and an outbound route has another trunk behind it, the lossy trunk moves to
-the **end of the chain** and the outbound dialplan is regenerated. New calls
-therefore try the other trunk first; **live calls keep their channel**. The
-change is written to the audit log and Greg's captain's log, announced as a
-notice, and can be reordered back on *Outbound routes*. It is limited to one
-demotion per trunk per six hours, is skipped while another outbound change is
-waiting for Apply, and rolls the route order back if the dialplan reload
-fails. It can be switched off on *AI → VoIP Engineer* ("Let him move a lossy
-trunk to the backup position"); switched off, he still records the evidence and
-raises the notice, he just leaves the route alone.
-
-There is no safe automatic change when the lossy peer is a phone, Wi-Fi or
-the local network, when the trunk is already last, or when every trunk loses
-packets. Those cases become a notice that names the call, the peer and the
-loss — a human or the carrier is required.
-
-### The evidence trail
-
-Before the raw rows can be pruned, every incident is copied to
-`pbx_quality_evidence`: the sampled RTCP counters (time, peer, SSRC, fraction
-lost, cumulative loss, jitter), the thresholds applied, the matched trunk, the
-action taken, and a dedupe key so the five-minute run stores one record per
-call/window/action. The record names its own source:
-`res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events (proto='rtcp')`.
-
-Greg reads the last five incidents in his prompt and must cite `evidence #N`,
-the peer and time window, the report count and what was changed — the trail a
-VoIP engineer writes on a ticket. Notices and alarm e-mails carry the same
-compact reference.
-
-```
-aipbx_quality.php --report=24      # incidents, with ids
-aipbx_quality.php --evidence=12    # one record: samples, thresholds, action
-```
-
-Evidence is kept for 180 days (`call_quality.evidence_days`, 7–3650) and
-pruned by the quality cron. The live rows keep their own, shorter retention.
-
-**Coverage.** Quality sensing needs local RTCP rows, so it works with the
-built-in capture (`builtin`) and with both collectors (`both`). In `homer`,
-`voipmonitor` or `external` modes Asterisk sends RTCP straight to the
-collector and the portal has nothing to read; the health check says so
-instead of claiming the lines are healthy.
-
 ## The Echo box (AI → Dialplan editor)
 
 The page's "Ask about the phone system" box answers from this same data:
@@ -230,7 +167,8 @@ leaves this server.
 
 ## What stays on this server
 
-Captured events never leave the machine: `pbx_signaling_events` is read by
-the dialplan editor's Echo box, locally.
-Shipping captures to a third-party cloud is exactly the kind of connector
-the planned plugin system should carry — not core.
+Captured events are read by the dialplan editor's Echo box and Call quality on
+this server. In `both` mode the daemon also forwards an unchanged copy of each
+datagram to the collectors listed in `/var/lib/aipbx/signaling/forward.json`
+(see [Correlation tools](#correlation-tools-homer-voipmonitor-or-both));
+pointing `hep.conf` straight at a collector instead stops the local capture.

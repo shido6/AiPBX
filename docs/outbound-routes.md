@@ -1,6 +1,6 @@
 # Outbound routes
 
-An outbound route matches a dialled number with a pattern and sends it to one or more trunks.
+An outbound route matches a dialled number with a pattern and sends it to one or more trunks. Before reaching outbound routes, numbers originating from subscriber devices can be pre-filtered and standardized per client type (Mobile, Desk, Web) via [Call Normalization Rules](call-normalization.md).
 
 ## Patterns
 
@@ -31,7 +31,13 @@ and **append**. Example: pattern `_00[2-5].`, strip front `1` → `00370…` is 
 
 A route lists one or more trunks. They are tried in order; if one is unavailable, congested or at its
 channel limit, the next is tried. Each entry can override the caller ID for that trunk. The trunk's own
-[outbound caller ID normalization](trunks.md#outbound-caller-id-normalization) is applied as well.
+[carrier dialled number format](trunks.md#carrier-dialled-number-format) and
+[outbound caller ID normalization](trunks.md#outbound-caller-id-normalization) are applied as well.
+
+**No trunk loops:** a call that came in on a trunk is not sent straight back out through the same
+trunk; that trunk counts as congested and the next one of the route is tried. Otherwise a number the
+PBX behind the trunk routes to AiPBX, and AiPBX back, loops thousands of times an hour. Call
+forwarding of an extension to a number behind the same trunk still works.
 
 **Internal** routes (to another PBX) keep the internal caller ID; external routes send the user's
 external caller ID or the trunk's.

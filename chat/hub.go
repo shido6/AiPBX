@@ -2,10 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,11 +23,41 @@ const (
 	maxMessageSize = 512 * 1024 // 512 KB for socket control frames
 )
 
+func hostWithoutPort(h string) string {
+	h = strings.TrimSpace(h)
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return strings.ToLower(host)
+	}
+	return strings.ToLower(strings.Trim(h, "[]"))
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  1024,
 	WriteBufferSize: 1024,
+	// Allow native mobile clients (no Origin header) or same-host / localhost origins.
 	CheckOrigin: func(r *http.Request) bool {
-		return true // Auth is checked via Bearer token before upgrade
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		if origin == "" {
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil || u.Host == "" {
+			return false
+		}
+		originHost := hostWithoutPort(u.Host)
+		if originHost == "localhost" || originHost == "127.0.0.1" || originHost == "::1" {
+			return true
+		}
+		if strings.EqualFold(u.Host, r.Host) || originHost == hostWithoutPort(r.Host) {
+			return true
+		}
+		if xfh := r.Header.Get("X-Forwarded-Host"); xfh != "" {
+			firstHost := strings.TrimSpace(strings.Split(xfh, ",")[0])
+			if strings.EqualFold(u.Host, firstHost) || originHost == hostWithoutPort(firstHost) {
+				return true
+			}
+		}
+		return false
 	},
 }
 
@@ -163,10 +197,11 @@ func (h *Hub) Run() {
 					seenMap[e] = h.lastSeenLocked(e)
 				}
 			}
+			remaining := len(h.clients[ext])
 			h.mu.Unlock()
 
 			log.Printf("[WS] Client connected: %s (%s) [Total devices for ext: %d]",
-				client.user.FullName, ext, len(h.clients[ext]))
+				client.user.FullName, ext, remaining)
 
 			if !before && after {
 				h.broadcastPresence(ext, true, "")
@@ -382,23 +417,25 @@ func (e *sendError) Error() string { return e.msg }
 // POST /api/messages and the "send_message" WebSocket action. The returned
 // message is the sender's view (is_me, status "sent").
 func (h *Hub) SendMessage(user *User, in *InMessage) (*Message, *sendError) {
-	convID := in.ConversationID
-
-	// No conversation ID but a target extension: get or create the direct chat
-	if convID <= 0 && in.TargetExt != "" {
-		conv, err := GetOrCreateDirectConversation(user.Extension, in.TargetExt, user.Extension)
-		if err != nil {
-			return nil, &sendError{http.StatusInternalServerError, "Could not start the conversation: " + err.Error()}
-		}
-		convID = conv.ID
+	msgType := in.MsgType
+	if msgType == "" {
+		msgType = "text"
 	}
-	if convID <= 0 {
-		return nil, &sendError{http.StatusBadRequest, "conversation_id or target_ext is required."}
+	switch msgType {
+	case "text", "image", "file", "audio":
+	default:
+		return nil, &sendError{http.StatusBadRequest, "Invalid message type."}
 	}
 
-	// CH-2: participant check (prevents IDOR)
-	if isPart, err := IsParticipant(convID, user.Extension); err != nil || !isPart {
-		return nil, &sendError{http.StatusForbidden, "You may not send messages to this conversation."}
+	textMsg := in.Message
+	if textMsg == "" && in.Content != "" {
+		textMsg = in.Content
+	}
+	if len(textMsg) > 16384 {
+		return nil, &sendError{http.StatusBadRequest, "Message is too long (max 16 KB)."}
+	}
+	if msgType == "text" && strings.TrimSpace(textMsg) == "" && in.AttachmentURL == "" {
+		return nil, &sendError{http.StatusBadRequest, "Message cannot be empty."}
 	}
 
 	// CH-4: attachment_url may only be one of our own media paths and the sender's own upload
@@ -411,18 +448,33 @@ func (h *Hub) SendMessage(user *User, in *InMessage) (*Message, *sendError) {
 		}
 	}
 
-	msgType := in.MsgType
-	if msgType == "" {
-		msgType = "text"
+	convID := in.ConversationID
+
+	// No conversation ID but a target extension: get or create the direct chat
+	if convID <= 0 && in.TargetExt != "" {
+		conv, err := GetOrCreateDirectConversation(user.Extension, in.TargetExt, user.Extension)
+		if err != nil {
+			if errors.Is(err, errNotChatUser) {
+				return nil, &sendError{http.StatusBadRequest, errNotChatUser.Error() + "."}
+			}
+			log.Printf("[Hub] direct conversation %s -> %s: %v", user.Extension, in.TargetExt, err)
+			return nil, &sendError{http.StatusInternalServerError, "Could not start the conversation."}
+		}
+		convID = conv.ID
 	}
-	textMsg := in.Message
-	if textMsg == "" && in.Content != "" {
-		textMsg = in.Content
+	if convID <= 0 {
+		return nil, &sendError{http.StatusBadRequest, "conversation_id or target_ext is required."}
+	}
+
+	// CH-2: participant check (prevents IDOR)
+	if isPart, err := IsParticipant(convID, user.Extension); err != nil || !isPart {
+		return nil, &sendError{http.StatusForbidden, "You may not send messages to this conversation."}
 	}
 
 	saved, err := SaveMessage(convID, user.Extension, msgType, textMsg, in.AttachmentURL, in.FileName, in.FileSize, in.MimeType)
 	if err != nil {
-		return nil, &sendError{http.StatusInternalServerError, "Mesaj kaydedilemedi: " + err.Error()}
+		log.Printf("[Hub] message not saved (conversation %d): %v", convID, err)
+		return nil, &sendError{http.StatusInternalServerError, "The message could not be saved."}
 	}
 
 	participants, _ := GetParticipants(convID)
@@ -455,6 +507,8 @@ func (h *Hub) SendMessage(user *User, in *InMessage) (*Message, *sendError) {
 		bodyPreview = "📷 [Fotoğraf]" // user-visible, Turkish on purpose (see the note in db.go)
 	} else if saved.MsgType == "file" {
 		bodyPreview = "📎 [Dosya] " + saved.FileName
+	} else if saved.MsgType == "audio" {
+		bodyPreview = "🎤 [Ses Kaydı]"
 	}
 	bodyPreview = truncateRunes(bodyPreview, 100)
 

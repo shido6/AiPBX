@@ -5,252 +5,104 @@ use PHPUnit\Framework\TestCase;
 require_once __DIR__ . '/../bootstrap.php';
 require_once __DIR__ . '/../../src/services/CallQualityService.php';
 
-/**
- * Call quality is RTCP counters, not audio. These tests pin the arithmetic
- * (8-bit fraction lost), the "two bad reports, not one spike" rule, and the
- * honesty of Greg's prompt: he must never claim to have listened.
- */
+/** Reports → Call quality: RTCP reports → call legs → problems of the health check. */
 final class CallQualityServiceTest extends TestCase
 {
-    private PDO $db;
+    private const OWN = ['10.0.0.5'];
 
     protected function setUp(): void
     {
-        $this->db = getDB();
-        $this->db->exec('DELETE FROM pbx_signaling_events');
-        $this->cleanup();
+        getDB()->exec('DELETE FROM pbx_call_quality_legs');
+        getDB()->exec("DELETE FROM sys_settings WHERE setting_key LIKE 'call_quality_%'");
     }
 
-    protected function tearDown(): void
+    private function report(string $id, string $src, ?int $fraction, int $jitter = 0, string $ts = '2026-10-23 10:00:00'): array
     {
-        $this->cleanup();
+        return ['ts' => $ts, 'call_id' => $id, 'src' => $src, 'rtcp_fraction_lost' => $fraction, 'rtcp_jitter' => $jitter];
     }
 
-    private function cleanup(): void
+    public function testDirectionComesFromWhoSentTheReport(): void
     {
-        $this->db->exec('DELETE FROM pbx_signaling_events');
-        $this->db->exec("DELETE FROM sys_settings WHERE setting_key IN
-            ('hep.mode', 'call_quality.fix.testtrunk', 'call_quality.fix.qc_test',
-             'greg.enabled', 'greg.auto_fix', 'greg.notice_email')");
-        $this->db->exec("DELETE FROM pbx_trunks WHERE trunk_name IN ('testtrunk', 'qc_test', 'qc_backup')");
-        $this->db->exec("DELETE FROM pbx_outbound_routes WHERE route_name = 'QC test route'");
-        $this->db->exec("DELETE FROM sys_pending_sync WHERE domain = 'outbound_dialplan'");
-        $this->db->exec("DELETE FROM pbx_greg_notices WHERE dedupe_key LIKE 'quality:%'");
-        $this->db->exec('DELETE FROM pbx_quality_evidence');
+        $legs = CallQualityService::aggregate([
+            $this->report('a', '10.0.0.5:10000', 0, 3),          // we report what we received: in
+            $this->report('a', '203.0.113.10:20000', 26, 9),     // they report what they received: out, ~10 %
+            $this->report('a', '203.0.113.10:20000', 30, 4),
+            $this->report('a', '203.0.113.10:20000', null),      // no counter: not a zero
+        ], self::OWN, 5.0);
+        $l = $legs['a'];
+        $this->assertSame([1, 2], [$l['reports_in'], $l['reports_out']]);
+        $this->assertSame([0, 2], [$l['bad_in'], $l['bad_out']]);
+        $this->assertSame(11.72, $l['loss_out_max']);
+        $this->assertSame('203.0.113.10', $l['peer']);
+        $this->assertSame('poor', CallQualityService::level($l));
     }
 
-    private function setting(string $key, string $value): void
+    public function testLevels(): void
     {
-        $this->db->prepare(
-            'INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?)
-             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
-        )->execute([$key, $value]);
+        $base = ['bad_in' => 0, 'bad_out' => 0, 'loss_in_max' => 0, 'loss_out_max' => 0];
+        $this->assertSame('good', CallQualityService::level($base));
+        $this->assertSame('fair', CallQualityService::level(['loss_in_max' => 1.5] + $base));
+        $this->assertSame('fair', CallQualityService::level(['bad_out' => 1, 'loss_out_max' => 9] + $base), 'one bad report is not enough');
+        $this->assertSame('poor', CallQualityService::level(['bad_in' => 2] + $base));
     }
 
-    private function report(string $callId, int $fraction, int $jitter = 0,
-                            string $src = '203.0.113.9:10000',
-                            string $dst = '192.0.2.10:10000'): void
+    public function testALegIsNamedFromItsInvite(): void
     {
-        $this->db->prepare(
-            "INSERT INTO pbx_signaling_events
-                (ts, call_id, method, proto, src, dst, first_line, line,
-                 rtcp_fraction_lost, rtcp_lost, rtcp_jitter)
-             VALUES (NOW() - INTERVAL 1 MINUTE, ?, 'RTCP', 'rtcp', ?, ?, 'RTCP', 'RTCP', ?, ?, ?)"
-        )->execute([$callId, $src, $dst, $fraction, $fraction, $jitter]);
+        $trunks = ['VOIP' => ['203.0.113.10'], 'NEC' => ['10.12.0.0/16']];
+        $exts = ['3001' => 0];
+        $c = fn($src, $dst, $from, $to) => CallQualityService::classify(['src' => $src, 'dst' => $dst, 'from_uri' => $from, 'to_uri' => $to], self::OWN, $trunks, $exts);
+        $this->assertSame(['trunk', 'VOIP'], $c('203.0.113.10:5060', '10.0.0.5:5060', '<sip:0532@x>', '<sip:3000@y>'));
+        $this->assertSame(['trunk', 'NEC'], $c('10.0.0.5:5060', '10.12.3.4:5060', '<sip:3001@a>', '<sip:5123@b>'), 'CIDR of the match list');
+        $this->assertSame(['extension', '3001'], $c('10.0.0.9:5060', '10.0.0.5:5060', '"Ali" <sip:3001@pbx>', '<sip:9000@pbx>'));
+        $this->assertSame(['other', '2001:db8::1'], $c('[2001:db8::1]:5060', '10.0.0.5:5060', '<sip:777@a>', '<sip:888@b>'));
     }
 
-    public function testVerdictNeedsTwoBadReportsToBePoor(): void
+    public function testProblemsNeedEnoughPoorLegsAndAFifthOfTheCalls(): void
     {
-        $one = CallQualityService::verdict(['worst_fraction' => 26, 'reports' => 1, 'poor_reports' => 1]);
-        $this->assertSame('fair', $one['level'], 'a single spike is not sustained loss');
-        $this->assertSame(10.16, $one['loss_pct'], 'fraction 26 is ~10 % (26/256)');
-
-        $two = CallQualityService::verdict(['worst_fraction' => 26, 'reports' => 4, 'poor_reports' => 2]);
-        $this->assertSame('poor', $two['level']);
-
-        $clean = CallQualityService::verdict(['worst_fraction' => 0, 'reports' => 6, 'poor_reports' => 0]);
-        $this->assertSame('good', $clean['level']);
-
-        $noise = CallQualityService::verdict(['worst_fraction' => 2, 'reports' => 6, 'poor_reports' => 0]);
-        $this->assertSame('good', $noise['level'], '0.78 % is background noise');
-        $fair = CallQualityService::verdict(['worst_fraction' => 3, 'reports' => 6, 'poor_reports' => 0]);
-        $this->assertSame('fair', $fair['level'], 'above 1 % is degraded');
+        $db = getDB();
+        $ins = $db->prepare("INSERT INTO pbx_call_quality_legs (call_id, first_ts, last_ts, leg_type, leg_name, bad_out, loss_out_max, level)
+            VALUES (?, NOW(), NOW(), 'trunk', ?, ?, ?, ?)");
+        foreach (range(1, 3) as $i) {
+            $ins->execute(["v$i", 'VOIP', 3, 12.5, 'poor']);
+        }
+        foreach (range(1, 2) as $i) {
+            $ins->execute(["n$i", 'NEC', 3, 8, 'poor']);           // only two poor legs
+        }
+        foreach (range(1, 20) as $i) {
+            $ins->execute(["b$i", 'BIG', 0, 0, 'good']);
+        }
+        foreach (range(1, 3) as $i) {
+            $ins->execute(["bp$i", 'BIG', 2, 6, 'poor']);           // 3 of 23: under a fifth
+        }
+        $problems = CallQualityService::problems();
+        $this->assertSame(['VOIP'], array_column($problems, 'leg_name'));
+        $this->assertStringContainsString('VOIP', CallQualityService::alertTitle($problems[0]));
+        $this->assertStringContainsString('12.5 %', CallQualityService::alertMessage($problems[0]));
+        $this->assertStringContainsString(t('call_quality.where_to_carrier'), CallQualityService::alertMessage($problems[0]));
     }
 
-    public function testAggregationKeepsTheWorstReportAndBothPeers(): void
+    public function testOldLegsDoNotAlert(): void
     {
-        $this->report('call-a', 0, 8);
-        $this->report('call-a', 26, 96);
-        $this->report('call-a', 13, 40);
-
-        $calls = CallQualityService::aggregate(CallQualityService::rows());
-        $this->assertArrayHasKey('call-a', $calls);
-        $call = $calls['call-a'];
-        $this->assertSame(3, $call['reports']);
-        $this->assertSame(26, $call['worst_fraction']);
-        $this->assertSame(2, $call['poor_reports'], '26 and 13 are both at/above 5 %');
-        $this->assertSame(96, $call['jitter']);
-        $this->assertEqualsCanonicalizing(['203.0.113.9', '192.0.2.10'], $call['peers']);
+        getDB()->exec("INSERT INTO pbx_call_quality_legs (call_id, first_ts, last_ts, leg_type, leg_name, bad_in, level) VALUES
+            ('o1', NOW() - INTERVAL 1 HOUR, NOW() - INTERVAL 1 HOUR, 'trunk', 'VOIP', 3, 'poor'),
+            ('o2', NOW() - INTERVAL 1 HOUR, NOW() - INTERVAL 1 HOUR, 'trunk', 'VOIP', 3, 'poor'),
+            ('o3', NOW() - INTERVAL 1 HOUR, NOW() - INTERVAL 1 HOUR, 'trunk', 'VOIP', 3, 'poor')");
+        $this->assertSame([], CallQualityService::problems());
     }
 
-    public function testActiveReportsAPoorCallAndItsTrunk(): void
+    public function testSettingsAreClamped(): void
     {
-        $this->db->prepare(
-            'INSERT INTO pbx_trunks (trunk_name, title, ip_address) VALUES (?, ?, ?)'
-        )->execute(['testtrunk', 'Test Carrier', '203.0.113.9']);
-        $this->report('call-a', 26, 96);
-        $this->report('call-a', 26, 96);
-
-        $active = CallQualityService::active();
-        $this->assertCount(1, $active);
-        $this->assertSame('poor', $active[0]['verdict']['level']);
-        $this->assertSame('testtrunk', $active[0]['trunk']['trunk_name'] ?? null);
+        $_SESSION['csrf_token'] = 'cq-test';
+        $res = CallQualityService::save(['csrf_token' => 'cq-test', 'poor_pct' => '90', 'alert_legs' => '0', 'keep_days' => '1']);
+        $this->assertTrue($res['success']);
+        $this->assertSame(['poor_pct' => 50.0, 'alert_legs' => 1, 'keep_days' => 7], CallQualityService::settings());
+        $this->assertFalse(CallQualityService::save(['csrf_token' => 'wrong'])['success']);
     }
 
-    public function testHostOfHandlesPortsAndIpv6(): void
+    public function testCidr(): void
     {
-        $this->assertSame('192.0.2.10', CallQualityService::hostOf('192.0.2.10:5060'));
-        $this->assertSame('2001:db8::1', CallQualityService::hostOf('[2001:db8::1]:5060'));
-        $this->assertSame('', CallQualityService::hostOf(''));
-    }
-
-    public function testPromptSaysHeDidNotListenAndNamesTheRule(): void
-    {
-        $this->setting('hep.mode', 'builtin');
-        $this->report('call-a', 26);
-        $this->report('call-a', 26);
-
-        $ctx = CallQualityService::promptContext();
-        $this->assertStringContainsString('did not listen to any audio', $ctx);
-        $this->assertStringContainsString('never say you heard a call', $ctx);
-        $this->assertStringContainsString('two reports at 5%+', $ctx);
-        $this->assertStringContainsString('call-a', $ctx);
-        $this->assertStringContainsString('10.16%', $ctx);
-    }
-
-    public function testPromptIsEmptyWhenRtcpGoesToARemoteCollector(): void
-    {
-        $this->setting('hep.mode', 'homer');
-        $this->assertFalse(CallQualityService::available());
-        $this->assertSame('', CallQualityService::promptContext());
-    }
-
-    public function testEvidenceKeepsTheRtcpProofAndTheSourceTrail(): void
-    {
-        $this->setting('hep.mode', 'builtin');
-        $this->report('call-ev', 26, 96);
-        $this->report('call-ev', 26, 240);
-        $call = CallQualityService::active()[0];
-
-        $id = CallQualityService::recordEvidence(
-            $call,
-            'no_alternative',
-            'No outbound route has another trunk behind the lossy one; nothing changed.'
-        );
-        $this->assertNotNull($id);
-        $this->assertSame($id, CallQualityService::recordEvidence($call, 'no_alternative', ''),
-            'the same call and action is one incident, not one per cron run');
-
-        $trail = CallQualityService::evidenceTrail((int) $id);
-        $this->assertStringContainsString('Evidence #' . $id, $trail);
-        $this->assertStringContainsString('call-ev', $trail);
-        $this->assertStringContainsString('203.0.113.9', $trail);
-        $this->assertStringContainsString('fraction_lost=26', $trail);
-        $this->assertStringContainsString('res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events', $trail);
-        $this->assertStringContainsString('No outbound route has another trunk', $trail);
-        $this->assertStringContainsString('two reports at 5%', $trail);
-
-        $report = CallQualityService::report(24);
-        $this->assertStringContainsString('#' . $id, $report);
-        $this->assertStringContainsString('call-ev', $report);
-    }
-
-    public function testTickDoesNothingWhileGregIsDisabled(): void
-    {
-        $res = CallQualityService::tick();
-        $this->assertContains('greg_disabled', $res['skipped']);
-        $this->assertSame([], $res['fixed']);
-    }
-
-    public function testObserveOnlyKeepsTheProofAndLeavesTheRouteAlone(): void
-    {
-        $this->setting('greg.enabled', '1');
-        $this->setting('greg.auto_fix', '0');
-        $this->setting('greg.notice_email', '0');
-        $this->setting('hep.mode', 'builtin');
-        $this->db->prepare('INSERT INTO pbx_trunks (trunk_name, title, ip_address) VALUES (?, ?, ?)')
-            ->execute(['qc_test', 'QC bad carrier', '203.0.113.77']);
-        $this->db->prepare('INSERT INTO pbx_trunks (trunk_name, title, ip_address) VALUES (?, ?, ?)')
-            ->execute(['qc_backup', 'QC good carrier', '203.0.113.78']);
-        $this->db->prepare(
-            "INSERT INTO pbx_outbound_routes (route_name, match_pattern, trunks_json, is_active)
-             VALUES ('QC test route', '9.', ?, 1)"
-        )->execute([json_encode([
-            ['trunk_name' => 'qc_test'],
-            ['trunk_name' => 'qc_backup'],
-        ])]);
-        $this->report('call-qc', 26, 96, '203.0.113.77:10000');
-        $this->report('call-qc', 26, 96, '203.0.113.77:10000');
-
-        $res = CallQualityService::tick();
-        $this->assertContains('auto_fix_off', $res['skipped']);
-        $this->assertSame([], $res['fixed']);
-        $stored = $this->db->query("SELECT trunks_json FROM pbx_outbound_routes WHERE route_name = 'QC test route'")->fetchColumn();
-        $this->assertSame(['qc_test', 'qc_backup'], array_column(json_decode((string) $stored, true), 'trunk_name'),
-            'observe-only must not reorder the route');
-        $action = $this->db->query('SELECT action FROM pbx_quality_evidence ORDER BY id DESC LIMIT 1')->fetchColumn();
-        $this->assertSame('observed', $action);
-        $notice = $this->db->query("SELECT body FROM pbx_greg_notices WHERE dedupe_key = 'quality:observed:qc_test'")->fetchColumn();
-        $this->assertStringContainsString('Evidence #', (string) $notice);
-    }
-
-    public function testTickMovesALossyTrunkToTheBackForNewCalls(): void
-    {
-        $this->setting('greg.enabled', '1');
-        $this->setting('greg.auto_fix', '1');
-        $this->setting('greg.notice_email', '0');
-        $this->setting('hep.mode', 'builtin');
-        $this->db->prepare('INSERT INTO pbx_trunks (trunk_name, title, ip_address) VALUES (?, ?, ?)')
-            ->execute(['qc_test', 'QC bad carrier', '203.0.113.77']);
-        $this->db->prepare('INSERT INTO pbx_trunks (trunk_name, title, ip_address) VALUES (?, ?, ?)')
-            ->execute(['qc_backup', 'QC good carrier', '203.0.113.78']);
-        $this->db->prepare(
-            "INSERT INTO pbx_outbound_routes (route_name, match_pattern, trunks_json, is_active)
-             VALUES ('QC test route', '9.', ?, 1)"
-        )->execute([json_encode([
-            ['trunk_name' => 'qc_test', 'callerid_override' => ''] ,
-            ['trunk_name' => 'qc_backup', 'callerid_override' => ''] ,
-        ])]);
-        $this->report('call-qc', 26, 96, '203.0.113.77:10000');
-        $this->report('call-qc', 26, 96, '203.0.113.77:10000');
-
-        $res = CallQualityService::tick();
-        $this->assertContains('qc_test', $res['fixed'], 'the lossy trunk is demoted');
-
-        $stored = $this->db->query("SELECT trunks_json FROM pbx_outbound_routes WHERE route_name = 'QC test route'")->fetchColumn();
-        $names = array_column(json_decode((string) $stored, true), 'trunk_name');
-        $this->assertSame(['qc_backup', 'qc_test'], $names, 'new calls try the good trunk first');
-        $conf = (string) @file_get_contents(ASTERISK_PBX_DIR . '/extensions_outbound.conf');
-        $good = strpos($conf, 'qc_backup');
-        $bad = strpos($conf, 'qc_test');
-        $this->assertNotFalse($good);
-        $this->assertNotFalse($bad);
-        $this->assertLessThan($bad, $good, 'the generated dialplan tries the good trunk first');
-
-        $evidence = $this->db->query(
-            'SELECT id, action, action_detail, evidence_json FROM pbx_quality_evidence ORDER BY id DESC LIMIT 1'
-        )->fetch(PDO::FETCH_ASSOC);
-        $this->assertSame('trunk_demoted', $evidence['action']);
-        $this->assertStringContainsString('qc_test', $evidence['action_detail']);
-        $proof = json_decode((string) $evidence['evidence_json'], true);
-        $this->assertNotEmpty($proof['samples']);
-        $this->assertSame('qc_test', $proof['trunk']['trunk_name']);
-        $notice = $this->db->query(
-            "SELECT body FROM pbx_greg_notices WHERE dedupe_key = 'quality:fix:qc_test'"
-        )->fetchColumn();
-        $this->assertStringContainsString('Evidence #' . $evidence['id'], (string) $notice);
-        $this->assertSame('0', (string) $this->db->query(
-            "SELECT COUNT(*) FROM sys_pending_sync WHERE domain = 'outbound_dialplan'"
-        )->fetchColumn(), 'the applied domain leaves no pending row behind');
+        $this->assertTrue(CallQualityService::inCidr('10.12.3.4', '10.12.0.0/16'));
+        $this->assertFalse(CallQualityService::inCidr('10.13.0.1', '10.12.0.0/16'));
+        $this->assertFalse(CallQualityService::inCidr('10.12.0.1', '10.12.0.1'), 'not a CIDR');
     }
 }

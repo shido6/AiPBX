@@ -26,7 +26,7 @@
 
 require_once __DIR__ . '/ai/AssistantModel.php';
 require_once __DIR__ . '/ai/EchoService.php';
-require_once __DIR__ . '/CallQualityService.php';
+require_once __DIR__ . '/CallQualityEvidenceService.php';
 require_once __DIR__ . '/ai/ResearchService.php';
 require_once __DIR__ . '/AsteriskDocsService.php';
 require_once __DIR__ . '/ai/OpencodeService.php';
@@ -564,7 +564,7 @@ TXT;
         // RTCP call quality: packet loss per call, what was done about it, and
         // the rule that he never claims to have heard audio. Empty when the
         // capture target is remote, so the prompt is unchanged there.
-        $quality = CallQualityService::promptContext();
+        $quality = CallQualityEvidenceService::promptContext();
         if ($quality !== '') {
             $prompt .= $quality . "\n\n";
         }

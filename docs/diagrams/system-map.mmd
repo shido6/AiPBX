@@ -1,0 +1,49 @@
+---
+config:
+  layout: elk
+  elk:
+    nodePlacementStrategy: BRANDES_KOEPF
+---
+flowchart TB
+%% @classes
+  browser["`**Browser, mobile app**`"]:::client
+  phones["`**Desk phones**`"]:::client
+
+  nginx["`**nginx** :443
+  picks by ALPN`"]:::edge
+  coturn["`**coturn**
+  TURNS media relay`"]:::edge
+
+  subgraph apache["`Apache 127.0.0.1:8443`"]
+    portal["`**/**
+    portal`"]:::svc
+    ws["`**/ws**
+    SIP`"]:::svc
+    chatp["`**/chat/ws**
+    chat`"]:::svc
+    prov["`**/provision/**
+    also HTTP :80`"]:::svc
+  end
+
+  chat["`**Chat service**
+  :8086`"]:::svc
+  ast["`**Asterisk 22**
+  SIP 5060, TLS 5061`"]:::core
+  priv["`**aipbx-priv**
+  root helper`"]:::core
+  ai["`**Local AI**
+  :8790, :8791`"]:::svc
+  db[("`**MariaDB**`")]:::db
+
+  browser -->|443| nginx
+  nginx -->|"http/1.1, h2"| apache
+  nginx -->|no ALPN| coturn
+  phones -->|SIP| ast
+  phones -.->|config| prov
+  ws --> ast
+  chatp --> chat
+  portal <-->|"AMI :5038"| ast
+  portal -->|sudo| priv
+  ast -->|AudioSocket| ai
+  portal --> db
+  ast -->|"CDR, queue log"| db

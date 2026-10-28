@@ -60,7 +60,7 @@ function __syncGeneralDialplanBody() {
             }
             $conf .= "exten => {$ext},hint,PJSIP/{$ext}-sip&PJSIP/{$ext}-webrtc&PJSIP/{$ext}-mob-webrtc\n";
             $conf .= "exten => {$ext},1,NoOp(Direct Call to Extension {$ext} - {$name})\n";
-            $conf .= " same => n,Set(CDR(direction)=internal)\n";
+            $conf .= " same => n,ExecIf(\$[\"\${CDR(direction)}\" = \"\"]?Set(CDR(direction)=internal))\n";
 
             // Boss - secretary check: if this extension is an active boss, the secretary filter applies
             if (isset($bs_groups[$ext])) {
@@ -73,7 +73,11 @@ function __syncGeneralDialplanBody() {
                 foreach ($allowed as $ac) {
                     $ac_clean = preg_replace('/[^0-9]/', '', $ac);
                     if ($ac_clean !== '') {
+                        $pjsipPrefix = "PJSIP/{$ac_clean}-";
+                        $pjsipLen = strlen($pjsipPrefix);
                         $condParts[] = "\"\${CALLERID(num)}\" = \"{$ac_clean}\"";
+                        $condParts[] = "\"\${REDIRECTING(from-num)}\" = \"{$ac_clean}\"";
+                        $condParts[] = "\"\${BLINDTRANSFER:0:{$pjsipLen}}\" = \"{$pjsipPrefix}\"";
                     }
                 }
                 if (!empty($condParts)) {
@@ -93,6 +97,7 @@ function __syncGeneralDialplanBody() {
                 $bg_strategy = $bg['ring_strategy'] ?? 'ringall';
 
                 if (!empty($sec_channels)) {
+                    $conf .= " same => n,Set(__SKIP_VM=1)\n";
                     if ($bg_strategy === 'sequential') {
                         $sec_step = max(5, intval($bg_timeout / max(1, count($sec_channels))));
                         foreach ($sec_channels as $sc) {
@@ -104,12 +109,14 @@ function __syncGeneralDialplanBody() {
                         $conf .= " same => n,Dial({$sec_dial_str},{$bg_timeout},tT)\n";
                         $conf .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?sec_ans_{$ext})\n";
                     }
+                    $conf .= " same => n,Set(__SKIP_VM=0)\n";
                 }
 
                 $conf .= " same => n,NoOp(Secretary did not answer -> fallback)\n";
                 $conf .= buildDestinationLines($bg['fallback_dest_type'] ?? 'hangup', $bg['fallback_dest_id'] ?? 'busy') . "\n";
                 $conf .= " same => n(sec_ans_{$ext}),Hangup()\n";
                 $conf .= " same => n(allow_boss_{$ext}),NoOp(Caller allowed to reach the boss)\n";
+                $conf .= " same => n,Set(__SKIP_VM=0)\n";
             }
 
             $extDial = buildExtensionDialLines($ext, $db, 'direct');
@@ -172,12 +179,21 @@ function __syncGeneralDialplanBody() {
 
     $conf .= "; AMI Originate Context for Web Dialer & Header Softphone\n";
     $conf .= "[cc-internal]\n";
+    $conf .= "include => from-internal-web\n";
     $conf .= "include => from-internal-pbx\n\n";
 
     // Native Incoming FAX Context
     $conf .= "; Native Incoming FAX Context\n";
     $conf .= "[from-trunk-fax]\n";
+    // The destination builder also sends an E.164 DID (+90…) and "default" (fax
+    // reached from an IVR or time condition without a DID); _X! matches neither,
+    // so such a fax was dropped as "invalid extension".
+    $conf .= "exten => _+X!,1,Set(FAX_RX_EXTEN=\${EXTEN})\n";
+    $conf .= " same => n,Goto(from-trunk-fax,\${EXTEN:1},1)\n";
+    $conf .= "exten => default,1,Goto(from-trunk-fax,0,1)\n";
     $conf .= "exten => _X!,1,NoOp(Incoming FAX processing for \${EXTEN} from \${CALLERID(num)})\n";
+    // In the h extension ${EXTEN} is "h": keep the number for the fax e-mail.
+    $conf .= " same => n,ExecIf(\$[\"\${FAX_RX_EXTEN}\" = \"\"]?Set(FAX_RX_EXTEN=\${EXTEN}))\n";
     // The channel must be answered EXPLICITLY and the media path given time to settle.
     //
     // There was no Answer() here; ReceiveFAX tried to answer the channel
@@ -205,10 +221,14 @@ function __syncGeneralDialplanBody() {
     // automatic fallback to voice band/G.711 when negotiation fails).
     $conf .= " same => n,ReceiveFAX(\${FAX_FILE},df)\n";
     $conf .= " same => n,Hangup()\n\n";
-    $conf .= "exten => h,1,NoOp(FAX Receive Completed: Status=\${FAXOPT(status)}, Pages=\${FAXOPT(pages)})\n";
+    $conf .= "exten => h,1,NoOp(FAX Receive Completed: Status=\${FAXOPT(status)}, Pages=\${FAXOPT(pages)}, Error=\${FAXOPT(error)})\n";
     $conf .= " same => n,Set(FAX_CNUM=\${FILTER(0-9+,\${CALLERID(num)})})\n";
-    $conf .= " same => n,Set(FAX_DID=\${FILTER(0-9+,\${IF(\$[\"\${CDR(did)}\" != \"\"]?\${CDR(did)}:\${EXTEN})})})\n";
-    $conf .= " same => n,ExecIf(\$[\"\${FAX_FILE}\" != \"\"]?System(/usr/local/bin/process_incoming_fax.sh \"\${FAX_FILE}\" \"\${FAX_DID}\" \"\${FAX_CNUM}\" \"\${FAXOPT(pages)}\" \"\${FAXOPT(status)}\"))\n";
+    $conf .= " same => n,Set(FAX_DID=\${FILTER(0-9+,\${IF(\$[\"\${CDR(did)}\" != \"\"]?\${CDR(did)}:\${FAX_RX_EXTEN})})})\n";
+    // Why it failed (e.g. "NO_FAX: no fax tone"): without it a failed fax could not
+    // be told apart from a person who dialled a fax number. Filtered like the
+    // numbers: it goes into the shell command below.
+    $conf .= " same => n,Set(FAX_ERR=\${FILTER(A-Za-z0-9_ .:/,\${FAXOPT(error)}: \${FAXOPT(statusstr)})})\n";
+    $conf .= " same => n,ExecIf(\$[\"\${FAX_FILE}\" != \"\"]?System(/usr/local/bin/process_incoming_fax.sh \"\${FAX_FILE}\" \"\${FAX_DID}\" \"\${FAX_CNUM}\" \"\${FAXOPT(pages)}\" \"\${FAXOPT(status)}\" \"\${FAX_ERR}\"))\n";
 
     $fax_header_info = toCleanAscii(getSystemSetting('fax_header_info', 'AI PBX Fax Server'));
     $fax_station_id = toCleanAscii(getSystemSetting('fax_local_station_id', 'AiPBX'));
@@ -218,12 +238,12 @@ function __syncGeneralDialplanBody() {
     $conf .= "exten => s,1,NoOp(Sending Outbound FAX to \${FAX_DEST} from \${FAX_SENDER})\n";
     // The sender name arrives in the call file as SetVar: FAX_SENDER_NAME (fax_send.php);
     // when empty (e.g. an old/hand-made .call file) only the global header is used.
-    $conf .= " same => n,Set(FAXOPT(headerinfo)={$fax_header_info}\${IF(\$[\"\${FAX_SENDER_NAME}\" != \"\"]?\" - \"\${FAX_SENDER_NAME}:)})\n";
+    $conf .= " same => n,Set(FAXOPT(headerinfo)={$fax_header_info}\${IF(\$[\"\${FAX_SENDER_NAME}\" != \"\"]? - \${FAX_SENDER_NAME}:)})\n";
     // TSID = global prefix + the sending fax user's extension (FAX_SENDER, already
     // set in the .call file by fax_send.php) — e.g. prefix 0312555 + extension
     // 1234 = 03125551234 (2026-08-31, user request).
     $conf .= " same => n,Set(FAXOPT(localstationid)={$fax_station_id}\${FAX_SENDER})\n";
-    $conf .= " same => n,SendFAX(\${FAX_TIF_PATH},d,f)\n";
+    $conf .= " same => n,SendFAX(\${FAX_TIF_PATH},df)\n";
     $conf .= " same => n,Hangup()\n\n";
     $conf .= "exten => h,1,NoOp(Outbound FAX Completed. Status=\${FAXOPT(status)})\n";
     $conf .= " same => n,System(/usr/local/bin/process_outgoing_fax_result.sh \"\${FAX_ID}\" \"\${FAXOPT(status)}\" \"\${FAXOPT(error)}\" \"\${FAXOPT(pages)}\")\n\n";
@@ -255,11 +275,29 @@ function __syncGeneralDialplanBody() {
     $conf .= " same => n,Return()\n\n";
 
     // Enterprise Adaptive Jitter Buffer (AJB) Subroutine for Callee Channels
+
     $conf .= "; Enterprise Adaptive Jitter Buffer (AJB) Subroutine for Callee Channels\n";
     $conf .= "[sub-callee-jb]\n";
     $conf .= "exten => s,1,NoOp(Applying Adaptive Jitter Buffer to Callee Channel \${CHANNEL})\n";
-    $conf .= " same => n,Set(JITTERBUFFER(adaptive)=default)\n";
+    // Not for a fax sent from the portal (AIPBX_FAX, inherited): a jitter buffer
+    // reshapes the modem's timing.
+    $conf .= jitterBufferLine();
     $conf .= " same => n,Return()\n\n";
+
+    // Spoken status before a busy / unanswered / unreachable extension's call
+    // ends (statusPromptLines): ARG1 busy|noanswer|unavail, ARG2 the extension.
+    // An unanswered call hears it as early media (Progress), so a trunk call is
+    // not answered and not billed; a fax gets nothing.
+    $conf .= "[sub-status-prompt]\n";
+    $conf .= "exten => s,1,GotoIf(\$[\"\${AIPBX_FAX}\" = \"1\"]?done)\n";
+    $conf .= " same => n,ExecIf(\$[\"\${CHANNEL(state)}\" != \"Up\"]?Progress())\n";
+    $conf .= " same => n,GotoIf(\$[\"\${ARG1}\" = \"noanswer\"]?noans)\n";
+    $conf .= " same => n,Playback(vm-theperson,noanswer)\n";
+    $conf .= " same => n,SayDigits(\${ARG2})\n";
+    $conf .= " same => n,Playback(\${IF(\$[\"\${ARG1}\" = \"busy\"]?vm-isonphone:vm-isunavail)}&please-try-again,noanswer)\n";
+    $conf .= " same => n,Goto(done)\n";
+    $conf .= " same => n(noans),Playback(number-not-answering&please-try-again,noanswer)\n";
+    $conf .= " same => n(done),Return()\n\n";
 
     $ok = writeConfWithRollback('extensions_general.conf', $conf, function() {
         AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadDialplan()], t('sync.ctx_general'));

@@ -100,7 +100,6 @@ class SIPHelper {
             'account' => $ext_str,
             'secret' => $pass,
             'callerid' => "\"{$clean_name}\" <{$ext_str}>",
-            'context' => 'from-internal-pbx',
             'max_contacts' => '10',
             'auth_digest' => $authDigest ? 'yes' : 'no'
         ];
@@ -154,7 +153,8 @@ class SIPHelper {
             'qualify_frequency' => (string)$qualify,
             'max_contacts' => (string)$max_contacts,
             'dtmf_mode' => $dtmf_mode,
-            'timers' => $timers
+            'timers' => $timers,
+            '100rel' => !empty($t['prack_100rel']) ? trim($t['prack_100rel']) : 'yes',
         ];
 
         if (!empty($t['outbound_proxy'])) {

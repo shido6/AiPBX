@@ -18,15 +18,27 @@ class QueueService {
             $maxlen = intval($data['maxlen'] ?? 0);
             $announce_frequency = intval($data['announce_frequency'] ?? 30);
             $announce_holdtime = trim($data['announce_holdtime'] ?? 'yes');
+            $announce_position = ($data['announce_position'] ?? 'yes') === 'no' ? 'no' : 'yes';
+            // 0 = no periodic announcement; otherwise 15–600 s.
+            $periodic_frequency = intval($data['periodic_frequency'] ?? 45);
+            $periodic_frequency = $periodic_frequency <= 0 ? 0 : max(15, min(600, $periodic_frequency));
+            // Only an announcement that exists may be played ('' = the built-in prompts).
+            $periodic_announce = trim((string) ($data['periodic_announce'] ?? ''));
+            if ($periodic_announce !== '' && !DBHelper::fetchColumn('SELECT 1 FROM pbx_announcements WHERE audio_file = ?', [$periodic_announce])) {
+                $periodic_announce = '';
+            }
             $joinempty = trim($data['joinempty'] ?? 'yes');
             $leavewhenempty = trim($data['leavewhenempty'] ?? 'no');
             $ringinuse = trim($data['ringinuse'] ?? 'no');
             $max_wait_seconds = intval($data['max_wait_seconds'] ?? 300) ?: 300;
             $fallback_action = trim($data['fallback_action'] ?? 'hangup');
             $fallback_target = preg_replace('/[^0-9]/', '', trim($data['fallback_target'] ?? '')) ?: null;
-            $record_enabled = isset($data['record_enabled']) ? 1 : 0;
+            $record_enabled = PBXHelper::boolFlag($data, 'record_enabled', 0);
             $record_format = trim($data['record_format'] ?? 'wav');
-            $is_active = isset($data['is_active']) ? intval($data['is_active']) : 1;
+            if (!in_array($record_format, QUEUE_RECORD_FORMATS, true)) {
+                $record_format = 'wav';   // it goes into the dialplan: never free text
+            }
+            $is_active = PBXHelper::boolFlag($data, 'is_active', 1);
             $language = trim($data['language'] ?? '');
             if ($language !== '' && !in_array($language, getAvailableLanguages(), true)) {
                 $language = '';
@@ -91,6 +103,9 @@ class QueueService {
                 'maxlen' => $maxlen,
                 'announce_frequency' => $announce_frequency,
                 'announce_holdtime' => $announce_holdtime,
+                'announce_position' => $announce_position,
+                'periodic_frequency' => $periodic_frequency,
+                'periodic_announce' => $periodic_announce,
                 'joinempty' => $joinempty,
                 'leavewhenempty' => $leavewhenempty,
                 'ringinuse' => $ringinuse,
@@ -149,8 +164,10 @@ class QueueService {
                         SELECT id FROM pbx_ivrs WHERE (timeout_dest_type = 'queue' AND timeout_dest_id = ?) OR (invalid_dest_type = 'queue' AND invalid_dest_id = ?)
                         UNION ALL
                         SELECT id FROM pbx_time_conditions WHERE (match_dest_type = 'queue' AND match_dest_id = ?) OR (nomatch_dest_type = 'queue' AND nomatch_dest_id = ?) OR rules_json LIKE ?
+                        UNION ALL
+                        SELECT id FROM pbx_web_widgets WHERE dest_type = 'queue' AND (dest_id = ? OR dest_id = ?)
                     ) refs",
-                    [$q_name, $q_name, $q_name, $q_name, $q_name, $q_name, '%"match_dest_type":"queue","match_dest_id":"' . $q_name . '"%']
+                    [$q_name, $q_name, $q_name, $q_name, $q_name, $q_name, '%"match_dest_type":"queue","match_dest_id":"' . $q_name . '"%', $q_name, (string)$queue_id]
                 );
                 if ($refs > 0) {
                     throw new \Exception(t('srv_queue.err_in_use'));
@@ -159,7 +176,7 @@ class QueueService {
             }
             $removed_number = (string) (DBHelper::fetchColumn("SELECT internal_number FROM pbx_queues WHERE id = ?", [$queue_id]) ?? '');
             DBHelper::delete('pbx_queues', 'id', $queue_id);
-            markPendingSync('queues', 'queue', $q_name ?: ('id_' . $queue_id), "Kuyruk: " . ($q_row['title'] ?? $q_name ?? $queue_id) . " (silindi)", 'delete', $_SESSION['user_id'] ?? null);
+            markPendingSync('queues', 'queue', $q_name ?: ('id_' . $queue_id), "Queue: " . ($q_row['title'] ?? $q_name ?? $queue_id) . " (deleted)", 'delete', $_SESSION['user_id'] ?? null);
             if ($removed_number !== '') {
                 markPendingSync('internal_numbers', 'queue', $queue_id,
                     "Internal number removed: {$removed_number}", 'delete',

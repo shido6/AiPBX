@@ -118,8 +118,10 @@
     <string name="btn_remove">Odebrat</string>
     <string name="call_from_pbx">Hovor z ústředny</string>
     <string name="call_on_hold">Podrženo</string>
+    <string name="cf_always">PŘESM. (VŽDY)</string>
     <string name="cf_busy">PŘESM. (OBSAZENO)</string>
     <string name="cf_busy_noanswer">PŘESM. (OBSAZENO/NEPŘIJATO)</string>
+    <string name="cf_noanswer">PŘESM. (NEPŘIJATO)</string>
     <string name="chat_document">Dokument</string>
     <string name="chat_extension_title">Linka #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -418,4 +420,8 @@
     <string name="err_camera_permission_video">Chybí oprávnění ke kameře: hovor pokračuje jen se zvukem.</string>
     <string name="err_camera_unavailable">Kamera není dostupná: hovor pokračuje jen se zvukem.</string>
     <string name="contacts_extensions_listed">linek v seznamu</string>
+    <string name="api_fcm_token_failed">Token FCM se nepodařilo odeslat (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Skupinu se nepodařilo smazat (HTTP %1$s)</string>
+    <string name="pref_send_plus_title">Ponechat předvolbu \'+\'</string>
+    <string name="pref_send_plus_desc">Odeslat mezinárodní \'+\' přímo do PBX pro normalizaci (ZAPNUTO) nebo převést na 00 (VYPNUTO)</string>
 </resources>

@@ -28,29 +28,53 @@ function __syncRingGroupsBody() {
         $conf .= "[app-ringgroup-{$id}]\n";
         $conf .= "exten => s,1,NoOp(Ring Group {$id}: {$name} - Group Number: {$num})\n";
         $conf .= " same => n,Set(CDR(direction)=internal)\n";
+        // Carry the caller's permission group onto the Local legs below: the
+        // endpoint variable does not cross channels, but a __-prefixed copy
+        // does. Without it an internal caller's restrictions did not apply
+        // to the external members (an inbound call has no group: allowed).
+        $conf .= " same => n,Set(__PERMISSION_GROUP_ID=\${PERMISSION_GROUP_ID})\n";
 
-        if ($cid_prefix !== '') {
-            $clean_prefix = toCleanAscii($cid_prefix);
+        // Letters, digits, space and . _ - only: quotes or brackets broke the
+        // ExecIf() expression around it.
+        $clean_prefix = trim((string) preg_replace('/[^A-Za-z0-9 ._-]/', '', toCleanAscii($cid_prefix)));
+        if ($clean_prefix !== '') {
             $conf .= " same => n,ExecIf(\$[\"\${CALLERID(name)}\" != \"\"]?Set(CALLERID(name)={$clean_prefix} \${CALLERID(name)}):Set(CALLERID(name)={$clean_prefix} \${CALLERID(num)}))\n";
         }
 
         if ($record) {
+            require_once __DIR__ . '/../services/PrivacyService.php';
+            $beepOpt = PrivacyService::mixMonitorOptionSuffix();
+            $conf .= " same => n,GotoIf(\$[\"\${PRIVACY_NO_RECORD}\" = \"1\"]?rg_rec_exists_{$id})\n";
             $conf .= " same => n,GotoIf(\$[\"\${MIXMONITOR_FILENAME}\" != \"\"]?rg_rec_exists_{$id})\n";
             $conf .= " same => n,Set(REC_FILE=/var/spool/asterisk/monitor/rg_\${STRFTIME(\${EPOCH},,%Y%m%d_%H%M%S)}_\${FILTER(0-9+,\${CALLERID(num)})}.wav)\n";
-            $conf .= " same => n,MixMonitor(\${REC_FILE})\n";
+            $conf .= " same => n,MixMonitor(\${REC_FILE}{$beepOpt})\n";
             $conf .= " same => n,Set(CDR(userfield)=\${REC_FILE})\n";
             $conf .= " same => n(rg_rec_exists_{$id}),NoOp(Ring Group Record: \${MIXMONITOR_FILENAME})\n";
         }
 
         // Parse numbers list (comma/space/newline separated)
         $raw_numbers = preg_split('/[\s,;]+/', trim($rg['numbers_list'] ?? ''));
+        $ext_check = $db->prepare('SELECT 1 FROM sys_users WHERE extension = ?');
         $channels = [];
         foreach ($raw_numbers as $entry) {
             $entry = preg_replace('/[^0-9+]/', '', trim($entry));
             if ($entry === '') continue;
 
-            // Extension number check (up to 5 digits or registered in the extension database)
-            if (strlen($entry) <= 5 && !str_starts_with($entry, '0')) {
+            // A registered extension is always internal, whatever its length:
+            // the old length-only heuristic sent 6-digit and 0-leading
+            // extensions out through the outbound routes. Short unregistered
+            // numbers keep the old internal routing (a typo rings nothing
+            // instead of placing an outbound call).
+            $is_extension = false;
+            if (str_starts_with($entry, '+')) {
+                $is_extension = false;
+            } elseif (strlen($entry) <= 5 && !str_starts_with($entry, '0')) {
+                $is_extension = true;
+            } else {
+                $ext_check->execute([$entry]);
+                $is_extension = (bool) $ext_check->fetchColumn();
+            }
+            if ($is_extension) {
                 $channels[] = "Local/{$entry}@from-internal-pbx-ortak/n";
             } else {
                 // External number (through the outbound routes)
@@ -67,11 +91,26 @@ function __syncRingGroupsBody() {
                 $conf .= " same => n,Dial({$chan},{$step_timeout},tT)\n";
                 $conf .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?rg_done_{$id})\n";
             }
-        } else {
-            // 'ringall' or 'random' (default: ring all targets at the same time)
-            if ($strategy === 'random') {
-                shuffle($channels);
+        } elseif ($strategy === 'random' && count($channels) > 1) {
+            // Random means one target picked per call ("pick a target at
+            // random"). Shuffling here would freeze the order until the next
+            // resync, and dialling everybody at once is ringall, not random —
+            // so the choice happens in the dialplan, once per call.
+            $n = count($channels);
+            $conf .= " same => n,Set(RG_PICK_{$id}=\${RAND(1,{$n})})\n";
+            foreach ($channels as $idx => $chan) {
+                $pick = $idx + 1;
+                $conf .= " same => n,GotoIf(\$[\${RG_PICK_{$id}} = {$pick}]?rg_rand_{$id}_{$pick})\n";
             }
+            foreach ($channels as $idx => $chan) {
+                $pick = $idx + 1;
+                $conf .= " same => n(rg_rand_{$id}_{$pick}),Dial({$chan},{$timeout},tT)\n";
+                $conf .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?rg_done_{$id})\n";
+                $conf .= " same => n,Goto(rg_missed_{$id})\n";
+            }
+            $conf .= " same => n(rg_missed_{$id}),NoOp(Ring group {$id} random pick not answered)\n";
+        } else {
+            // 'ringall' (default: ring all targets at the same time)
             $dial_str = implode('&', $channels);
             $conf .= " same => n,Dial({$dial_str},{$timeout},tT)\n";
             $conf .= " same => n,GotoIf(\$[\"\${DIALSTATUS}\" = \"ANSWER\"]?rg_done_{$id})\n";

@@ -14,10 +14,7 @@ import android.os.IBinder
 import android.view.View
 import android.view.WindowManager
 import android.widget.Toast
-import androidx.activity.SystemBarStyle
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
@@ -28,7 +25,9 @@ import com.mhrgl.aipbx.model.CallStatus
 import com.mhrgl.aipbx.model.ConnectionStatus
 import com.mhrgl.aipbx.service.PbxForegroundService
 
-class IncomingCallActivity : AppCompatActivity(), SipEngineListener {
+class IncomingCallActivity : BaseActivity(), SipEngineListener {
+
+    override val darkSystemBars = true
 
     private lateinit var binding: ActivityIncomingCallBinding
     private var pbxService: PbxForegroundService? = null
@@ -58,10 +57,6 @@ class IncomingCallActivity : AppCompatActivity(), SipEngineListener {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
-        )
         super.onCreate(savedInstanceState)
         wakeAndUnlockScreen()
 
@@ -69,16 +64,10 @@ class IncomingCallActivity : AppCompatActivity(), SipEngineListener {
         setContentView(binding.root)
 
         // Edge-to-edge WindowInsets support
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
-            val systemBars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
-            view.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
+        applyEdgeToEdgeInsets(binding.root, consumeIme = false)
 
-        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: "Bilinmeyen Arayan"
-        val callerNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER) ?: ""
+        val callerName = intent.getStringExtra(EXTRA_CALLER_NAME)?.takeIf { it.isNotBlank() } ?: getString(R.string.vm_unknown_caller)
+        val callerNumber = intent.getStringExtra(EXTRA_CALLER_NUMBER)?.trim().orEmpty()
 
         binding.tvIncomingCallerName.text = callerName
         binding.tvIncomingCallerNumber.text = if (callerNumber.isNotEmpty()) getString(R.string.extension_label_caller, callerNumber) else getString(R.string.call_from_pbx)
@@ -103,10 +92,8 @@ class IncomingCallActivity : AppCompatActivity(), SipEngineListener {
             if (pbxService != null) {
                 pbxService?.engine?.rejectCall()
             } else {
-                val declineIntent = Intent(this, PbxForegroundService::class.java).apply {
-                    action = PbxForegroundService.ACTION_DECLINE
-                }
-                startService(declineIntent)
+                // Not bound yet: the helper starts the service the way Android 8+ allows
+                PbxForegroundService.startWithAction(this, PbxForegroundService.ACTION_DECLINE)
             }
             finish()
         }
@@ -139,14 +126,34 @@ class IncomingCallActivity : AppCompatActivity(), SipEngineListener {
     }
 
     private fun performAnswer(withVideo: Boolean = false) {
-        pbxService?.stopRinging()
-        pbxService?.engine?.answerCall(if (withVideo) AppPreferences.getInstance(this).videoLimits else null)
+        val service = pbxService
+        if (service != null) {
+            service.stopRinging()
+            service.engine.answerCall(if (withVideo) AppPreferences.getInstance(this).videoLimits else null)
 
-        val callIntent = Intent(this, CallActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            val callIntent = Intent(this, CallActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            startActivity(callIntent)
+            finish()
+        } else {
+            // Service not yet bound: dispatch ACTION_ANSWER / ACTION_ANSWER_VIDEO to PbxForegroundService
+            val answerIntent = Intent(this, PbxForegroundService::class.java).apply {
+                action = if (withVideo) PbxForegroundService.ACTION_ANSWER_VIDEO else PbxForegroundService.ACTION_ANSWER
+            }
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(answerIntent)
+                } else {
+                    startService(answerIntent)
+                }
+            } catch (e: Exception) {
+                try {
+                    startService(answerIntent)
+                } catch (ignored: Exception) {}
+            }
+            finish()
         }
-        startActivity(callIntent)
-        finish()
     }
 
     override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {

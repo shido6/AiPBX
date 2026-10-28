@@ -8,7 +8,7 @@ managers: yesterday's calls and faxes and the state of every check.
 
 | Check | Default | Warning / failed when |
 |-------|---------|------------------------|
-| Asterisk | 5 min | Asterisk does not answer |
+| Asterisk | 5 min | Asterisk does not answer (failed); a security update (OpenSSL, the C library, SRTP …) waits for an Asterisk restart and the [night restart window](pbx-tuning.md#safe-night-maintenance-restart-window) is off (warning). Updates of other libraries are not reported |
 | Database | 5 min | MariaDB does not answer |
 | Web portal | 5 min | the sign-in page does not answer 200 |
 | Chat service | 5 min | `aipbx-chat` is not running |
@@ -18,6 +18,11 @@ managers: yesterday's calls and faxes and the state of every check.
 | E-mail sending | 1 h | postfix not running (failed); messages queued for over an hour (warning) |
 | Pending changes | 1 h | changes not applied for over an hour |
 | Outgoing faxes | 1 h | faxes waiting to be sent for over an hour |
+| Call records | 15 min | Asterisk has handled calls since it started (15 min or more ago) but none reached the call history — the CDR database connection is broken; restart Asterisk |
+| Trunk limits | 5 min | a trunk refused calls over its channel or calls-per-minute limit in the last 15 minutes (see [Trunks](trunks.md#limits)) |
+| Failed registrations | 15 min | failed SIP registrations or auth attempts in Asterisk's security log exceed the threshold in 15 minutes (see [PBX tuning](pbx-tuning.md#failed-registration-alarm)) |
+| Call quality | 5 min | a trunk or extension is losing audio (from RTCP, see [Call quality](call-quality.md)); not used while signaling capture is off |
+| Other alerts | 5 min | problems raised in the alert bell (plugins, failed [scheduled tasks](scheduled-tasks.md#alarms-and-audit-log)), so they are e-mailed too |
 | DHCP / TFTP / FTP | 15 min | switched on, but the service does not run |
 | Server address | 60 min | a stored address (server, phones, coturn, mDNS) is not this server's any more: see [Network settings](network-settings.md#when-the-servers-ip-address-changed) |
 | SSH key-only login | daily | `sshd` still accepts a password or keyboard-interactive login (warning), or refuses public keys (failed) — the rule for a centralized collector or portal; information when only root may use a key, and when the configuration cannot be read. It reports, never edits `sshd`. See [Security](security.md#ssh) |
@@ -78,12 +83,37 @@ the probe itself saw, naming that source instead of a capture.
   a row**, so a short hiccup stays quiet. Less frequent checks report the first bad result.
 - While a problem lasts, the alarm is **repeated** after the chosen number of hours; a check that gets
   worse (warning → failed) is reported at once.
+- **One problem, one e-mail per window.** A check that fails, recovers and fails again inside that
+  window is the same incident, so it does not mail again: the window starts at the last e-mail the
+  check sent, and a different check is a different problem.
+- **Quiet hours** (off by default) hold e-mails for warnings and for "back to normal" inside the
+  chosen window (`HH:MM-HH:MM`, crossing midnight is fine). A **failed** check is never held: it is
+  mailed at once. Nothing is lost by holding: the alarm is not recorded as reported, so the first run
+  after the window ends mails whatever is still wrong, in one e-mail — and a warning that fixed itself
+  overnight mails nothing, because there is nothing left to say. The daily summary is not held; it is
+  a digest at the time you chose, not an alarm. Empty, malformed or zero-length hours mean no window,
+  so a typo cannot silence alarms; the clock is the server's, the same one the summary time uses.
 - When it works again, a **back to normal** e-mail follows.
 - All problems found in one run go into one e-mail.
 
 The texts are e-mail templates (*E-mail → Templates*: Health alarm, Health back to normal, Daily
 summary). A server that is completely down cannot send an e-mail itself: watch it from outside
 for that (e.g. a monitoring service that opens the sign-in page).
+
+## Alert bell
+
+Administrators have a **bell** in the top bar. Its number is how many problems are open now (red when one
+has failed); a dot marks changes since you last opened it. It lists:
+
+- every check that is *warning* or *failed* now;
+- problems plugins report (see [Plugin development](plugin-development.md#d-other-hooks)) and failed [scheduled tasks](scheduled-tasks.md#alarms-and-audit-log), e-mailed through the check *Other alerts*;
+- **the alarm path itself**: no recipient chosen ("Alarm e-mails go to nobody"), or no check has run for
+  30 minutes ("Health checks are not running", i.e. the cron job stopped);
+- below, the changes of the last 7 days (went wrong / back to normal).
+
+It shows state, not a log: an item goes away by itself when its problem is fixed, nothing has to be
+cleared. Everything in it is also e-mailed to the recipients above when they are set; the bell works
+without e-mail, so a PBX whose mail is not set up or broken still shows its problems.
 
 ## Daily summary
 

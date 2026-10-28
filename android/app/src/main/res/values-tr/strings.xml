@@ -118,8 +118,10 @@
     <string name="btn_remove">Çıkar</string>
     <string name="call_from_pbx">Santral Çağrısı</string>
     <string name="call_on_hold">Beklemede</string>
+    <string name="cf_always">CF (HER ZAMAN)</string>
     <string name="cf_busy">CF (MEŞGUL)</string>
     <string name="cf_busy_noanswer">CF (MEŞGUL/CEVAPSIZ)</string>
+    <string name="cf_noanswer">CF (CEVAPSIZ)</string>
     <string name="chat_document">Belge</string>
     <string name="chat_extension_title">Dahili #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -298,6 +300,8 @@
     <string name="ui_dnd">Rahatsız Etme (DND)</string>
     <string name="ui_dnd_active">DND AKTİF</string>
     <string name="ui_dnd_desc">Gelen tüm aramalar meşgule düşer</string>
+    <string name="pref_send_plus_title">Uluslararası \'+\' Koru</string>
+    <string name="pref_send_plus_desc">Aramalarda \'+\' önekini doğrudan santral normalleştirmesine gönder (Açık) veya 00\'a dönüştür (Kapalı)</string>
     <string name="ui_download_share">İndir ve Paylaş</string>
     <string name="ui_edit_info">Bilgileri Düzenle</string>
     <string name="ui_extension_placeholder">Dahili: --</string>
@@ -418,4 +422,6 @@
     <string name="err_camera_permission_video">Kamera izni yok: görüşme yalnızca sesli devam ediyor.</string>
     <string name="err_camera_unavailable">Kamera açılamadı: görüşme yalnızca sesli devam ediyor.</string>
     <string name="contacts_extensions_listed">dahili listelendi</string>
+    <string name="api_fcm_token_failed">FCM Token gönderilemedi (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Grup silinemedi (HTTP %1$s)</string>
 </resources>

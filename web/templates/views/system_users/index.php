@@ -29,7 +29,7 @@
             <?php if ($import_preview['send_invitations']): ?><br><i class="fas fa-envelope"></i> <?php echo t('system_users.import_will_invite'); ?><?php endif; ?>
         </p>
         <div class="table-responsive" style="max-height: 420px; overflow: auto;">
-            <table class="table">
+            <table class="data-table">
                 <thead><tr>
                     <th>#</th><th><?php echo t('system_users.field_username'); ?></th><th><?php echo t('system_users.field_fullname'); ?></th>
                     <th><?php echo t('system_users.field_email'); ?></th><th><?php echo t('system_users.import_col_extension'); ?></th>
@@ -228,7 +228,7 @@
                             <td class="text-right">
                                 <div class="table-actions-cell">
                                     <?php if (!empty($u['email'])): ?>
-                                        <form method="POST" class="u-inline" onsubmit="return confirm('<?php echo sprintf(t('system_users.send_mail_confirm'), htmlspecialchars($u['username'], ENT_QUOTES)); ?>');">
+                                        <form method="POST" class="u-inline" onsubmit="return confirm(<?php echo jsArg(sprintf(t('system_users.send_mail_confirm'), $u['username'])); ?>);">
                                             <input type="hidden" name="csrf_token" value="<?php echo getCSRFToken(); ?>">
                                             <input type="hidden" name="send_activation_mail" value="1">
                                             <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
@@ -242,7 +242,7 @@
                                         </button>
                                     <?php endif; ?>
                                     <?php if (!empty($u['two_factor_enabled'])): ?>
-                                        <form method="POST" class="u-inline" onsubmit="return confirm('<?php echo sprintf(t('system_users.reset_2fa_confirm'), htmlspecialchars($u['username'], ENT_QUOTES)); ?>');">
+                                        <form method="POST" class="u-inline" onsubmit="return confirm(<?php echo jsArg(sprintf(t('system_users.reset_2fa_confirm'), $u['username'])); ?>);">
                                             <input type="hidden" name="csrf_token" value="<?php echo getCSRFToken(); ?>">
                                             <input type="hidden" name="reset_2fa" value="1">
                                             <input type="hidden" name="user_id" value="<?php echo $u['id']; ?>">
@@ -458,7 +458,7 @@
                                 <td class="u-strong"><?php echo htmlspecialchars($r_item['role_name']); ?></td>
                                 <td class="text-muted"><?php echo htmlspecialchars($r_item['description'] ?: '-'); ?></td>
                                 <td class="text-right">
-                                    <button type="button" class="btn btn-secondary btn-sm" onclick='editSystemRole(<?php echo json_encode($r_item, JSON_HEX_APOS | JSON_HEX_QUOT); ?>)' title="<?php echo t('system_users.edit_tooltip'); ?>">
+                                    <button type="button" class="btn btn-secondary btn-sm" onclick='editSystemRole(<?php echo jsArg($r_item); ?>)' title="<?php echo t('system_users.edit_tooltip'); ?>">
                                         <i class="fas fa-edit"></i>
                                     </button>
                                 </td>

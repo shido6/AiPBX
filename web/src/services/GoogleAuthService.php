@@ -16,6 +16,13 @@ class GoogleAuthService
      */
     public static function isEnabled(): bool
     {
+        if (is_file(dirname(__DIR__) . '/core/PluginManager.php')) {
+            require_once dirname(__DIR__) . '/core/PluginManager.php';
+            $installed = PluginManager::installedMap();
+            if (isset($installed['google-auth']) && empty($installed['google-auth']['enabled'])) {
+                return false;
+            }
+        }
         $enabled = function_exists('getSystemSetting') ? getSystemSetting('google_oauth_enabled', '0') : '0';
         return $enabled === '1' && !empty(self::getClientId());
     }
@@ -46,12 +53,8 @@ class GoogleAuthService
             return $customUri;
         }
 
-        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-        $host = $_SERVER['HTTP_X_FORWARDED_HOST'] ?? $_SERVER['HTTP_HOST'] ?? 'localhost';
-        if (strpos($host, ',') !== false) {
-            $host = trim(explode(',', $host)[0]);
-        }
-        return $scheme . '://' . $host . '/auth/google/callback';
+        require_once __DIR__ . '/ForgotPasswordService.php';
+        return rtrim(ForgotPasswordService::portalUrl(), '/') . '/auth/google/callback';
     }
 
     /**
@@ -270,8 +273,8 @@ class GoogleAuthService
         $db = getDB();
         $stmt = $db->prepare('
             SELECT id, username, full_name, email, role, extension, extension_type,
-                   sip_password, theme_preference, language_preference, is_active, must_reset_password,
-                   two_factor_enabled
+                   sip_password, allowed_phone_mode, theme_preference, language_preference, is_active,
+                   must_reset_password, two_factor_enabled
             FROM sys_users
             WHERE LOWER(TRIM(email)) = ? AND is_active = 1
             LIMIT 1
@@ -289,6 +292,19 @@ class GoogleAuthService
     {
         if (session_status() === PHP_SESSION_NONE) {
             session_start();
+        }
+
+        if (!empty($user['must_reset_password'])) {
+            session_regenerate_id(true);
+            $_SESSION['pending_reset_user_id'] = $user['id'];
+            unset($_SESSION['captcha_num1'], $_SESSION['captcha_num2']);
+            if (function_exists('logLoginAttempt')) {
+                logLoginAttempt($clientIp, $user['username'], 'SUCCESS');
+            }
+            if (function_exists('writeAuditLog')) {
+                writeAuditLog('security', 'sys_users', (string)$user['id'], "User '{$user['username']}' signed in with Google, required to reset password.", 'google_login', (int)$user['id']);
+            }
+            return '/force-reset';
         }
 
         session_regenerate_id(true);
@@ -311,7 +327,7 @@ class GoogleAuthService
             logLoginAttempt($clientIp, $user['username'], 'SUCCESS');
         }
         if (function_exists('writeAuditLog')) {
-            writeAuditLog($user['id'], 'sys_users', $user['id'], "User '{$user['username']}' signed in with Google ({$user['email']}).", 'google_login');
+            writeAuditLog('security', 'sys_users', (string)$user['id'], "User '{$user['username']}' signed in with Google ({$user['email']}).", 'google_login', (int)$user['id']);
         }
 
         return roleHomePath($user['role']);
@@ -340,6 +356,9 @@ class GoogleAuthService
             if (!empty($clientSecret) || $enabled === '0') {
                 $stmt->execute(['google_client_secret', $clientSecret]);
             }
+            // The secret itself is never written to the log, only that it changed.
+            writeAuditLog('google_integration', 'settings', 0, 'Google sign-in: ' . ($enabled === '1' ? 'on' : 'off')
+                . ($clientSecret !== '' ? ', client secret changed' : ''), 'update', $_SESSION['user_id'] ?? null);
 
             return ['success' => true, 'message' => t('srv_google.saved')];
         } catch (\Exception $e) {

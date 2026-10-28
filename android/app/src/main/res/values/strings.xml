@@ -84,8 +84,10 @@
     <string name="api_chats_failed">Could not get chats (HTTP %1$s)</string>
     <string name="api_contacts_failed">Could not get contacts (HTTP %1$s)</string>
     <string name="api_features_failed">Could not get features (HTTP %1$s)</string>
+    <string name="api_fcm_token_failed">Could not send FCM token (HTTP %1$s)</string>
     <string name="api_google_failed">Google sign-in failed (HTTP %1$s)</string>
     <string name="api_group_create_failed">Could not create the group (HTTP %1$s)</string>
+    <string name="api_group_delete_failed">Could not delete the group (HTTP %1$s)</string>
     <string name="api_group_details_failed">Could not get group details (HTTP %1$s)</string>
     <string name="api_group_update_failed">Could not update the group (HTTP %1$s)</string>
     <string name="api_history_failed">Could not get call history (HTTP %1$s)</string>
@@ -120,8 +122,10 @@
     <string name="btn_remove">Remove</string>
     <string name="call_from_pbx">PBX Call</string>
     <string name="call_on_hold">On hold</string>
+    <string name="cf_always">CF (ALWAYS)</string>
     <string name="cf_busy">CF (BUSY)</string>
     <string name="cf_busy_noanswer">CF (BUSY/NO ANSWER)</string>
+    <string name="cf_noanswer">CF (NO ANSWER)</string>
     <string name="chat_document">Document</string>
     <string name="chat_extension_title">Extension #%1$s</string>
     <string name="chat_name_ext_title">%1$s (#%2$s)</string>
@@ -300,6 +304,8 @@
     <string name="ui_dnd">Do Not Disturb (DND)</string>
     <string name="ui_dnd_active">DND ON</string>
     <string name="ui_dnd_desc">All incoming calls get busy</string>
+    <string name="pref_send_plus_title">Keep \'+\' Prefix</string>
+    <string name="pref_send_plus_desc">Send international \'+\' directly to PBX for dialplan normalization (ON) or convert to 00 (OFF)</string>
     <string name="ui_download_share">Download &amp; Share</string>
     <string name="ui_edit_info">Edit Info</string>
     <string name="ui_extension_placeholder">Extension: --</string>

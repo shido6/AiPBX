@@ -4,6 +4,10 @@
 configuration over HTTPS from AiPBX and registers with the right extension, keys and settings.
 Supported: **Yealink**, **Grandstream**, **Fanvil**, **Snom**, **Cisco SPA**, **Poly** and **NEC** DT700/DT800 (models listed
 on the page).
+Cisco's enterprise **7900/8800 series** (CallManager firmware) are supported too, but they need firmware, an
+Asterisk patch and a folder of shared files that AiPBX cannot ship: see [Cisco 7900 / 8800 series](cisco-callmanager.md).
+A 7900 that is still running SCCP firmware is switched to Cisco's SIP load as part of provisioning — name the
+load for each model on the settings tab, and restart the phone once so it reads its file.
 
 The page is admin-only, like *Users* and *Firewall*: the provisioning URLs it shows hand out the
 SIP password of the extension.
@@ -15,6 +19,7 @@ SIP password of the extension.
 | One phone | **+** → MAC address (any format: `00:15:65:AA:BB:CC`, `001565aabbcc`), model, extension |
 | Many phones | **CSV import**: one phone per line, `mac,model,extension` (`;` or tab also work, a header line is skipped). Model is the name on the page (`Yealink T46U`), its short name (`T46U`) or its key (`yealink-t46u`). A known MAC is updated. |
 | Waiting phones | A phone that asked by MAC address but is not known yet (see *Zero touch* below) is listed under **Waiting phones** with its MAC, vendor, IP and User-Agent; pick a model and an extension and press ✓. |
+| Found on the network | The discovery engine (*Phones found on the network*, below) records phones it sees on the network without asking anybody; press ✓, ignore them, or let an extension pool provision them. |
 
 Each phone gets:
 
@@ -23,6 +28,48 @@ Each phone gets:
   written to the phone, so the factory password stops working after the first provisioning.
 
 **New URL** replaces the token; the old URL stops working at once (use it when a URL leaked).
+
+## Phones found on the network (discovery)
+
+A phone does not have to be typed in. The **discovery engine** (`engine/`, a Python module the install puts on a
+5-minute cron entry) looks at the network and records what it found under *Discovered on the network* at the
+top of the page; from there a phone is one click, or none at all.
+
+| Source | Sends packets? | What it sees |
+|--------|----------------|--------------|
+| AiPBX's DHCP lease file | no | phones that took an address from AiPBX's own DHCP server |
+| the ARP table | no | anything on the local segment that talked recently |
+| dnsmasq's DHCP log | no | phones that asked for DHCP, even after the lease file was rotated or dnsmasq restarted |
+| a bounded ARP sweep | **yes** | the same as the ARP table, but for every address, so an idle phone answers too |
+
+Only a MAC whose prefix is a desk-phone vendor (`PhoneModels::OUI`) counts: laptops, printers, access points and
+the PBX itself are filtered out, and anything unrecognised is not even recorded. The sweep is off by default
+(it is the only source that puts traffic on the wire) and bounded to 1024 addresses per network, two networks
+and about 30 seconds per run; the rest of a network is left for the next run.
+
+**What happens to a discovered phone:**
+
+| State | How it gets there |
+|-------|-------------------|
+| **New** | the engine saw it. On the page: ✓ *Provision this phone* (pick the model and an extension), or ✗ *Ignore*. |
+| **Ignored** | an administrator said no. It stays on the page, and the automatic step never touches it again. |
+| **Provisioned** | a phone exists for that MAC. It is shown as a phone that is on the network. |
+| **Was a phone, now deleted** | the phone was deleted. Nothing re-creates it on its own; ✓ provisions it again if you mean it. |
+
+**Automatic provisioning** happens only when you ask for it, in *Phones → Discovery*:
+
+- **Extension pool** (e.g. `5000-5099`): a discovered phone takes the next extension in the pool that is an
+  active SIP user without a phone yet. Empty: every phone is only recorded, and you press ✓ yourself.
+- **Model per vendor** (e.g. `yealink=yealink-t46u`): the MAC tells us who made the phone, never which model it
+  is, so a vendor without a line here is never provisioned automatically.
+
+A MAC that is already a phone is **never** provisioned again — not by the automatic step, and not by ✓, which
+refuses and says so. Only a phone seen in the last 24 hours is taken automatically, at most 25 per run, and the
+whole path goes through the same code as the +, the CSV import and the waiting list, so tokens, admin passwords,
+vendor templates and the TFTP export all keep working the same way.
+
+On a shell: `php web/bin/aipbx_phone_discovery.php status` shows what the engine saw and what the settings would
+do about it (read-only), and `python3 -m aipbx_engine check` (as `www-data`) verifies the engine could run.
 
 ## Pointing a phone at AiPBX
 
@@ -38,6 +85,7 @@ server in the phone's web interface:
 | Cisco SPA | *Admin login → Advanced → Voice → Provisioning → Profile Rule*: the copied URL followed by `spa$MA.xml` |
 | Poly | *Settings → Provisioning Server*: server type HTTPS, the copied URL as server address |
 | NEC | The phone's file (configuration) server setting, or DHCP option 66: the copied URL |
+| Cisco 79xx/88xx (CallManager) | Not a URL: these phones ask their server for `SEP<MAC>.cnf.xml` by name, so they are pointed at the PBX by DHCP **option 150** and read the file from the TFTP folder. See [Cisco 7900 / 8800 series](cisco-callmanager.md). |
 
 The phone then asks for its own file under that URL; AiPBX checks that the MAC in the file name
 is the phone's:
@@ -50,6 +98,7 @@ is the phone's:
 | Snom | `snom<model>-<MAC>.htm` (plug and play) or `snom-<mac>.xml` (setting URL) | `snom<model>.htm` |
 | Cisco SPA | `spa<mac>.xml` | `spa<model>.cfg` |
 | Poly | `<mac>.cfg` (master file, names the next one) and `phone<mac>.cfg` (settings) | `000000000000.cfg` |
+| Cisco 79xx/88xx | `SEP<MAC>.cnf.xml` | `SIPDefault.cnf.xml`, `Softkeys.xml`, `DialTemplate.xml` |
 | NEC | `dt-<mac>.cfg` (master), `dt-<mac>-phone.cfg`, `dt-<mac>-local.cfg` | `dt-000000000000.cfg`, `dt-sip.cfg` |
 
 Cisco SPA phones only ask for a MAC-based name when their Profile Rule says so, so zero touch

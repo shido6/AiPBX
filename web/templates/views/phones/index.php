@@ -6,6 +6,11 @@
  * @var array $waiting
  * @var array $users
  * @var array $settings
+ * @var array $discovered        phones the engine found on the network
+ * @var array $discoverySummary  how many of them are new / ignored / provisioned
+ * @var array $discovery          the discovery settings
+ * @var int   $discoveryPoolFree  free extensions left in the pool
+ * @var array $discoveryEngine    the engine's last run (state + log tail)
  * @var string $macBaseUrl
  */
 $canEdit = hasModulePermission('phones', 'edit');
@@ -45,6 +50,7 @@ $userOptions = function () use ($users) {
             </button>
             <a href="/phone-keys" class="btn btn-secondary btn-sm" title="<?php echo t('phones.keys_title'); ?>"><i class="fas fa-th"></i></a>
             <?php if ($canEdit): ?>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="UIHelper.openOverlayModal('discoverySettingsModal')" title="<?php echo t('phonedisc.settings_title'); ?>"><i class="fas fa-wifi"></i></button>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="UIHelper.openOverlayModal('provisionSettingsModal')" title="<?php echo t('phones.settings_title'); ?>"><i class="fas fa-sliders-h"></i></button>
                 <button type="button" class="btn btn-secondary btn-sm" onclick="UIHelper.openOverlayModal('phoneImportModal')" title="<?php echo t('phones.import_title'); ?>"><i class="fas fa-file-csv"></i></button>
                 <button type="button" class="btn btn-primary btn-sm" onclick="openCreatePhoneModal()" title="<?php echo t('phones.add'); ?>"><i class="fas fa-plus-circle"></i></button>
@@ -84,7 +90,14 @@ $userOptions = function () use ($users) {
                             <td><code><?php echo htmlspecialchars(PhoneModels::formatMac($p['mac'])); ?></code>
                                 <?php if ($p['notes'] !== ''): ?><div class="text-muted u-fs-11"><?php echo htmlspecialchars($p['notes']); ?></div><?php endif; ?>
                             </td>
-                            <td><?php echo htmlspecialchars($m['label'] ?? $p['model']); ?></td>
+                            <td><?php echo htmlspecialchars($m['label'] ?? $p['model']); ?>
+                                <?php if (($p['firmware_state'] ?? '') !== ''): ?>
+                                    <div class="text-muted u-fs-11"<?php echo $p['firmware_note'] !== '' ? ' title="' . htmlspecialchars((string) $p['firmware_note']) . '"' : ''; ?>>
+                                        <?php echo t('phones.firmware_' . $p['firmware_state']); ?>
+                                        <?php if ($p['firmware_load'] !== ''): ?><code><?php echo htmlspecialchars((string) $p['firmware_load']); ?></code><?php endif; ?>
+                                    </div>
+                                <?php endif; ?>
+                            </td>
                             <td>
                                 <?php if ($p['extension'] !== null): ?>
                                     <span class="badge badge-info"><?php echo htmlspecialchars($p['extension']); ?></span>
@@ -125,13 +138,139 @@ $userOptions = function () use ($users) {
                                             <button type="submit" name="regenerate_token" value="1" class="btn btn-secondary btn-sm" title="<?php echo t('phones.new_url'); ?>" onclick="return confirm(<?php echo htmlspecialchars(json_encode(t('phones.new_url_confirm')), ENT_QUOTES); ?>);"><i class="fas fa-key"></i></button>
                                         </form>
                                         <button type="button" class="btn btn-secondary btn-sm" onclick="showPhoneAdminPassword(<?php echo (int) $p['id']; ?>)" title="<?php echo t('phones.admin_password'); ?>"><i class="fas fa-user-lock"></i></button>
-                                        <button type="button" class="btn btn-secondary btn-sm" onclick='openEditPhoneModal(<?php echo json_encode(['id' => (int) $p['id'], 'mac' => PhoneModels::formatMac($p['mac']), 'model' => $p['model'], 'user_id' => (int) $p['user_id'], 'notes' => $p['notes']], JSON_HEX_APOS | JSON_HEX_TAG); ?>)' title="<?php echo t('common.edit'); ?>"><i class="fas fa-edit"></i></button>
+                                        <button type="button" class="btn btn-secondary btn-sm" onclick='openEditPhoneModal(<?php echo jsArg(['id' => (int) $p['id'], 'mac' => PhoneModels::formatMac($p['mac']), 'model' => $p['model'], 'user_id' => (int) $p['user_id'], 'notes' => $p['notes']]); ?>)' title="<?php echo t('common.edit'); ?>"><i class="fas fa-edit"></i></button>
                                     <?php endif; ?>
                                     <?php if (hasModulePermission('phones', 'delete')): ?>
                                         <form method="POST" class="u-inline" onsubmit="return confirm(<?php echo htmlspecialchars(json_encode(t('phones.delete_confirm')), ENT_QUOTES); ?>);">
                                             <input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>">
                                             <input type="hidden" name="phone_id" value="<?php echo (int) $p['id']; ?>">
                                             <button type="submit" name="delete_phone" value="1" class="btn btn-danger btn-sm" title="<?php echo t('common.delete'); ?>"><i class="fas fa-trash"></i></button>
+                                        </form>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<?php
+// --- Phones the discovery engine found on the network -----------------------
+$discoveryStateBadge = [
+    'new' => ['badge-warning', 'phonedisc.state_new'],
+    'ignored' => ['badge-secondary', 'phonedisc.state_ignored'],
+    'provisioned' => ['badge-info', 'phonedisc.state_provisioned'],
+    'deleted' => ['badge-secondary', 'phonedisc.state_deleted'],
+];
+$engineState = $discoveryEngine['state'];
+$engineRan = isset($engineState['at']);
+$pool = array_filter(explode(',', $discovery['provision_discovery_pool']));
+// vendor => model: a vendor that is not here is never provisioned automatically.
+$configuredModels = PhoneDiscoveryService::parseModels($discovery['provision_discovery_models']);
+?>
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">
+            <i class="fas fa-wifi u-primary"></i> <?php echo t('phonedisc.title'); ?>
+            <span class="badge badge-secondary u-fs-11 u-ml-8"><?php echo count($discovered); ?></span>
+            <?php if ($discoverySummary['new'] > 0): ?>
+                <span class="badge badge-warning u-fs-11 u-ml-8"><?php echo sprintf(t('phonedisc.badge_new'), $discoverySummary['new']); ?></span>
+            <?php endif; ?>
+        </div>
+        <div class="u-flex-center">
+            <?php if ($canEdit): ?>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="UIHelper.openOverlayModal('discoverySettingsModal')" title="<?php echo t('phonedisc.settings_title'); ?>"><i class="fas fa-sliders-h"></i> <?php echo t('phonedisc.settings_btn'); ?></button>
+            <?php endif; ?>
+        </div>
+    </div>
+    <p class="text-muted u-fs-12"><?php echo t('phonedisc.desc'); ?></p>
+    <div class="alert alert-info u-fs-12 u-mb-10">
+        <i class="fas fa-robot"></i>
+        <?php if ($discovery['provision_discovery'] !== '1'): ?>
+            <?php echo t('phonedisc.engine_off'); ?>
+        <?php elseif ($pool === []): ?>
+            <?php echo t('phonedisc.engine_record_only'); ?>
+        <?php else: ?>
+            <?php echo sprintf(t('phonedisc.engine_pool'), count($pool), $discoveryPoolFree); ?>
+        <?php endif; ?>
+        <span class="text-muted">
+            <?php if ($engineRan): ?>
+                — <?php echo sprintf(t('phonedisc.engine_last_run'), htmlspecialchars((string) (($engineState['at'] ?? 0) ? date('Y-m-d H:i', (int) $engineState['at']) : '')),
+                    (int) ($engineState['seen'] ?? 0), (int) ($engineState['new'] ?? 0)); ?>
+            <?php else: ?>
+                — <strong><?php echo t('phonedisc.engine_never'); ?></strong>
+            <?php endif; ?>
+            <?php foreach (($discoveryEngine['log'] ?? []) as $i => $line): ?>
+                <?php if ($i === 0): ?><br><?php endif; ?><code class="u-fs-11"><?php echo htmlspecialchars($line); ?></code><br>
+            <?php endforeach; ?>
+        </span>
+    </div>
+    <div class="table-responsive">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th><?php echo t('phones.col_mac'); ?></th>
+                    <th><?php echo t('phones.col_vendor'); ?></th>
+                    <th><?php echo t('phones.col_ip'); ?></th>
+                    <th><?php echo t('phonedisc.col_source'); ?></th>
+                    <th><?php echo t('phonedisc.col_seen'); ?></th>
+                    <th><?php echo t('phonedisc.col_state'); ?></th>
+                    <th class="text-right"><?php echo t('phones.assign'); ?></th>
+                </tr>
+            </thead>
+            <tbody>
+                <?php if (empty($discovered)): ?>
+                    <?php echo uiTableEmptyRow(7, t('phonedisc.empty'), 'fa-wifi'); ?>
+                <?php else: ?>
+                    <?php foreach ($discovered as $d): ?>
+                        <?php [$badge, $label] = $discoveryStateBadge[$d['state']] ?? ['badge-secondary', 'phonedisc.state_new']; ?>
+                        <tr>
+                            <td><code><?php echo htmlspecialchars(PhoneModels::formatMac((string) $d['mac'])); ?></code></td>
+                            <td><?php echo htmlspecialchars(PhoneModels::VENDORS[$d['vendor']] ?? ($d['vendor'] ?: '?')); ?></td>
+                            <td class="u-fs-11"><?php echo htmlspecialchars((string) $d['ip']); ?>
+                                <?php if ($d['hostname'] !== ''): ?><div class="text-muted"><?php echo htmlspecialchars((string) $d['hostname']); ?></div><?php endif; ?>
+                            </td>
+                            <td class="u-fs-11">
+                                <?php echo htmlspecialchars(t('phonedisc.src_' . ($d['source'] ?: 'unknown'))); ?>
+                            </td>
+                            <td class="u-fs-11"><?php echo htmlspecialchars((string) $d['last_seen_at']); ?>
+                                <div class="text-muted"><?php echo sprintf(t('phonedisc.seen_times'), (int) $d['seen_count']); ?></div>
+                            </td>
+                            <td>
+                                <span class="badge <?php echo $badge; ?>"><?php echo t($label); ?></span>
+                                <?php if (!empty($d['extension'])): ?>
+                                    <div class="u-fs-11"><?php echo htmlspecialchars((string) $d['extension'] . ' — ' . (string) $d['full_name']); ?></div>
+                                <?php endif; ?>
+                                <?php if ($d['state'] === 'new' && !isset($configuredModels[$d['vendor']])): ?>
+                                    <div class="text-muted u-fs-11"><?php echo t('phonedisc.not_automatic_hint'); ?></div>
+                                <?php endif; ?>
+                            </td>
+                            <td class="text-right">
+                                <div class="table-actions-cell">
+                                    <?php if ($canEdit && in_array($d['state'], ['new', 'deleted'], true)): ?>
+                                        <form method="POST" class="phones-assign-form">
+                                            <input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>">
+                                            <input type="hidden" name="discovery_id" value="<?php echo (int) $d['id']; ?>">
+                                            <select name="model" class="form-control form-control-sm" required><?php echo $modelOptions(PhoneDiscoveryService::defaultModelForVendor((string) $d['vendor'])); ?></select>
+                                            <select name="user_id" class="form-control form-control-sm"><?php echo $userOptions(); ?></select>
+                                            <button type="submit" name="approve_discovery" value="1" class="btn btn-primary btn-sm" title="<?php echo t('phonedisc.approve'); ?>" onclick="return confirm(<?php echo htmlspecialchars(json_encode(t('phonedisc.approve_confirm')), ENT_QUOTES); ?>);"><i class="fas fa-check"></i></button>
+                                        </form>
+                                    <?php endif; ?>
+                                    <?php if ($canEdit && $d['state'] === 'new'): ?>
+                                        <form method="POST" class="u-inline">
+                                            <input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>">
+                                            <input type="hidden" name="discovery_id" value="<?php echo (int) $d['id']; ?>">
+                                            <button type="submit" name="ignore_discovery" value="1" class="btn btn-danger btn-sm" title="<?php echo t('phonedisc.ignore'); ?>"><i class="fas fa-ban"></i></button>
+                                        </form>
+                                    <?php endif; ?>
+                                    <?php if ($canEdit && $d['state'] === 'ignored'): ?>
+                                        <form method="POST" class="u-inline">
+                                            <input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>">
+                                            <input type="hidden" name="discovery_id" value="<?php echo (int) $d['id']; ?>">
+                                            <button type="submit" name="restore_discovery" value="1" class="btn btn-secondary btn-sm" title="<?php echo t('phonedisc.restore'); ?>"><i class="fas fa-undo"></i></button>
                                         </form>
                                     <?php endif; ?>
                                 </div>
@@ -289,6 +428,47 @@ $userOptions = function () use ($users) {
     </div>
 </div>
 
+<!-- Modal: phone discovery (the engine's switches and the extension pool) -->
+<div class="modal-overlay" id="discoverySettingsModal">
+    <div class="modal-card" style="max-width: 640px;">
+        <div class="modal-header">
+            <h3 class="u-title"><i class="fas fa-wifi u-primary"></i> <?php echo t('phonedisc.settings_title'); ?></h3>
+            <button class="btn btn-secondary u-btn-pad" onclick="UIHelper.closeOverlayModal('discoverySettingsModal')"><i class="fas fa-times"></i></button>
+        </div>
+        <div class="modal-body">
+            <form method="POST" autocomplete="off">
+                <input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>">
+                <input type="hidden" name="save_discovery_settings" value="1">
+                <div class="form-group">
+                    <label class="u-check-label"><input type="checkbox" class="u-accent" name="provision_discovery" value="1" <?php echo $discovery['provision_discovery'] === '1' ? 'checked' : ''; ?>> <?php echo t('phonedisc.enable'); ?></label>
+                    <div class="text-muted u-fs-11"><?php echo t('phonedisc.enable_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="u-check-label"><input type="checkbox" class="u-accent" name="provision_discovery_sweep" value="1" <?php echo $discovery['provision_discovery_sweep'] === '1' ? 'checked' : ''; ?>> <?php echo t('phonedisc.sweep'); ?></label>
+                    <div class="text-muted u-fs-11"><?php echo t('phonedisc.sweep_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('phonedisc.networks'); ?></label>
+                    <textarea name="provision_discovery_networks" class="form-control" rows="3" placeholder="192.168.10.0/24"><?php echo htmlspecialchars($discovery['provision_discovery_networks']); ?></textarea>
+                    <div class="text-muted u-fs-11"><?php echo t('phonedisc.networks_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><i class="fas fa-forward"></i> <?php echo t('phonedisc.pool'); ?></label>
+                    <textarea name="provision_discovery_pool" class="form-control" rows="2" placeholder="5000-5099"><?php echo htmlspecialchars($discovery['provision_discovery_pool']); ?></textarea>
+                    <div class="text-muted u-fs-11"><?php echo sprintf(t('phonedisc.pool_help'), $discoveryPoolFree); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('phonedisc.models'); ?></label>
+                    <textarea name="provision_discovery_models" class="form-control" rows="3" placeholder="yealink=yealink-t46u&#10;grandstream=grandstream-grp2612"><?php echo htmlspecialchars($discovery['provision_discovery_models']); ?></textarea>
+                    <div class="text-muted u-fs-11"><?php echo t('phonedisc.models_help'); ?></div>
+                </div>
+                <div class="alert alert-warning u-fs-12"><i class="fas fa-shield-alt"></i> <?php echo t('phonedisc.safety'); ?></div>
+                <?php echo uiModalFooter("UIHelper.closeOverlayModal('discoverySettingsModal')", t('common.save'), '', 'fa-save'); ?>
+            </form>
+        </div>
+    </div>
+</div>
+
 <div class="modal-overlay" id="provisionSettingsModal">
     <div class="modal-card" style="max-width: 600px;">
         <div class="modal-header">
@@ -315,6 +495,16 @@ $userOptions = function () use ($users) {
                             <?php endforeach; ?>
                         </select>
                     </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('phones.cisco_load'); ?></label>
+                    <input type="text" name="provision_cisco_load" class="form-control" maxlength="40" placeholder="SIP42.9-4-2SR3-1S" value="<?php echo htmlspecialchars($settings['provision_cisco_load']); ?>">
+                    <div class="text-muted u-fs-11"><?php echo t('phones.cisco_load_help'); ?></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label"><?php echo t('phones.cisco_loads'); ?></label>
+                    <textarea name="provision_cisco_loads" class="form-control" rows="3" placeholder="cisco-cm-7962g=SIP42.9-4-2SR3-1S"><?php echo htmlspecialchars($settings['provision_cisco_loads']); ?></textarea>
+                    <div class="text-muted u-fs-11"><?php echo t('phones.cisco_loads_help'); ?></div>
                 </div>
                 <div class="form-group">
                     <label class="form-label"><?php echo t('phones.codecs'); ?></label>

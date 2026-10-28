@@ -103,7 +103,36 @@ function __syncAllExtensionsBody() {
     // Fax users (extension_type='fax') never register over SIP (an incoming
     // fax lands directly in [from-trunk-fax], an outgoing fax is sent with a
     // call file) — so NO PJSIP endpoint/AOR/auth is generated for them.
-    $users = $db->query("SELECT extension, full_name, sip_password, sip_auth_digest, cid_internal, cid_external, pickup_group, role, outbound_group, voicemail_enabled FROM sys_users WHERE extension IS NOT NULL AND extension != '' AND is_active = 1 AND extension_type = 'sip' ORDER BY extension ASC")->fetchAll(PDO::FETCH_ASSOC);
+    $users = $db->query("SELECT id, extension, full_name, sip_password, sip_auth_digest, cid_internal, cid_external, pickup_group, role, outbound_group, permission_group_id, voicemail_enabled FROM sys_users WHERE extension IS NOT NULL AND extension != '' AND is_active = 1 AND extension_type = 'sip' ORDER BY extension ASC, id ASC")->fetchAll(PDO::FETCH_ASSOC);
+
+    // Two `sys_users` rows can share one extension — an imported account plus one
+    // re-created by hand, say. The loop below writes a full endpoint/auth/identify
+    // set for every row, and PJSIP rejects the *whole* file when an object is
+    // defined twice ("configuration contains a duplicate object"): the reload
+    // fails and the box runs with no endpoints at all, so every phone unregisters,
+    // not only the duplicated extension. Keep the first row per extension — the
+    // id ASC in the ORDER BY above makes that choice stable between runs — and log
+    // the rows left out, because dropping them silently is how the duplicate
+    // stays invisible.
+    $unique = [];
+    $kept_id = [];
+    foreach ($users as $row) {
+        $key = preg_replace('/[^0-9]/', '', (string)$row['extension']);
+        // A non-numeric extension generates no endpoint below, so it cannot
+        // collide with another row; pass it through untouched.
+        if ($key === '') {
+            $unique[] = $row;
+            continue;
+        }
+        if (isset($kept_id[$key])) {
+            error_log("syncAllExtensions: extension {$key} appears in more than one user row"
+                . " — keeping user id {$kept_id[$key]}, skipping id {$row['id']}");
+            continue;
+        }
+        $kept_id[$key] = $row['id'];
+        $unique[] = $row;
+    }
+    $users = $unique;
 
     // Video codecs only while video calls are on (Admin -> Asterisk -> Video).
     $video_codecs = pbxVideoCodecs();
@@ -205,6 +234,8 @@ function __syncAllExtensionsBody() {
         return str_replace(['.', '-'], ['\\.', '\\-'], $h);
     }, $identify_hosts));
 
+    $active_perm_groups = array_flip(array_map('intval', $db->query('SELECT id FROM pbx_permission_groups WHERE is_active = 1')->fetchAll(PDO::FETCH_COLUMN)));
+
     foreach ($users as $u) {
         $ext = preg_replace('/[^0-9]/', '', (string)$u['extension']);
         if ($ext === '') continue;
@@ -230,8 +261,26 @@ function __syncAllExtensionsBody() {
         // A context set by hand in the sip table wins (an escape hatch for
         // special cases).
         $group = max(1, intval($u['outbound_group'] ?? 1));
-        $group_context = ($group > 1) ? "from-internal-g{$group}" : 'from-internal-pbx';
-        $context = !empty($sip_map['context']) ? $sip_map['context'] : $group_context;
+        $stored_ctx = trim($sip_map['context'] ?? '');
+
+        // Ingress contexts per device origin (Desktop, Mobile, Web).
+        // Custom context entered explicitly in `sip` table wins only if it is
+        // not one of the default or generated PBX contexts (V3-01).
+        $isDefaultOrGeneratedContext = empty($stored_ctx)
+            || $stored_ctx === 'from-internal-pbx'
+            || preg_match('/^from-internal-g\d+$/', $stored_ctx)
+            || preg_match('/^from-internal-(desktop|mobile|web)(-\d+)?$/', $stored_ctx);
+
+        if ($isDefaultOrGeneratedContext) {
+            $sip_context = ($group > 1) ? "from-internal-desktop-{$group}" : 'from-internal-desktop';
+            $mob_context = ($group > 1) ? "from-internal-mobile-{$group}" : 'from-internal-mobile';
+            $web_context = ($group > 1) ? "from-internal-web-{$group}" : 'from-internal-web';
+        } else {
+            $sip_context = $stored_ctx;
+            $mob_context = $stored_ctx;
+            $web_context = $stored_ctx;
+        }
+
         $callerid = !empty($sip_map['callerid']) ? $sip_map['callerid'] : "\"{$name}\" <{$ext}>";
         $transport = !empty($sip_map['transport']) ? $sip_map['transport'] : 'transport-wss';
         $max_contacts = !empty($sip_map['max_contacts']) ? $sip_map['max_contacts'] : '5';
@@ -243,12 +292,17 @@ function __syncAllExtensionsBody() {
         $cid_internal = toCleanAscii($u['cid_internal'] ?? '');
         $cid_external = toCleanAscii($u['cid_external'] ?? '');
         $role = trim($u['role'] ?? '');
-        $perm_group = max(1, intval($u['permission_group_id'] ?? 1));
+        // Only an active group has its perm-group-N context (SyncPermissions);
+        // a disabled or deleted group means no restriction, not a dead end.
+        $perm_group = intval($u['permission_group_id'] ?? 1);
+        if (!isset($active_perm_groups[$perm_group])) {
+            $perm_group = 1;
+        }
         $set_vars = "set_var=CID_INTERNAL={$cid_internal}\nset_var=CID_EXTERNAL={$cid_external}\nset_var=__CID_INTERNAL={$cid_internal}\nset_var=__CID_EXTERNAL={$cid_external}\nset_var=USER_ROLE={$role}\nset_var=PERMISSION_GROUP_ID={$perm_group}\n";
 
         // For group pickup: extensions in the same pickup_group can pick up
         // each other's ringing call with *20 (see SyncFeatureCodes.php).
-        $pickup_group = trim($u['pickup_group'] ?? '');
+        $pickup_group = preg_replace('/[^A-Za-z0-9_-]/', '', trim($u['pickup_group'] ?? '')) ?? '';
         $pickup_lines = '';
         if ($pickup_group !== '') {
             $pickup_lines = "named_call_group={$pickup_group}\nnamed_pickup_group={$pickup_group}\n";
@@ -260,9 +314,10 @@ function __syncAllExtensionsBody() {
             $conf .= "auth=auth{$ext}-sip\n";
         }
         $conf .= "aors={$ext}-sip,{$ext}\n";
-        $conf .= "context={$context}\n";
+        $conf .= "context={$sip_context}\n";
         $conf .= "callerid={$callerid}\n";
         $conf .= $set_vars;
+        $conf .= "set_var=AIPBX_CLIENT_TYPE=desktop\n";
         $conf .= $pickup_lines;
         // Voicemail lamp on desk phones (MWI): new messages are signalled to
         // the phone. A mailboxes value set by hand in the `sip` table wins.
@@ -295,17 +350,19 @@ function __syncAllExtensionsBody() {
         $conf .= "[{$ext}-webrtc](endpoint-wss)\n";
         $conf .= "auth=auth{$ext}-webrtc\n";
         $conf .= "aors={$ext}-webrtc\n";
-        $conf .= "context={$context}\n";
+        $conf .= "context={$web_context}\n";
         $conf .= "callerid={$callerid}\n";
         $conf .= $set_vars;
+        $conf .= "set_var=AIPBX_CLIENT_TYPE=web\n";
         $conf .= $pickup_lines . "\n";
 
         $conf .= "[{$ext}-mob-webrtc](endpoint-wss)\n";
         $conf .= "auth=auth{$ext}-mob-webrtc\n";
         $conf .= "aors={$ext}-mob-webrtc\n";
-        $conf .= "context={$context}\n";
+        $conf .= "context={$mob_context}\n";
         $conf .= "callerid={$callerid}\n";
         $conf .= $set_vars;
+        $conf .= "set_var=AIPBX_CLIENT_TYPE=mobile\n";
         $conf .= $pickup_lines . "\n";
 
         if ($auth_digest) {

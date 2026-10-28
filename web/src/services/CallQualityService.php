@@ -1,894 +1,425 @@
 <?php
 /**
- * Call quality from RTCP — the reports `res_hep_rtcp` already sends.
+ * Call quality from RTCP (Reports → Call quality, docs/call-quality.md).
  *
- * This service never touches audio. It reads the RTCP counters the capture
- * daemon stores (packet loss and jitter), groups them per Call-ID and answers
- * one question: is a call losing media, sustained enough to act on?
+ * Every minute (from aipbx-webhook-worker) the RTCP reports that arrived since
+ * the last pass are read from pbx_signaling_events, added to one row per call
+ * leg (pbx_call_quality_legs) and the leg is named from its SIP INVITE (the
+ * trunk it came over, or the extension). Problems are a health check
+ * (call_quality), so they reach the alert bell and, when set up, the alarm
+ * e-mails like every other problem. Read-only towards the PBX: no route or
+ * dialplan is ever changed. Needs signaling capture on (PBX settings →
+ * Signaling).
  *
- * Thresholds are deliberately simple and stated in the prompt:
- *   - worst report at 5 % loss or more, twice in the window -> poor;
- *   - any report above 1 %                             -> fair;
- *   - otherwise                                        -> good.
- * `fraction_lost` is RFC 3550's 8-bit fixed point (255 = 100 %), so 13 is
- * ~5 %. Jitter is `ia_jitter` in RTP timestamp units; the sample rate is not
- * in the report, so it is reported as-is and never converted to milliseconds
- * or a made-up MOS score.
- *
- * The one automatic change is a trunk demotion for NEW calls: when the lossy
- * peer is a trunk and an outbound route has another trunk behind it, the
- * trunk moves to the end of that route's chain. Live calls are untouched, the
- * change is audited and notified, and the administrator can reorder it back
- * on the Outbound routes page. Local phones, Wi-Fi and a carrier that is bad
- * on every trunk have no safe automatic fix — those become a notice for a
- * human.
- *
- * Quality sensing needs the built-in capture: in `homer`, `voipmonitor` or
- * `external` modes Asterisk sends RTCP straight to the collector, so there
- * are no local rows to read. `builtin` and `both` keep them.
+ * Idea and first version: @shido6 (community plugin proposal, AiPBX-plugins #1).
  */
-
-require_once __DIR__ . '/ai/HepSettingsService.php';
-require_once __DIR__ . '/GregService.php';
-require_once __DIR__ . '/GregJournal.php';
-
 final class CallQualityService
 {
-    public const WINDOW_MIN = 15;
-    /** Two reports at this loss make a call poor, not one spike. */
-    public const POOR_PCT = 5.0;
+    public const SETTINGS = [
+        'call_quality_poor_pct' => '5',
+        'call_quality_alert_legs' => '3',
+        'call_quality_keep_days' => '90',
+    ];
+
+    /** Minutes a leg counts for an alert. */
+    public const ALERT_MINUTES = 15;
+
+    /** A leg is "fair" from this loss on. */
     public const FAIR_PCT = 1.0;
-    /** Auto-fix looks at the last few minutes, not the whole window. */
-    public const FIX_WINDOW_MIN = 10;
-    /** One demotion per trunk per six hours: no flapping. */
-    private const FIX_COOLDOWN = 21600;
-    private const MAX_NOTICES = 5;
 
-    /** @return array<int, array<string, mixed>> raw RTCP rows, oldest first */
-    public static function rows(int $minutes = self::WINDOW_MIN): array
-    {
-        $minutes = max(1, min(1440, $minutes));
-        // NOW() is the database's clock, which is how the daemon writes ts.
-        // A PHP date would compare two timezones (the portal runs in local
-        // time, MariaDB in UTC on many installs) and silently see no rows.
-        $minutes = (int) $minutes;
-        try {
-            $st = getDB()->prepare(
-                "SELECT call_id, ts, src, dst, rtcp_ssrc, rtcp_lost,
-                        rtcp_fraction_lost, rtcp_jitter
-                   FROM pbx_signaling_events
-                  WHERE proto = 'rtcp'
-                    AND ts >= (NOW() - INTERVAL {$minutes} MINUTE)
-                  ORDER BY ts ASC"
-            );
-            $st->execute();
-            return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        } catch (\Throwable $e) {
-            // A missing migration or a database hiccup is "no measurement",
-            // never a failed page or a false alarm.
-            return [];
-        }
-    }
+    private const PASS_SECONDS = 60;
+    private const BATCH = 20000;
 
-    /**
-     * Groups rows per Call-ID and keeps the worst report block. Pure, so the
-     * arithmetic is tested without a database.
-     *
-     * @param array<int, array<string, mixed>> $rows
-     * @return array<string, array<string, mixed>>
-     */
-    public static function aggregate(array $rows): array
-    {
-        $calls = [];
-        foreach ($rows as $row) {
-            $id = trim((string) ($row['call_id'] ?? ''));
-            if ($id === '') {
-                continue;
-            }
-            if (!isset($calls[$id])) {
-                $calls[$id] = [
-                    'call_id' => $id,
-                    'reports' => 0,
-                    'worst_fraction' => 0,
-                    'poor_reports' => 0,
-                    'jitter' => 0,
-                    'lost' => 0,
-                    'first_ts' => (string) ($row['ts'] ?? ''),
-                    'last_ts' => (string) ($row['ts'] ?? ''),
-                    'peers' => [],
-                ];
-            }
-            $c =& $calls[$id];
-            $c['reports']++;
-            $fraction = max(0, min(255, (int) ($row['rtcp_fraction_lost'] ?? 0)));
-            $c['worst_fraction'] = max((int) $c['worst_fraction'], $fraction);
-            if ($fraction * 100 / 256 >= self::POOR_PCT) {
-                $c['poor_reports']++;
-            }
-            $c['jitter'] = max((int) $c['jitter'], (int) ($row['rtcp_jitter'] ?? 0));
-            $c['lost'] = max((int) $c['lost'], (int) ($row['rtcp_lost'] ?? 0));
-            $c['last_ts'] = (string) ($row['ts'] ?? $c['last_ts']);
-            foreach (['src', 'dst'] as $side) {
-                $host = self::hostOf((string) ($row[$side] ?? ''));
-                if ($host !== '') {
-                    $c['peers'][$host] = true;
-                }
-            }
-            unset($c);
-        }
-        foreach ($calls as &$call) {
-            $call['peers'] = array_keys($call['peers']);
-        }
-        unset($call);
-        return $calls;
-    }
+    // ------------------------------------------------------------ settings
 
-    /**
-     * One call's verdict. Pure.
-     *
-     * @param array<string, mixed> $call
-     * @return array{level:string, loss_pct:float, reports:int, poor_reports:int,
-     *               jitter:int, lost:int, reasons:array<int,string>}
-     */
-    public static function verdict(array $call): array
+    /** @return array{poor_pct: float, alert_legs: int, keep_days: int} */
+    public static function settings(): array
     {
-        $fraction = max(0, min(255, (int) ($call['worst_fraction'] ?? 0)));
-        $loss = round($fraction * 100 / 256, 2);
-        $reports = (int) ($call['reports'] ?? 0);
-        $poorReports = (int) ($call['poor_reports'] ?? 0);
-        if ($poorReports >= 2 && $reports >= 2) {
-            $level = 'poor';
-        } elseif ($loss >= self::FAIR_PCT || $poorReports > 0) {
-            // A single report at 5 %+ is a spike, not sustained loss, but it
-            // still deserves a look; below 1 % is background noise.
-            $level = 'fair';
-        } else {
-            $level = 'good';
-        }
-        $reasons = [];
-        if ($fraction > 0) {
-            $reasons[] = sprintf('packet loss %.2f%% (worst report)', $loss);
-        }
-        if ($poorReports > 0) {
-            $reasons[] = sprintf('%d of %d RTCP reports were at or above %.0f%% loss', $poorReports, $reports, self::POOR_PCT);
-        }
-        if ((int) ($call['jitter'] ?? 0) > 0) {
-            $reasons[] = sprintf('jitter %d RTP timestamp units', (int) $call['jitter']);
-        }
         return [
-            'level' => $level,
-            'loss_pct' => $loss,
-            'reports' => $reports,
-            'poor_reports' => $poorReports,
-            'jitter' => (int) ($call['jitter'] ?? 0),
-            'lost' => (int) ($call['lost'] ?? 0),
-            'reasons' => $reasons,
+            'poor_pct' => max(1.0, min(50.0, (float) getSystemSetting('call_quality_poor_pct', '5'))),
+            'alert_legs' => max(1, min(50, (int) getSystemSetting('call_quality_alert_legs', '3'))),
+            'keep_days' => max(7, min(3650, (int) getSystemSetting('call_quality_keep_days', '90'))),
         ];
     }
 
-    /** @return array<int, array<string, mixed>> calls with a `verdict` key, worst first */
-    public static function active(int $minutes = self::WINDOW_MIN): array
+    public static function save(array $post): array
+    {
+        if (!verifyCSRFToken($post['csrf_token'] ?? '')) {
+            return ['success' => false, 'error' => t('common.invalid_csrf')];
+        }
+        $values = [
+            'call_quality_poor_pct' => (string) max(1, min(50, (int) ($post['poor_pct'] ?? 5))),
+            'call_quality_alert_legs' => (string) max(1, min(50, (int) ($post['alert_legs'] ?? 3))),
+            'call_quality_keep_days' => (string) max(7, min(3650, (int) ($post['keep_days'] ?? 90))),
+        ];
+        $st = getDB()->prepare('INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)');
+        foreach ($values as $k => $v) {
+            $st->execute([$k, $v]);
+        }
+        writeAuditLog('call_quality', 'settings', 0, 'Call quality', 'update', null);
+        return ['success' => true, 'message' => t('call_quality.saved')];
+    }
+
+    // ------------------------------------------------------------ the pass
+
+    /** Worker hook (every ~2 s): at most one pass a minute, only while capture is on. */
+    public static function tick(): void
+    {
+        static $next = 0;
+        if (time() < $next) {
+            return;
+        }
+        $next = time() + self::PASS_SECONDS;
+        if (getSystemSetting('signaling_capture', '0') !== '1') {
+            return;
+        }
+        $result = self::pass();
+        self::setState('call_quality_last_pass', json_encode(['at' => time()] + $result));
+    }
+
+    /** @return array{reports: int, legs: int, named: int, alerts: int} */
+    public static function pass(): array
+    {
+        $db = getDB();
+        if (!self::signalingTable($db)) {
+            return ['reports' => 0, 'legs' => 0, 'named' => 0, 'alerts' => 0];
+        }
+        $s = self::settings();
+
+        // Where the last pass stopped; the first one starts an hour back.
+        $from = (int) getSystemSetting('call_quality_watermark', '0');
+        if ($from === 0) {
+            $from = (int) $db->query('SELECT COALESCE(MIN(id), 1) - 1 FROM pbx_signaling_events WHERE ts >= NOW() - INTERVAL 1 HOUR')->fetchColumn();
+        }
+        $st = $db->prepare("SELECT id, ts, call_id, src, rtcp_fraction_lost, rtcp_jitter FROM pbx_signaling_events
+            WHERE id > ? AND proto = 'rtcp' AND call_id <> '' ORDER BY id LIMIT " . self::BATCH);
+        $st->execute([$from]);
+        $rows = $st->fetchAll(PDO::FETCH_ASSOC);
+        $from = $rows
+            ? (int) end($rows)['id']
+            // Nothing new: move past the SIP rows too, so they are not read again.
+            : max($from, (int) $db->query('SELECT COALESCE(MAX(id), 0) FROM pbx_signaling_events')->fetchColumn());
+
+        $legs = self::aggregate($rows, self::ownHosts(), $s['poor_pct']);
+        self::store($db, $legs);
+        self::setState('call_quality_watermark', (string) $from);
+
+        $named = self::nameLegs($db);
+        self::prune($db, $s['keep_days']);
+        return ['reports' => count($rows), 'legs' => count($legs), 'named' => $named, 'alerts' => count(self::problems())];
+    }
+
+    /**
+     * RTCP rows → per leg counters. A report sent BY this server describes
+     * what it received ("in"); one sent to it, what the other side received.
+     *
+     * @param list<array> $rows
+     * @param list<string> $own this server's addresses
+     * @return array<string, array>
+     */
+    public static function aggregate(array $rows, array $own, float $poorPct): array
+    {
+        $legs = [];
+        foreach ($rows as $r) {
+            $id = (string) $r['call_id'];
+            $l = $legs[$id] ?? ['first_ts' => $r['ts'], 'last_ts' => $r['ts'], 'reports_in' => 0, 'reports_out' => 0,
+                'bad_in' => 0, 'bad_out' => 0, 'loss_in_max' => 0.0, 'loss_out_max' => 0.0,
+                'loss_in_sum' => 0.0, 'loss_out_sum' => 0.0, 'jitter_in_max' => 0, 'jitter_out_max' => 0, 'peer' => ''];
+            $l['first_ts'] = min($l['first_ts'], $r['ts']);
+            $l['last_ts'] = max($l['last_ts'], $r['ts']);
+            $srcHost = self::hostOf((string) $r['src']);
+            $dir = in_array($srcHost, $own, true) ? 'in' : 'out';
+            if ($dir === 'out' && (string) $l['peer'] === '') {
+                $l['peer'] = $srcHost;
+            }
+            // A report without the counter says nothing about loss; it is not a zero.
+            if ($r['rtcp_fraction_lost'] !== null) {
+                $loss = round((int) $r['rtcp_fraction_lost'] * 100 / 256, 2);
+                $l['reports_' . $dir]++;
+                $l['loss_' . $dir . '_sum'] += $loss;
+                $l['loss_' . $dir . '_max'] = max($l['loss_' . $dir . '_max'], $loss);
+                $l['bad_' . $dir] += $loss >= $poorPct ? 1 : 0;
+                $l['jitter_' . $dir . '_max'] = max($l['jitter_' . $dir . '_max'], (int) $r['rtcp_jitter']);
+            }
+            $legs[$id] = $l;
+        }
+        return $legs;
+    }
+
+    /** "poor": two bad reports in one direction; "fair": 1 % loss somewhere. */
+    public static function level(array $l): string
+    {
+        if ($l['bad_in'] >= 2 || $l['bad_out'] >= 2) {
+            return 'poor';
+        }
+        return max((float) $l['loss_in_max'], (float) $l['loss_out_max']) >= self::FAIR_PCT ? 'fair' : 'good';
+    }
+
+    private static function store(PDO $db, array $legs): void
+    {
+        if (!$legs) {
+            return;
+        }
+        $up = $db->prepare('INSERT INTO pbx_call_quality_legs (call_id, first_ts, last_ts, peer, reports_in, reports_out, bad_in, bad_out,
+                loss_in_max, loss_out_max, loss_in_sum, loss_out_sum, jitter_in_max, jitter_out_max)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE first_ts = LEAST(first_ts, VALUES(first_ts)), last_ts = GREATEST(last_ts, VALUES(last_ts)),
+                peer = IF(peer = \'\', VALUES(peer), peer),
+                reports_in = reports_in + VALUES(reports_in), reports_out = reports_out + VALUES(reports_out),
+                bad_in = bad_in + VALUES(bad_in), bad_out = bad_out + VALUES(bad_out),
+                loss_in_max = GREATEST(loss_in_max, VALUES(loss_in_max)), loss_out_max = GREATEST(loss_out_max, VALUES(loss_out_max)),
+                loss_in_sum = loss_in_sum + VALUES(loss_in_sum), loss_out_sum = loss_out_sum + VALUES(loss_out_sum),
+                jitter_in_max = GREATEST(jitter_in_max, VALUES(jitter_in_max)), jitter_out_max = GREATEST(jitter_out_max, VALUES(jitter_out_max))');
+        $get = $db->prepare('SELECT bad_in, bad_out, loss_in_max, loss_out_max FROM pbx_call_quality_legs WHERE call_id = ?');
+        $lvl = $db->prepare('UPDATE pbx_call_quality_legs SET level = ? WHERE call_id = ?');
+        foreach ($legs as $id => $l) {
+            $id = mb_substr((string) $id, 0, 128);
+            $up->execute([$id, $l['first_ts'], $l['last_ts'], mb_substr($l['peer'], 0, 64),
+                $l['reports_in'], $l['reports_out'], $l['bad_in'], $l['bad_out'], $l['loss_in_max'], $l['loss_out_max'],
+                $l['loss_in_sum'], $l['loss_out_sum'], $l['jitter_in_max'], $l['jitter_out_max']]);
+            $get->execute([$id]);
+            $lvl->execute([self::level($get->fetch(PDO::FETCH_ASSOC)), $id]);
+        }
+    }
+
+    // ------------------------------------------------------------ naming
+
+    /**
+     * Names new legs from their SIP INVITE: the trunk whose address (or match
+     * list) the other side of the INVITE is, else the extension in the From or
+     * To user part. Media may come from other addresses than the signaling, so
+     * the INVITE is the reliable witness.
+     */
+    private static function nameLegs(PDO $db): int
+    {
+        $ids = $db->query("SELECT call_id FROM pbx_call_quality_legs WHERE leg_type = '' AND first_ts >= NOW() - INTERVAL 1 DAY LIMIT 300")
+            ->fetchAll(PDO::FETCH_COLUMN);
+        if (!$ids) {
+            return 0;
+        }
+        $own = self::ownHosts();
+        $trunks = self::trunkMatchers($db);
+        $exts = array_flip($db->query("SELECT extension FROM sys_users WHERE extension IS NOT NULL AND extension <> ''")->fetchAll(PDO::FETCH_COLUMN));
+        $inv = $db->prepare("SELECT src, dst, from_uri, to_uri FROM pbx_signaling_events WHERE call_id = ? AND proto = 'sip' AND method = 'INVITE' ORDER BY id LIMIT 1");
+        $old = $db->prepare('SELECT first_ts < NOW() - INTERVAL 1 HOUR FROM pbx_call_quality_legs WHERE call_id = ?');
+        $set = $db->prepare('UPDATE pbx_call_quality_legs SET leg_type = ?, leg_name = ? WHERE call_id = ?');
+        $named = 0;
+        foreach ($ids as $id) {
+            $inv->execute([$id]);
+            $sip = $inv->fetch(PDO::FETCH_ASSOC);
+            if (!$sip) {
+                // Reports without signaling (capture started mid-call): give up after an hour.
+                $old->execute([$id]);
+                if ((int) $old->fetchColumn() === 1) {
+                    $set->execute(['unknown', '', $id]);
+                }
+                continue;
+            }
+            [$type, $name] = self::classify($sip, $own, $trunks, $exts);
+            $set->execute([$type, mb_substr($name, 0, 64), $id]);
+            $named++;
+        }
+        return $named;
+    }
+
+    /**
+     * @param array{src: string, dst: string, from_uri: string, to_uri: string} $sip
+     * @param list<string> $own
+     * @param array<string, list<string>> $trunks trunk name => addresses/CIDRs
+     * @param array<string, int> $exts extension => any
+     * @return array{0: string, 1: string}
+     */
+    public static function classify(array $sip, array $own, array $trunks, array $exts): array
+    {
+        $src = self::hostOf($sip['src']);
+        $remote = in_array($src, $own, true) ? self::hostOf($sip['dst']) : $src;
+        foreach ($trunks as $name => $hosts) {
+            foreach ($hosts as $h) {
+                if ($h === $remote || self::inCidr($remote, $h)) {
+                    return ['trunk', (string) $name];
+                }
+            }
+        }
+        foreach ([$sip['from_uri'], $sip['to_uri']] as $uri) {
+            if (preg_match('/^(?:"[^"]*"\s*)?<?sips?:([^@;>]+)@/i', trim((string) $uri), $m) && isset($exts[$m[1]])) {
+                return ['extension', $m[1]];
+            }
+        }
+        return ['other', $remote];
+    }
+
+    /** @return array<string, list<string>> */
+    private static function trunkMatchers(PDO $db): array
     {
         $out = [];
-        $map = self::trunkMap();
-        foreach (self::aggregate(self::rows($minutes)) as $call) {
-            $call['verdict'] = self::verdict($call);
-            $call['trunk'] = self::trunkFor($call['peers'], $map);
-            $out[] = $call;
+        foreach ($db->query('SELECT trunk_name, ip_address, match_hosts FROM pbx_trunks WHERE is_active = 1')->fetchAll(PDO::FETCH_ASSOC) as $t) {
+            $hosts = [];
+            foreach (preg_split('/[\s,]+/', trim($t['ip_address'] . ',' . $t['match_hosts'])) ?: [] as $h) {
+                $h = preg_replace('/:\d+$/', '', trim($h));
+                if ($h === '') {
+                    continue;
+                }
+                // A host name: compare its addresses (looked up once per pass).
+                $ips = filter_var(explode('/', $h)[0], FILTER_VALIDATE_IP) ? [$h] : (@gethostbynamel($h) ?: []);
+                array_push($hosts, ...$ips);
+            }
+            $out[$t['trunk_name']] = array_values(array_unique($hosts));
         }
-        usort($out, fn($a, $b) => [$b['verdict']['level'] === 'poor', $b['verdict']['loss_pct']]
-            <=> [$a['verdict']['level'] === 'poor', $a['verdict']['loss_pct']]);
         return $out;
     }
 
-    /** @return array<int, array<string, mixed>> only the poor calls */
-    public static function degraded(int $minutes = self::WINDOW_MIN): array
+    // ------------------------------------------------------------ alerts
+
+    /**
+     * Trunks and extensions losing audio now: enough poor legs in the last
+     * ALERT_MINUTES, and at least a fifth of their measured legs. The health
+     * check call_quality reports them (bell, alarm e-mails).
+     *
+     * @return list<array{leg_type: string, leg_name: string, legs: int, poor: int, bad_in: int, bad_out: int, worst: string}>
+     */
+    public static function problems(): array
     {
-        return array_values(array_filter(
-            self::active($minutes),
-            fn($c) => $c['verdict']['level'] === 'poor'
-        ));
+        $minPoor = self::settings()['alert_legs'];
+        $st = getDB()->query("SELECT leg_type, leg_name, COUNT(*) AS legs, SUM(level = 'poor') AS poor,
+                SUM(bad_in) AS bad_in, SUM(bad_out) AS bad_out, MAX(GREATEST(loss_in_max, loss_out_max)) AS worst
+            FROM pbx_call_quality_legs WHERE last_ts >= NOW() - INTERVAL " . self::ALERT_MINUTES . " MINUTE AND leg_type IN ('trunk', 'extension')
+            GROUP BY leg_type, leg_name ORDER BY SUM(level = 'poor') DESC");
+        return array_values(array_filter($st->fetchAll(PDO::FETCH_ASSOC),
+            fn($g) => (int) $g['poor'] >= $minPoor && (int) $g['poor'] * 5 >= (int) $g['legs']));
     }
 
-    /** @return array{measured:int, poor:int, fair:int, good:int, worst:?array<string, mixed>} */
-    public static function summary(int $minutes = self::WINDOW_MIN): array
+    public static function alertTitle(array $g): string
     {
-        $calls = self::active($minutes);
-        $count = ['poor' => 0, 'fair' => 0, 'good' => 0];
-        foreach ($calls as $call) {
-            $count[$call['verdict']['level']]++;
-        }
+        return sprintf(t($g['leg_type'] === 'trunk' ? 'call_quality.alert_trunk' : 'call_quality.alert_extension'), $g['leg_name']);
+    }
+
+    /** Which way the audio is lost tells where to look. */
+    public static function alertMessage(array $g): string
+    {
+        $in = (int) $g['bad_in'];
+        $out = (int) $g['bad_out'];
+        $trunk = $g['leg_type'] === 'trunk';
+        $where = $in > 2 * $out ? ($trunk ? 'where_from_carrier' : 'where_from_phone')
+            : ($out > 2 * $in ? ($trunk ? 'where_to_carrier' : 'where_to_phone') : 'where_both');
+        return sprintf(t('call_quality.alert_message'), (int) $g['poor'], (int) $g['legs'], self::ALERT_MINUTES,
+            self::pct((float) $g['worst']), t('call_quality.' . $where));
+    }
+
+    // ------------------------------------------------------------ the page
+
+    /** Is anything measured at all? */
+    public static function status(): array
+    {
+        $db = getDB();
+        $last = self::signalingTable($db)
+            ? $db->query("SELECT MAX(ts) FROM pbx_signaling_events WHERE proto = 'rtcp' AND ts >= NOW() - INTERVAL 1 DAY")->fetchColumn()
+            : null;
+        $pass = json_decode((string) getSystemSetting('call_quality_last_pass', ''), true);
         return [
-            'measured' => count($calls),
-            'poor' => $count['poor'],
-            'fair' => $count['fair'],
-            'good' => $count['good'],
-            'worst' => $calls[0] ?? null,
+            'capture' => getSystemSetting('signaling_capture', '0') === '1',
+            'last_rtcp' => $last ?: null,
+            'pass_ago' => is_array($pass) && isset($pass['at']) ? time() - (int) $pass['at'] : null,
         ];
     }
 
-    /** Quality sensing is only possible where local rows exist. */
-    public static function available(): bool
+    /** Per trunk/extension over the last $hours. */
+    public static function summary(int $hours = 24): array
     {
-        $mode = HepSettingsService::settings()['mode'];
-        return in_array($mode, ['builtin', 'both'], true);
+        return getDB()->query("SELECT leg_type, leg_name, COUNT(*) AS legs, SUM(level = 'poor') AS poor, SUM(level = 'fair') AS fair,
+                ROUND(SUM(loss_in_sum) / NULLIF(SUM(reports_in), 0), 2) AS avg_in, ROUND(SUM(loss_out_sum) / NULLIF(SUM(reports_out), 0), 2) AS avg_out,
+                MAX(loss_in_max) AS max_in, MAX(loss_out_max) AS max_out, MAX(jitter_in_max) AS jit_in, MAX(jitter_out_max) AS jit_out
+            FROM pbx_call_quality_legs WHERE last_ts >= NOW() - INTERVAL " . max(1, $hours) . " HOUR
+            GROUP BY leg_type, leg_name ORDER BY SUM(level = 'poor') DESC, COUNT(*) DESC LIMIT 100")->fetchAll(PDO::FETCH_ASSOC);
     }
 
-    /** The peer host out of "1.2.3.4:5060" or "[2001:db8::1]:5060". */
+    /** Poor and fair legs, newest first. */
+    public static function badLegs(int $hours = 24, int $limit = 50): array
+    {
+        return getDB()->query('SELECT * FROM pbx_call_quality_legs WHERE last_ts >= NOW() - INTERVAL ' . max(1, $hours) . " HOUR
+            AND level IN ('poor', 'fair') ORDER BY level = 'poor' DESC, last_ts DESC LIMIT " . max(1, min(500, $limit)))->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    public static function legLabel(array $r): string
+    {
+        return match ($r['leg_type']) {
+            'trunk' => sprintf(t('call_quality.leg_trunk'), $r['leg_name']),
+            'extension' => sprintf(t('call_quality.leg_extension'), $r['leg_name']),
+            'other' => sprintf(t('call_quality.leg_other'), $r['leg_name']),
+            default => t('call_quality.leg_unknown'),
+        };
+    }
+
+    public static function pct($v): string
+    {
+        return $v === null ? '–' : rtrim(rtrim(number_format((float) $v, 2, '.', ''), '0'), '.') . ' %';
+    }
+
+    // ------------------------------------------------------------ helpers
+
+    private static function prune(PDO $db, int $days): void
+    {
+        if (time() - (int) getSystemSetting('call_quality_pruned_at', '0') < 3600) {
+            return;
+        }
+        $db->exec('DELETE FROM pbx_call_quality_legs WHERE last_ts < NOW() - INTERVAL ' . $days . ' DAY');
+        self::setState('call_quality_pruned_at', (string) time());
+    }
+
+    private static function setState(string $key, string $value): void
+    {
+        getDB()->prepare('INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)')
+            ->execute([$key, $value]);
+    }
+
+    private static function signalingTable(PDO $db): bool
+    {
+        try {
+            $db->query('SELECT rtcp_fraction_lost FROM pbx_signaling_events LIMIT 0');
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** "10.0.0.5:5060", "[2001:db8::1]:5060" or a bare address → the address. */
     public static function hostOf(string $addr): string
     {
         $addr = trim($addr);
-        if ($addr === '') {
-            return '';
+        if (preg_match('/^\[([^\]]+)\](?::\d+)?$/', $addr, $m)) {
+            return $m[1];
         }
-        if ($addr[0] === '[') {
-            $end = strpos($addr, ']');
-            return $end === false ? $addr : substr($addr, 1, $end - 1);
-        }
-        $pos = strrpos($addr, ':');
-        if ($pos !== false && substr_count($addr, ':') === 1) {
-            return substr($addr, 0, $pos);
-        }
-        return $addr;
+        return substr_count($addr, ':') === 1 ? explode(':', $addr)[0] : $addr;
     }
 
-    /**
-     * The trunk whose configured address is one of these peers, or null.
-     *
-     * @param array<int, string> $peers
-     * @param array<string, array<string, mixed>>|null $map trunk_name => row
-     * @return array<string, mixed>|null
-     */
-    public static function trunkFor(array $peers, ?array $map = null): ?array
+    public static function inCidr(string $ip, string $cidr): bool
     {
-        $map = $map ?? self::trunkMap();
-        foreach ($peers as $peer) {
-            if (isset($map[$peer])) {
-                return $map[$peer];
-            }
+        if (!str_contains($cidr, '/') || !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+            return false;
         }
-        return null;
+        [$net, $bits] = explode('/', $cidr, 2);
+        $bits = (int) $bits;
+        if (!filter_var($net, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) || $bits < 0 || $bits > 32) {
+            return false;
+        }
+        $mask = $bits === 0 ? 0 : (~0 << (32 - $bits)) & 0xFFFFFFFF;
+        return (ip2long($ip) & $mask) === (ip2long($net) & $mask);
     }
 
-    /** @return array<string, array<string, mixed>> ip address => trunk row */
-    public static function trunkMap(): array
+    /** @return list<string> this server's addresses */
+    public static function ownHosts(): array
     {
-        try {
-            $rows = getDB()->query(
-                'SELECT id, trunk_name, title, ip_address FROM pbx_trunks WHERE is_active = 1'
-            )->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        } catch (\Throwable $e) {
-            return [];
-        }
-        $map = [];
-        foreach ($rows as $row) {
-            $ip = trim((string) ($row['ip_address'] ?? ''));
-            if ($ip !== '') {
-                $map[$ip] = $row;
+        $own = ['127.0.0.1', '::1'];
+        foreach (['server_ip', 'pjsip_external_ip'] as $k) {
+            $v = trim((string) getSystemSetting($k, ''));
+            if ($v !== '') {
+                $own[] = $v;
             }
         }
-        return $map;
-    }
-
-    /**
-     * The block Greg reads. Empty when quality cannot be sensed locally.
-     */
-    public static function promptContext(): string
-    {
-        if (!self::available()) {
-            return '';
-        }
-        $summary = self::summary();
-        $lines = ['- Call quality (RTCP, last ' . self::WINDOW_MIN . ' min): '
-            . $summary['measured'] . ' call(s) with reports, ' . $summary['poor'] . ' poor, '
-            . $summary['fair'] . ' with some loss.'];
-        if ($summary['measured'] === 0) {
-            $lines[] = '  No RTCP reports in the window — capture may be off, the module may be unloaded, or no call carried RTCP. Do not claim the lines are healthy.';
-        }
-        foreach (array_slice(self::active(), 0, 5) as $call) {
-            if ($call['verdict']['level'] === 'good') {
-                break;
+        foreach (preg_split('/\s+/', trim((string) @shell_exec('hostname -I 2>/dev/null'))) ?: [] as $ip) {
+            if (filter_var($ip, FILTER_VALIDATE_IP)) {
+                $own[] = $ip;
             }
-            $lines[] = '  · call ' . mb_substr($call['call_id'], 0, 32)
-                . ($call['trunk'] ? ' on trunk ' . $call['trunk']['trunk_name'] : '')
-                . ' — ' . implode('; ', $call['verdict']['reasons'])
-                . '; peers ' . implode(', ', array_slice($call['peers'], 0, 3));
         }
-        $auto = GregService::settings()['auto_fix'] ? 'on' : 'off';
-        $lines[] = '- Quality rules: below ' . self::FAIR_PCT . '% loss is good; '
-            . self::FAIR_PCT . '–' . self::POOR_PCT . '% is degraded; two reports at '
-            . self::POOR_PCT . '%+ make a call poor. Jitter is in RTP timestamp units; '
-            . 'the sample rate is not in the report — never convert it to milliseconds or invent a MOS score.';
-        $lines[] = '- You did not listen to any audio and cannot listen in. You see RTCP counters only; '
-            . 'never say you heard a call.';
-        $lines[] = '- Automatic trunk failover is ' . $auto . '. A poor call whose peer is a trunk with an '
-            . 'alternative behind it in an outbound route may have that trunk moved to the end of the chain '
-            . 'for NEW calls; live calls are never touched, and the change is reversible on Outbound routes. '
-            . 'If the lossy peer is a phone, Wi-Fi or the local network there is no safe automatic change: '
-            . 'name what to check and ask a human. If both trunks lose packets, or loss continues after a '
-            . 'failover, say the carrier needs a human.';
-        // The evidence trail: every incident keeps its own RTCP samples and the
-        // action taken. Greg must cite it, the way an engineer writes a ticket.
-        $evidence = self::recentEvidence(24, 5);
-        if ($evidence) {
-            $lines[] = '- Stored quality evidence (last 24 h) — cite the id and this trail when you summarize:';
-            foreach ($evidence as $e) {
-                $lines[] = '  · evidence #' . (int) $e['id'] . ' — ' . (string) $e['level']
-                    . ' call ' . mb_substr((string) $e['call_id'], 0, 24)
-                    . ((string) $e['trunk_name'] !== '' ? ' on ' . $e['trunk_name'] : '')
-                    . ', ' . (float) $e['loss_pct'] . '% loss over ' . (int) $e['reports'] . ' RTCP report(s) ('
-                    . (string) ($e['first_ts'] ?? '?') . ' to ' . (string) ($e['last_ts'] ?? '?')
-                    . '), peer ' . (string) $e['peer'] . '; action: '
-                    . ((string) $e['action_detail'] !== '' ? (string) $e['action_detail'] : 'none')
-                    . '. Source: res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events.';
-            }
-            $lines[] = '  A quality answer must name the evidence id, the peer and time window, the report count and '
-                . 'what (if anything) was changed. Do not summarize a quality problem without that trail. '
-                . '`aipbx_quality.php --evidence=N` prints the full record for an administrator.';
-        } else {
-            $lines[] = '- Stored quality evidence: none in the last 24 h.';
-        }
-        return implode("\n", $lines);
-    }
-
-    // ------------------------------------------------------------- evidence
-
-    /**
-     * The raw RTCP rows behind one call, bounded to what a ticket needs.
-     * A long call can have hundreds of reports; the first four and the last
-     * four tell the story (onset, peak, recovery).
-     *
-     * @return array<int, array<string, mixed>>
-     */
-    public static function proofFor(string $callId, int $minutes = self::FIX_WINDOW_MIN): array
-    {
-        $minutes = max(1, min(1440, (int) $minutes));
-        try {
-            $st = getDB()->prepare(
-                "SELECT ts, src, dst, rtcp_ssrc, rtcp_lost, rtcp_fraction_lost, rtcp_jitter
-                   FROM pbx_signaling_events
-                  WHERE proto = 'rtcp' AND call_id = ?
-                    AND ts >= (NOW() - INTERVAL {$minutes} MINUTE)
-                  ORDER BY ts ASC"
-            );
-            $st->execute([$callId]);
-            $rows = $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        } catch (\Throwable $e) {
-            return [];
-        }
-        if (count($rows) <= 8) {
-            return $rows;
-        }
-        return array_merge(array_slice($rows, 0, 4), array_slice($rows, -4));
-    }
-
-    /**
-     * Copies the proof of one incident into durable storage. Returns the
-     * evidence id, or null when it could not be stored (which never stops the
-     * notice or the fix — the live rows are still there until retention).
-     *
-     * @param array<string, mixed> $call
-     */
-    public static function recordEvidence(array $call, string $action = 'none',
-                                          string $detail = '', string $source = 'cron'): ?int
-    {
-        try {
-            // One incident per call and first report, whatever the cron decided
-            // on a later pass. A first "cooldown" record is upgraded when the
-            // trunk is actually moved, instead of writing a second story.
-            $key = substr(hash(
-                'sha256',
-                (string) $call['call_id'] . '|' . (string) $call['first_ts']
-            ), 0, 64);
-            $db = getDB();
-            $find = $db->prepare('SELECT id, action FROM pbx_quality_evidence WHERE dedupe_key = ? LIMIT 1');
-            $find->execute([$key]);
-            $existing = $find->fetch(PDO::FETCH_ASSOC);
-            if (is_array($existing)) {
-                $previous = (string) ($existing['action'] ?? 'none');
-                // Only a real outcome replaces an earlier guess; a later
-                // "cooldown" pass must not erase "trunk_demoted".
-                if (in_array($action, ['trunk_demoted', 'reload_failed'], true) && $action !== $previous) {
-                    $db->prepare('UPDATE pbx_quality_evidence SET action = ?, action_detail = ? WHERE id = ?')
-                        ->execute([mb_substr($action, 0, 32), mb_substr($detail, 0, 500), (int) $existing['id']]);
-                }
-                return (int) $existing['id'];
-            }
-            $verdict = self::verdict($call);
-            $samples = self::proofFor((string) $call['call_id']);
-            $proof = [
-                'source' => "res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events (proto='rtcp')",
-                'window_minutes' => self::FIX_WINDOW_MIN,
-                'thresholds' => [
-                    'poor_pct' => self::POOR_PCT,
-                    'fair_pct' => self::FAIR_PCT,
-                    'min_poor_reports' => 2,
-                ],
-                'call' => [
-                    'call_id' => (string) $call['call_id'],
-                    'reports' => (int) $call['reports'],
-                    'worst_fraction' => (int) $call['worst_fraction'],
-                    'loss_pct' => $verdict['loss_pct'],
-                    'jitter' => (int) $call['jitter'],
-                    'first_ts' => (string) $call['first_ts'],
-                    'last_ts' => (string) $call['last_ts'],
-                    'peers' => array_values((array) $call['peers']),
-                ],
-                'samples' => $samples,
-                'trunk' => $call['trunk'] ? [
-                    'trunk_name' => (string) $call['trunk']['trunk_name'],
-                    'ip_address' => (string) $call['trunk']['ip_address'],
-                ] : null,
-            ];
-            $db->prepare(
-                'INSERT INTO pbx_quality_evidence
-                    (created_at, call_id, trunk_name, peer, level, loss_pct, jitter,
-                     reports, first_ts, last_ts, evidence_json, action, action_detail,
-                     source, dedupe_key)
-                 VALUES (NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            )->execute([
-                mb_substr((string) $call['call_id'], 0, 128),
-                mb_substr((string) ($call['trunk']['trunk_name'] ?? ''), 0, 50),
-                mb_substr((string) ($call['peers'][0] ?? ''), 0, 64),
-                $verdict['level'] === 'poor' ? 'poor' : $verdict['level'],
-                $verdict['loss_pct'],
-                (int) $call['jitter'],
-                (int) $call['reports'],
-                $call['first_ts'] !== '' ? (string) $call['first_ts'] : null,
-                $call['last_ts'] !== '' ? (string) $call['last_ts'] : null,
-                json_encode($proof, JSON_UNESCAPED_SLASHES),
-                mb_substr($action, 0, 32),
-                mb_substr($detail, 0, 500),
-                mb_substr($source, 0, 16),
-                $key,
-            ]);
-            return (int) $db->lastInsertId();
-        } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
-    /** @return array<int, array<string, mixed>> newest evidence first */
-    public static function recentEvidence(int $hours = 24, int $limit = 10): array
-    {
-        $hours = max(1, min(8760, (int) $hours));
-        $limit = max(1, min(100, (int) $limit));
-        try {
-            $st = getDB()->prepare(
-                "SELECT * FROM pbx_quality_evidence
-                  WHERE created_at >= (NOW() - INTERVAL {$hours} HOUR)
-                  ORDER BY id DESC LIMIT {$limit}"
-            );
-            $st->execute();
-            return $st->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        } catch (\Throwable $e) {
-            return [];
-        }
-    }
-
-    /** @return array<string, mixed>|null */
-    public static function evidenceById(int $id): ?array
-    {
-        try {
-            $st = getDB()->prepare('SELECT * FROM pbx_quality_evidence WHERE id = ? LIMIT 1');
-            $st->execute([$id]);
-            $row = $st->fetch(PDO::FETCH_ASSOC);
-            return is_array($row) ? $row : null;
-        } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
-    /**
-     * The trail a VoIP engineer writes on a ticket: what was measured, from
-     * which source, over which window, and what was changed.
-     */
-    public static function evidenceTrail(int $id): string
-    {
-        $row = self::evidenceById($id);
-        if ($row === null) {
-            return '';
-        }
-        $proof = json_decode((string) ($row['evidence_json'] ?? ''), true);
-        $proof = is_array($proof) ? $proof : [];
-        $call = (array) ($proof['call'] ?? []);
-        $th = (array) ($proof['thresholds'] ?? []);
-        $trunk = $proof['trunk'] ?? null;
-        $lines = [
-            sprintf('Evidence #%d — %s quality, recorded %s (server time)', (int) $row['id'],
-                (string) $row['level'], (string) $row['created_at']),
-            'Call: ' . (string) $row['call_id'],
-            sprintf(
-                'Measured: %d RTCP report(s), %s to %s; worst loss %.2f%% (fraction %d/256); jitter %d RTP timestamp units',
-                (int) $row['reports'],
-                (string) ($row['first_ts'] ?? '?'),
-                (string) ($row['last_ts'] ?? '?'),
-                (float) $row['loss_pct'],
-                (int) ($call['worst_fraction'] ?? 0),
-                (int) $row['jitter']
-            ),
-            'Peers: ' . implode(', ', (array) ($call['peers'] ?? [$row['peer']])),
-            $trunk
-                ? 'Trunk: ' . (string) ($trunk['trunk_name'] ?? '') . ' (pbx_trunks.ip_address = ' . (string) ($trunk['ip_address'] ?? '') . ')'
-                : 'Trunk: no configured trunk matched the media peer.',
-            'Samples:',
-        ];
-        foreach ((array) ($proof['samples'] ?? []) as $sample) {
-            $lines[] = sprintf(
-                '  %s  %s -> %s  SSRC=%s  fraction_lost=%s  lost=%s  jitter=%s',
-                (string) ($sample['ts'] ?? ''),
-                (string) ($sample['src'] ?? ''),
-                (string) ($sample['dst'] ?? ''),
-                (string) ($sample['rtcp_ssrc'] ?? ''),
-                (string) ($sample['rtcp_fraction_lost'] ?? '?'),
-                (string) ($sample['rtcp_lost'] ?? '?'),
-                (string) ($sample['rtcp_jitter'] ?? '?')
-            );
-        }
-        $lines[] = sprintf(
-            'Decision: two reports at %.0f%% loss or more -> poor (fair from %.0f%%, window %d min).',
-            (float) ($th['poor_pct'] ?? self::POOR_PCT),
-            (float) ($th['fair_pct'] ?? self::FAIR_PCT),
-            (int) ($proof['window_minutes'] ?? self::FIX_WINDOW_MIN)
-        );
-        $lines[] = 'Action: ' . ((string) ($row['action_detail'] ?? '') !== ''
-            ? (string) $row['action_detail']
-            : 'none — recorded for the trail only.');
-        $lines[] = 'Source: ' . (string) ($proof['source'] ?? 'pbx_signaling_events');
-        return implode("\n", $lines);
-    }
-
-    /** One compact line for a notice or an e-mail. */
-    private static function evidenceNote(array $ids): string
-    {
-        $ids = array_values(array_filter(array_map('intval', $ids)));
-        if (!$ids) {
-            return '';
-        }
-        $row = self::evidenceById($ids[0]);
-        if ($row === null) {
-            return '';
-        }
-        return "\n\n" . sprintf(
-            t('call_quality.evidence_ref'),
-            (int) $row['id'],
-            (int) $row['reports'],
-            (string) ($row['first_ts'] ?? '?'),
-            (string) ($row['last_ts'] ?? '?'),
-            (string) $row['peer'],
-            (float) $row['loss_pct'],
-            (int) $row['id']
-        );
-    }
-
-    /** A day's incidents, with their evidence ids, for Greg and the CLI. */
-    public static function report(int $hours = 24, int $limit = 20): string
-    {
-        $rows = self::recentEvidence($hours, $limit);
-        $header = sprintf('Quality evidence, last %d h — %d incident(s).', $hours, count($rows));
-        if (!$rows) {
-            return $header . "\nNo stored quality evidence in this window.";
-        }
-        $lines = [$header];
-        foreach ($rows as $row) {
-            $lines[] = sprintf(
-                '#%d  %s  %s  call %s%s  %.2f%% loss over %d report(s) (%s to %s), peer %s — %s',
-                (int) $row['id'],
-                (string) $row['created_at'],
-                (string) $row['level'],
-                mb_substr((string) $row['call_id'], 0, 32),
-                (string) $row['trunk_name'] !== '' ? ' on ' . $row['trunk_name'] : '',
-                (float) $row['loss_pct'],
-                (int) $row['reports'],
-                (string) ($row['first_ts'] ?? '?'),
-                (string) ($row['last_ts'] ?? '?'),
-                (string) $row['peer'],
-                (string) $row['action_detail'] !== '' ? (string) $row['action_detail'] : 'no action'
-            );
-        }
-        return implode("\n", $lines);
-    }
-
-    private static function pruneEvidence(): void
-    {
-        $days = (int) getSystemSetting('call_quality.evidence_days', '180');
-        $days = max(7, min(3650, $days));
-        try {
-            getDB()->exec("DELETE FROM pbx_quality_evidence WHERE created_at < (NOW() - INTERVAL {$days} DAY)");
-        } catch (\Throwable $e) {
-            // Pruning is housekeeping; never fail the quality run for it.
-        }
-    }
-
-    /**
-     * The quality cron: notice what is degraded and make the one safe change.
-     * Run every five minutes; silent when the feature is off or Greg is off.
-     *
-     * @return array<string, mixed>
-     */
-    public static function tick(): array
-    {
-        $out = ['fixed' => [], 'notices' => 0, 'skipped' => []];
-        self::pruneEvidence();
-        try {
-            if (!GregService::enabled()) {
-                $out['skipped'][] = 'greg_disabled';
-                return $out;
-            }
-            // Observe-only is still useful: evidence and notices continue, the
-            // trunk is simply not moved. The switch is about changing routes,
-            // not about keeping the proof.
-            $autoFix = GregService::settings()['auto_fix'];
-            if (!$autoFix) {
-                $out['skipped'][] = 'auto_fix_off';
-            }
-            if (!self::available()) {
-                $out['skipped'][] = 'capture_not_local';
-                return $out;
-            }
-            $calls = self::degraded(self::FIX_WINDOW_MIN);
-            if (!$calls) {
-                return $out;
-            }
-            $map = self::trunkMap();
-            $byTrunk = [];
-            $others = [];
-            foreach ($calls as $call) {
-                $trunk = self::trunkFor($call['peers'], $map);
-                if ($trunk !== null) {
-                    $byTrunk[(string) $trunk['trunk_name']]['trunk'] = $trunk;
-                    $byTrunk[(string) $trunk['trunk_name']]['calls'][] = $call;
-                } else {
-                    $others[] = $call;
-                }
-            }
-            // Two trunks losing packets at once is not a trunk problem: moving
-            // either one would just swap the order and punish a carrier that is
-            // not at fault. That is a human decision (or the LAN).
-            if (count($byTrunk) > 1) {
-                $ids = [];
-                foreach ($byTrunk as $group) {
-                    foreach ($group['calls'] as $call) {
-                        $ids[] = self::recordEvidence(
-                            $call,
-                            'multiple_trunks',
-                            'Sustained loss on ' . implode(', ', array_keys($byTrunk))
-                                . '; no automatic change, a human must check the uplink and both carriers.'
-                        );
-                    }
-                }
-                GregService::notify(
-                    'critical',
-                    t('call_quality.notice_wide_title'),
-                    sprintf(t('call_quality.notice_wide_body'), implode(', ', array_keys($byTrunk)))
-                        . self::evidenceNote($ids),
-                    'quality:wide'
-                );
-                $out['skipped'][] = 'multiple_trunks';
-                $byTrunk = [];
-            }
-            foreach ($byTrunk as $name => $group) {
-                $result = $autoFix
-                    ? self::failover($name)
-                    : ['skipped' => 'auto_off', 'detail' => 'Automatic trunk failover is switched off; evidence recorded only.'];
-                if (isset($result['routes'])) {
-                    $out['fixed'][] = $name;
-                }
-                $action = isset($result['routes']) ? 'trunk_demoted'
-                    : (!empty($result['failed']) ? 'reload_failed'
-                    : ((string) ($result['skipped'] ?? '') === 'no_route' ? 'no_alternative'
-                    : ((string) ($result['skipped'] ?? '') === 'cooldown' ? 'cooldown'
-                    : ((string) ($result['skipped'] ?? '') === 'pending' ? 'pending'
-                    : ((string) ($result['skipped'] ?? '') === 'auto_off' ? 'observed' : 'none')))));
-                $detail = (string) ($result['detail'] ?? '');
-                $ids = [];
-                foreach ($group['calls'] as $call) {
-                    $ids[] = self::recordEvidence($call, $action, $detail);
-                }
-                if ($out['notices'] >= self::MAX_NOTICES || !empty($result['failed'])) {
-                    // A failed reload already raised its own critical notice.
-                    continue;
-                }
-                if (isset($result['routes'])) {
-                    $worst = $group['calls'][0];
-                    $res = GregService::notify(
-                        'warn',
-                        sprintf(t('call_quality.notice_fixed_title'), $name),
-                        sprintf(
-                            t('call_quality.notice_fixed_body'),
-                            $name,
-                            $worst['verdict']['loss_pct'],
-                            $worst['verdict']['reports'],
-                            implode(', ', $result['routes'])
-                        ) . self::evidenceNote($ids),
-                        'quality:fix:' . $name
-                    );
-                } elseif (($result['skipped'] ?? '') === 'no_route') {
-                    $res = GregService::notify(
-                        'warn',
-                        sprintf(t('call_quality.notice_no_alt_title'), $name),
-                        sprintf(t('call_quality.notice_no_alt_body'), $name, $group['calls'][0]['verdict']['loss_pct'])
-                            . self::evidenceNote($ids),
-                        'quality:noalt:' . $name
-                    );
-                } elseif ($action === 'observed') {
-                    $res = GregService::notify(
-                        'warn',
-                        sprintf(t('call_quality.notice_observed_title'), $name),
-                        sprintf(t('call_quality.notice_observed_body'), $name, $group['calls'][0]['verdict']['loss_pct'])
-                            . self::evidenceNote($ids),
-                        'quality:observed:' . $name
-                    );
-                } else {
-                    $res = ['deduped' => true];
-                }
-                if (isset($res['id'])) {
-                    $out['notices']++;
-                }
-            }
-            foreach (array_slice($others, 0, max(0, self::MAX_NOTICES - $out['notices'])) as $call) {
-                $peer = (string) ($call['peers'][0] ?? 'unknown');
-                $id = self::recordEvidence(
-                    $call,
-                    'local_peer',
-                    'No automatic change: the media peer is not a configured trunk.'
-                );
-                $res = GregService::notify(
-                    'warn',
-                    t('call_quality.notice_local_title'),
-                    sprintf(
-                        t('call_quality.notice_local_body'),
-                        mb_substr($call['call_id'], 0, 32),
-                        $peer,
-                        $call['verdict']['loss_pct'],
-                        implode(', ', $call['peers'])
-                    ) . self::evidenceNote([(int) $id]),
-                    'quality:local:' . $peer
-                );
-                if (isset($res['id'])) {
-                    $out['notices']++;
-                }
-            }
-        } catch (\Throwable $e) {
-            $out['error'] = mb_substr($e->getMessage(), 0, 200);
-        }
-        return $out;
-    }
-
-    /**
-     * Moves one trunk to the end of every outbound route that has another
-     * trunk, then regenerates the dialplan. New calls use the new order; live
-     * calls keep their channel. Returns ['routes'=>names] on success.
-     *
-     * @return array<string, mixed>
-     */
-    private static function failover(string $trunkName): array
-    {
-        $last = (int) getSystemSetting('call_quality.fix.' . $trunkName, '0');
-        if ($last > 0 && time() - $last < self::FIX_COOLDOWN) {
-            return [
-                'skipped' => 'cooldown',
-                'detail' => 'Trunk ' . $trunkName . ' was already moved to backup within the last six hours; no change.',
-            ];
-        }
-        $db = getDB();
-        // Never apply someone else's outbound edits as a side effect.
-        $pending = (int) $db->query(
-            "SELECT COUNT(*) FROM sys_pending_sync WHERE domain = 'outbound_dialplan'"
-        )->fetchColumn();
-        if ($pending > 0) {
-            return [
-                'skipped' => 'pending',
-                'detail' => 'Another outbound change is waiting for Apply; no change was made to ' . $trunkName . '.',
-            ];
-        }
-        $routes = $db->query(
-            'SELECT id, route_name, trunks_json FROM pbx_outbound_routes WHERE is_active = 1'
-        )->fetchAll(PDO::FETCH_ASSOC) ?: [];
-        $changed = [];
-        foreach ($routes as $route) {
-            $chain = json_decode((string) ($route['trunks_json'] ?? ''), true);
-            if (!is_array($chain) || count($chain) < 2) {
-                continue;
-            }
-            $names = array_map(fn($t) => trim((string) ($t['trunk_name'] ?? '')), $chain);
-            $pos = array_search($trunkName, $names, true);
-            if ($pos === false || $pos === count($chain) - 1) {
-                continue;
-            }
-            $before = $chain;
-            $item = array_splice($chain, (int) $pos, 1);
-            $chain[] = $item[0];
-            $db->prepare('UPDATE pbx_outbound_routes SET trunks_json = ? WHERE id = ?')
-                ->execute([json_encode($chain), (int) $route['id']]);
-            $changed[] = [
-                'id' => (int) $route['id'],
-                'name' => (string) ($route['route_name'] ?? ('route ' . $route['id'])),
-                'chain_before' => $before,
-                'before' => array_map(fn($t) => trim((string) ($t['trunk_name'] ?? '')), $before),
-                'after' => array_map(fn($t) => trim((string) ($t['trunk_name'] ?? '')), $chain),
-            ];
-        }
-        if (!$changed) {
-            return [
-                'skipped' => 'no_route',
-                'detail' => 'No active outbound route has ' . $trunkName . ' before another trunk; nothing changed.',
-            ];
-        }
-
-        require_once __DIR__ . '/../asterisk_sync.php';
-        foreach ($changed as $route) {
-            markPendingSync('outbound_dialplan', 'outbound_route', $route['id'], $route['name'], 'update', null);
-        }
-        // Apply only the domain this fix just changed. Calling the sync
-        // function directly would skip the pending-sync bookkeeping; applying
-        // every domain would push another administrator's queued edits to
-        // Asterisk as a side effect of a trunk demotion.
-        try {
-            $applied = applyPendingSyncDomain('outbound_dialplan');
-            $ok = !empty($applied['success']);
-        } catch (\Throwable $e) {
-            $ok = false;
-        }
-        if (!$ok) {
-            // The sync rolled the file back; put the database back too, so the
-            // page and Asterisk cannot disagree about the route order.
-            $undo = $db->prepare('UPDATE pbx_outbound_routes SET trunks_json = ? WHERE id = ?');
-            $drop = $db->prepare("DELETE FROM sys_pending_sync WHERE domain = 'outbound_dialplan' AND entity_id = ?");
-            foreach ($changed as $route) {
-                // `before` is the names for the ticket; the JSON is rebuilt
-                // from the saved chain below.
-                $undo->execute([json_encode($route['chain_before']), $route['id']]);
-                $drop->execute([(string) $route['id']]);
-            }
-            $out = [
-                'failed' => true,
-                'detail' => 'Dialplan reload failed; route order for ' . $trunkName . ' was restored and nothing changed.',
-            ];
-            $changed = [];
-            GregService::notify(
-                'critical',
-                t('call_quality.notice_undo_title'),
-                sprintf(t('call_quality.notice_undo_body'), $trunkName),
-                'quality:undofail:' . $trunkName
-            );
-            return $out;
-        }
-        // applyPendingSyncDomain() deletes this domain's rows on success.
-        self::remember('call_quality.fix.' . $trunkName, (string) time());
-        $names = array_column($changed, 'name');
-        writeAuditLog(
-            'call_quality',
-            'trunk_failover',
-            $trunkName,
-            $trunkName . ' -> last in ' . implode(', ', $names),
-            'update',
-            null
-        );
-        GregJournal::append(
-            'Call quality: moved trunk ' . $trunkName . ' to the end of ' . implode(', ', $names),
-            ['reason: sustained RTCP packet loss', 'scope: new calls only', 'undo: Outbound routes']
-        );
-        $trail = [];
-        foreach ($changed as $route) {
-            $trail[] = $route['name'] . ' [' . implode(', ', $route['before']) . '] -> [' . implode(', ', $route['after']) . ']';
-        }
-        return [
-            'routes' => $names,
-            'detail' => 'Moved ' . $trunkName . ' to the end of: ' . implode('; ', $trail)
-                . '. Dialplan reloaded; new calls use the new order. Undo: Outbound routes.',
-        ];
-    }
-
-    private static function remember(string $key, string $value): void
-    {
-        try {
-            getDB()->prepare(
-                'INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?)
-                 ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
-            )->execute([$key, $value]);
-        } catch (\Throwable $e) {
-            // A missing memory costs at most a repeated check; never fail here.
-        }
+        return array_values(array_unique($own));
     }
 }

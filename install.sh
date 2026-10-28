@@ -55,6 +55,186 @@ if [[ "${AIPBX_SKIP_OS_CHECK:-0}" != 1 ]]; then
     fi
 fi
 
+# Raise this number in a change that needs Asterisk RESTARTED on update (a new
+# Asterisk package or module, the service unit, anything read only at start).
+# aipbx-update compares it between releases (scripts/asterisk-restart-needed.sh):
+# when it and asterisk-config/ are unchanged, Asterisk is only reloaded and
+# calls in progress stay up.
+ASTERISK_RESTART_EPOCH=1
+
+# --- Bounded waits: a stall must become an error, not a 45-minute silence ---
+# On 2026-10-26 the install test sat inside `install.sh` until the job timeout
+# with nothing to show for it. Two of its steps can wait far longer than the
+# work they are waiting on, with nothing in the log to say so:
+#   * `apt-get` on a held dpkg lock (the runner's own unattended-upgrades, or an
+#     apt left behind by an earlier step): with no bound set, that wait has run
+#     into the quarter-hour range in the wild, and nothing here needs it to;
+#   * `composer install` has no network timeout at all, so a packagist or GitHub
+#     connection that stops answering is simply waited on.
+# `-o DPkg::Lock::Timeout` gives apt a bound (it then fails with its own "Could
+# not get lock" message); Composer has no such knob, so the whole command is
+# bounded here instead (see COMPOSER_TIMEOUT).
+#
+# Neither of those covers the third way this can stop: apt's own configure stage
+# runs postinst scripts that can block for ever, with nothing printed and no
+# timeout of apt's own. That is why the package phase below also runs under
+# stream_bounded (see APT_* there): a wall-clock budget for the phase, and a
+# bound on how long its output may stand still.
+APT_LOCK_WAIT=120      # seconds apt-get may wait for the dpkg lock
+COMPOSER_TIMEOUT=900   # seconds the whole `composer install` may take
+COMPOSER_SILENCE=300   # no line and no download progress for this long means a real stall
+
+# --- Streaming, time-bounded apt ---------------------------------------------
+# This step used to end in `apt-get ... 2>&1 | tail -5`, and that pipe is why the
+# 2026-10-26 stall was invisible: it holds every line until apt exits, so a phase
+# that ran for 45 minutes wrote nothing to the log at all — and even the healthy
+# run showed 126 s of silence while dpkg configured, with no way to tell that
+# from a hang.
+#
+# So apt now runs under stream_bounded: every line reaches stdout as it arrives
+# (the CI keeps it through `tee`, so a cancelled job still has the evidence), a
+# copy stays in a file so the last lines can be shown after a kill, the phase
+# has a wall-clock budget, and the output may not stand still for long either.
+# A stall now ends in minutes, naming the phase and printing the last thing apt
+# said, instead of costing the caller's whole timeout.
+#
+# Standing still is judged on progress, not on lines alone. A download prints
+# nothing while it arrives, and on 2026-10-26 that failed the install test: apt's
+# last line was 301 s old — "Get:147 ... golang-1.26-src [24.4 MB]", a 24 MB
+# source package still coming down a slow mirror — and the silence clock killed a
+# phase that was working (994 s in). Both apt calls therefore name the directory
+# apt writes into (--progress=), bytes landing there reset the same clock, and a
+# long download now shows in the log instead of looking like silence. A postinst
+# that hangs prints nothing AND writes nothing, so it is still killed at the bound.
+APT_UPDATE_TIMEOUT=300    # apt-get update: a mirror that cannot answer in 5 min is down
+APT_INSTALL_TIMEOUT=1200  # apt-get install of every package; the healthy run took ~2.5 min
+APT_SILENCE=300           # no line and no download progress for this long means a real stall
+
+# stream_bounded <label> <budget-seconds> <silence-seconds> [--progress=DIR] -- <command...>
+# Runs the command under both clocks, streaming its output. Returns the
+# command's own status, or
+#   124  the wall-clock budget ran out
+#   125  the output stood still for the silence bound, with nothing arriving in DIR
+#
+# --progress is optional, for callers whose work lands in a directory (apt's
+# downloads): growth of that directory counts as progress, so a slow download is
+# not mistaken for a hang. Without it the silence bound is measured on output alone.
+stream_bounded() {
+    local label="$1" budget="$2" quiet="$3"
+    local log rc=0 shown=0 lines=0 start last_out last_prog reason="" pid i elapsed
+    local progress="" bytes=0 seen=0 waited=0 quiet_at=0
+    shift 3
+    if [[ "${1:-}" == --progress=* ]]; then
+        progress="${1#--progress=}"
+        shift
+    fi
+    [[ "${1:-}" == "--" ]] && shift
+
+    log="$(mktemp)" || { "$@"; return $?; }
+    start=$SECONDS
+    last_out=$start
+    last_prog=$start
+    if [ -n "$progress" ]; then
+        info "$label — up to ${budget}s, ${quiet}s without a line or a byte counts as stuck"
+    else
+        info "$label — up to ${budget}s, ${quiet}s without a line counts as stuck"
+    fi
+
+    # `timeout` rather than a clock inside the loop: it puts the command in its
+    # own process group and signals the group, so a hung postinst goes with
+    # apt-get instead of being orphaned halfway through a configure.
+    timeout --signal=TERM --kill-after=60 "$budget" "$@" >>"$log" 2>&1 &
+    pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+        lines=$(wc -l <"$log" 2>/dev/null | tr -d ' ')
+        [ -n "$lines" ] || lines=0
+        if [ "$lines" -gt "$shown" ]; then
+            sed -n "$((shown + 1)),${lines}p" "$log"
+            shown=$lines
+            last_out=$SECONDS
+        fi
+        if [ -n "$progress" ]; then
+            # du, not a stat of one file: apt renames each download as it finishes,
+            # so the directory's total size is the measure that does not blink.
+            bytes=$({ du -sk "$progress" 2>/dev/null || true; } | awk '{print $1}')
+            [ -n "$bytes" ] || bytes=0
+            if [ "$bytes" != "$seen" ]; then
+                seen=$bytes
+                last_prog=$SECONDS
+                # Say it once per quiet window: without this a slow download
+                # reads exactly like the silence this clock exists to catch.
+                if [ $((SECONDS - last_out)) -ge "$quiet" ] && [ $((SECONDS - waited)) -ge "$quiet" ]; then
+                    waited=$SECONDS
+                    info "$label: no output for $((SECONDS - last_out))s, but $((bytes / 1024)) MB is now in ${progress} — still downloading"
+                fi
+            fi
+        fi
+        # Stuck means neither the output nor the downloads have moved.
+        quiet_at=$last_out
+        [ "$last_prog" -gt "$quiet_at" ] && quiet_at=$last_prog
+        if [ $((SECONDS - quiet_at)) -ge "$quiet" ]; then
+            if [ -n "$progress" ]; then
+                reason="printed nothing for $((SECONDS - last_out))s and received nothing for $((SECONDS - last_prog))s"
+            else
+                reason="went silent for $((SECONDS - last_out))s"
+            fi
+            break
+        fi
+    done
+
+    if [ -n "$reason" ]; then
+        # Signal the whole group (both GNU and uutils timeout make themselves
+        # the group leader, so the command's group id is their pid) and only
+        # fall back to the single pid: a postinst that ignores TERM must not be
+        # left orphaned in the middle of a configure step.
+        kill -s TERM -- "-$pid" 2>/dev/null || kill -s TERM "$pid" 2>/dev/null || true
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || rc=$?
+    # timeout has exited by now. If it ended on a clock and something in its
+    # group outlived it (a postinst that ignored TERM), sweep the group: the
+    # others are gone already, so this is normally a no-op.
+    if [ "$rc" -ne 0 ]; then
+        kill -s KILL -- "-$pid" 2>/dev/null || true
+    fi
+
+    # The loop stops looking the moment the process ends, so whatever was
+    # printed between the last tick and the exit still has to be flushed: on a
+    # failure those lines are the whole diagnosis.
+    lines=$(wc -l <"$log" 2>/dev/null | tr -d ' ')
+    [ -n "$lines" ] || lines=0
+    if [ "$lines" -gt "$shown" ]; then
+        sed -n "$((shown + 1)),${lines}p" "$log"
+    fi
+    rm -f "$log"
+
+    elapsed=$((SECONDS - start))
+    if [ -n "$reason" ]; then
+        warn "$label $reason — killed after ${elapsed}s; the lines above are the last thing it printed"
+        return 125
+    fi
+    # Ubuntu 26.04 ships uutils' timeout, which reports a child that had to be
+    # SIGKILLed as 137 where GNU timeout says 124. The clock we know about is
+    # our own, so "it died at or after the budget" is what identifies this, and
+    # the caller still gets a name for it instead of "failed (status 137)".
+    if [ "$rc" -ne 0 ] && [ "$elapsed" -ge "$budget" ]; then
+        warn "$label hit the ${budget}s budget — killed; the lines above are where it stopped"
+        return 124
+    fi
+    case $rc in
+        0)   ok "$label finished in ${elapsed}s" ; return 0 ;;
+        124) warn "$label hit the ${budget}s budget — killed; the lines above are where it stopped" ; return 124 ;;
+        *)   warn "$label failed (status $rc)" ; return "$rc" ;;
+    esac
+}
+
 # --- Mode: fresh install (default) or --upgrade ---
 AIPBX_MODE=install
 for arg in "$@"; do
@@ -234,8 +414,24 @@ env_ensure() {
 }
 
 # --- Script and install directories ---
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo "")"
+# BASH_SOURCE is empty when the script comes through `curl ... | bash`; with
+# `set -u` that printed "BASH_SOURCE[0]: unbound variable" as the first line.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd || echo "")"
 INSTALL_DIR="${AIPBX_INSTALL_DIR:-/opt/aipbx}"
+
+# --- Bridge releases ---
+# A release may contain UPGRADE_FROM (a version): it can then only be applied
+# to installations of that version or newer — it carries no code for older ones.
+# Older installations update to that bridge release first (aipbx-update does it
+# by itself from 1.50.0 on). The installed version is recorded at the end of
+# every successful install/upgrade in /var/lib/aipbx/installed-version.
+if is_upgrade && [[ -f "$INSTALL_DIR/UPGRADE_FROM" ]]; then
+    need_from="$(tr -d '[:space:]' < "$INSTALL_DIR/UPGRADE_FROM")"
+    have="$(tr -d '[:space:]' < /var/lib/aipbx/installed-version 2>/dev/null || true)"
+    if [[ -z "$have" || "$(printf '%s\n%s\n' "$have" "$need_from" | sort -V | head -1)" != "$need_from" ]]; then
+        error "This release can only update AiPBX ${need_from} or newer (installed: ${have:-older than 1.50.0}). Update to v${need_from} first: sudo aipbx-update --to v${need_from}"
+    fi
+fi
 
 # Helper for interactive prompts when running via piped curl (reading from /dev/tty)
 prompt_read() {
@@ -265,13 +461,13 @@ if ! is_upgrade && [[ ! -f "$SCRIPT_DIR/web/config.php" ]]; then
     if ! command -v git >/dev/null 2>&1; then
         info "Installing git..."
         export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq \
+        apt-get -o DPkg::Lock::Timeout="$APT_LOCK_WAIT" update -qq \
             && apt-get -o DPkg::Lock::Timeout="$APT_LOCK_WAIT" install -y -qq git
     fi
     
     if [[ -d "$INSTALL_DIR/.git" ]]; then
         info "Existing repository found in $INSTALL_DIR, fetching..."
-        git -C "$INSTALL_DIR" fetch --quiet --tags --force origin
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" fetch --quiet --tags --force origin
     else
         mkdir -p "$(dirname "$INSTALL_DIR")"
         # Full clone (not --depth 1): aipbx-update later checks out release tags.
@@ -280,15 +476,18 @@ if ! is_upgrade && [[ ! -f "$SCRIPT_DIR/web/config.php" ]]; then
     # Install the latest published release by default so that the installed
     # version matches VERSION/CHANGELOG and aipbx-update works from a known
     # release. AIPBX_REF=main (or any tag/commit) installs something else.
-    AIPBX_REF="${AIPBX_REF:-$(git -C "$INSTALL_DIR" tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)}"
+    AIPBX_REF="${AIPBX_REF:-$(git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)}"
     AIPBX_REF="${AIPBX_REF:-main}"
     if [[ "$AIPBX_REF" == main ]]; then
-        git -C "$INSTALL_DIR" checkout --quiet main && git -C "$INSTALL_DIR" reset --quiet --hard origin/main
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" checkout --quiet main && git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" reset --quiet --hard origin/main
     else
-        git -C "$INSTALL_DIR" checkout --quiet --force --detach "$AIPBX_REF"
+        git -c safe.directory="$INSTALL_DIR" -C "$INSTALL_DIR" checkout --quiet --force --detach "$AIPBX_REF"
     fi
     info "Installing AiPBX ${AIPBX_REF}"
     # Re-run the installer from the checked-out release (it may differ from this copy).
+    # Through `curl | bash` the rest of this script is still in the pipe: read it
+    # first, or curl ends the install with "(23) Failure writing output".
+    [[ -t 0 ]] || cat > /dev/null
     exec bash "$INSTALL_DIR/install.sh" "$@"
 fi
 
@@ -308,6 +507,13 @@ echo "  ╚═══════════════════════
 echo -e "${NC}"
 echo -e "  Source directory : ${YELLOW}$SCRIPT_DIR${NC}"
 echo -e "  Install directory: ${YELLOW}$INSTALL_DIR${NC}"
+echo ""
+echo -e "  ${YELLOW}${BOLD}NOTICE & DISCLAIMER (MIT License):${NC}"
+echo -e "  AiPBX is open-source software provided ${BOLD}\"AS IS\"${NC} without warranty of any kind."
+echo -e "  • ${BOLD}Emergency Calls (112/911):${NC} Not guaranteed; maintain an independent emergency line."
+echo -e "  • ${BOLD}SIP Security & Billing:${NC} You are solely responsible for securing trunks and toll costs."
+echo -e "  • ${BOLD}Privacy (GDPR/KVKK):${NC} Call recording and AI features require legal consent compliance."
+echo -e "  Full license & terms: ${CYAN}$INSTALL_DIR/LICENSE${NC}"
 echo ""
 
 # ============================================================================
@@ -390,7 +596,7 @@ step "2. Generating Secure Random Credentials"
 # Generate strong random password (reads limited bytes from /dev/urandom to avoid SIGPIPE under pipefail)
 gen_pass() {
     local len="${1:-20}"
-    head -c 1024 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9!@#%^&*' | head -c "$len"
+    head -c 1024 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9!@#%^*' | head -c "$len"
 }
 
 # Generate hex secret
@@ -555,10 +761,19 @@ systemctl reload nginx 2>/dev/null || true
 # ============================================================================
 step "4. Creating Directory Structure"
 
-if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
+if [[ "$(realpath "$SCRIPT_DIR")" != "$(realpath "$INSTALL_DIR")" ]]; then
     mkdir -p "$INSTALL_DIR"
-    cp -a "$SCRIPT_DIR"/* "$INSTALL_DIR"/
-    cp -a "$SCRIPT_DIR"/.gitignore "$INSTALL_DIR"/ 2>/dev/null || true
+    rsync -a \
+        --exclude='/android' \
+        --exclude='/ios' \
+        --exclude='/.git' \
+        --exclude='/.claude' \
+        --exclude='/rapor' \
+        --exclude='*.jks' \
+        --exclude='keystore.properties' \
+        "$SCRIPT_DIR"/ "$INSTALL_DIR"/
+    rm -rf "$INSTALL_DIR/android" "$INSTALL_DIR/ios" "$INSTALL_DIR/rapor" "$INSTALL_DIR/.claude" 2>/dev/null || true
+    find "$INSTALL_DIR" \( -name '*.jks' -o -name 'keystore.properties' \) -delete 2>/dev/null || true
 fi
 
 rm -rf /var/www/html
@@ -570,7 +785,7 @@ ln -sf "$INSTALL_DIR/web" /var/www/html
 # fax processing).
 # A root-only 750 bin/ silently broke *60/*72 because System(... &) logs nothing.
 chmod 755 "$INSTALL_DIR/web/bin"
-for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php aipbx_quality.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php greg_watch.php aipbx_ops.php; do
+for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php privacy_purge.php task_dispatcher.php greg_watch.php aipbx_quality.php aipbx_ops.php; do
     if [[ -f "$INSTALL_DIR/web/bin/$script" ]]; then
         ln -sf "$INSTALL_DIR/web/bin/$script" "/usr/local/bin/$script"
         chmod 755 "$INSTALL_DIR/web/bin/$script"
@@ -610,6 +825,18 @@ cat > /etc/cron.d/aipbx << 'CRON'
 # Health checks: the checks that are due, alarm e-mails, daily summary (Admin -> Health checks)
 * * * * * root /usr/local/bin/aipbx_health.php >/dev/null 2>&1
 
+# Nightly KVKK / GDPR data retention auto-purge (Security -> GDPR & Data Privacy)
+45 3 * * * root /usr/local/bin/privacy_purge.php >/dev/null 2>&1
+
+# Scheduled tasks (System -> Scheduled tasks; sandboxed, as aipbx-task), SIP debug
+# switch-off and the night restart window (PBX settings)
+* * * * * root /usr/local/bin/task_dispatcher.php >/dev/null 2>&1
+
+# Desk phones found on the network (PBX -> Phones -> Discovered on the network):
+# the engine looks, then the portal provisions what its settings allow. Both halves
+# are in one script so the second can never run without the first.
+*/5 * * * * www-data /usr/local/sbin/aipbx-phone-discovery >/dev/null 2>&1
+
 # Greg (AI -> AI VoIP Engineer): health results become his notices. Silent when disabled.
 7 * * * * root /usr/local/bin/greg_watch.php >/dev/null 2>&1
 
@@ -618,6 +845,12 @@ cat > /etc/cron.d/aipbx << 'CRON'
 */5 * * * * root /usr/local/bin/aipbx_quality.php >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/aipbx
+
+# Scheduled tasks run as this user only (never root, never www-data), in a
+# systemd sandbox where nothing but their own folder is writable.
+id -u aipbx-task >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent \
+    --shell /usr/sbin/nologin --user-group aipbx-task
+install -d -o root -g root -m 0755 /var/lib/aipbx/tasks
 
 mkdir -p /var/www/faxes
 mkdir -p /var/spool/asterisk/fax/outgoing
@@ -670,13 +903,25 @@ GREGNOTES
 fi
 # Key that encrypts cloud credentials stored in the database (AI → Cloud TTS).
 # Created here so it belongs to the web server: one made by root would lock it out.
-[[ -s /var/lib/aipbx/settings.key ]] || head -c 32 /dev/urandom > /var/lib/aipbx/settings.key
+[[ -L /var/lib/aipbx/settings.key ]] && rm -f /var/lib/aipbx/settings.key
+if [[ ! -s /var/lib/aipbx/settings.key ]]; then
+    tmp_settings_key="$(mktemp /var/lib/aipbx/.settings.key.XXXXXX)"
+    head -c 32 /dev/urandom > "$tmp_settings_key"
+    chmod 600 "$tmp_settings_key"
+    mv -f "$tmp_settings_key" /var/lib/aipbx/settings.key
+fi
 chmod 600 /var/lib/aipbx/settings.key
 mkdir -p /etc/asterisk/pbx
 mkdir -p /etc/asterisk/keys
 mkdir -p /var/log/aipbx
 
 chown -R www-data:www-data /var/lib/aipbx
+chmod 1755 /var/lib/aipbx
+# Configuration sync locks, shared by the portal (www-data), feature codes
+# (asterisk) and root (asterisk_sync.php): group asterisk, no one else.
+install -d -o www-data -g asterisk -m 2770 /var/lib/aipbx/sync-locks
+chgrp asterisk /var/lib/aipbx/sync-locks/*.lock 2>/dev/null || true
+chmod 0660 /var/lib/aipbx/sync-locks/*.lock 2>/dev/null || true
 # Logo / favicon uploads (Appearance → Branding). The code checkout belongs to
 # root, so without this folder the portal could not save an uploaded logo.
 mkdir -p "$INSTALL_DIR/web/assets/images/brand"
@@ -690,6 +935,10 @@ chown www-data:www-data "$INSTALL_DIR/web/assets/images/brand"
 mkdir -p /var/www/faxes/recvd /var/www/faxes/sent /var/spool/asterisk/outgoing
 chown -R asterisk:asterisk /var/www/faxes
 chmod 2775 /var/www/faxes /var/www/faxes/recvd /var/www/faxes/sent
+# Year directories (sent/2026, recvd/2026) were made with the creator's umask
+# (0755). After the chown above the portal could not write into them, and every
+# fax upload failed with "Permission denied" (live system, 2026-10-22).
+find /var/www/faxes -type d -exec chmod 2775 {} +
 # /var/spool/asterisk: the Debian asterisk package resets EVERY directory here
 # to "asterisk: 750" on each upgrade (postinst) but leaves directories with a
 # dpkg-statoverride alone. The permissions the portal needs — reading call
@@ -703,12 +952,27 @@ for spec in "0750 /var/spool/asterisk" "2750 /var/spool/asterisk/monitor" \
     dpkg-statoverride --list "$dir" >/dev/null 2>&1 && dpkg-statoverride --remove "$dir" >/dev/null 2>&1
     dpkg-statoverride --update --add asterisk asterisk "$mode" "$dir"
 done
+# Ubuntu 26.04 confines Ghostscript with an AppArmor profile that reaches only
+# HOME, /mnt, /media and /tmp: every outgoing fax failed at the PDF -> TIFF step
+# ("Could not open the file"), and so did the TIFF -> PDF fallback for received
+# faxes. The local include extends the packaged profile instead of replacing it.
+if [ -f /etc/apparmor.d/gs ]; then
+    mkdir -p /etc/apparmor.d/local
+    cat > /etc/apparmor.d/local/gs <<'EOF'
+# AiPBX: Ghostscript converts faxes here (PDF -> TIFF to send, TIFF -> PDF for
+# received faxes). Written by install.sh; rewritten on every upgrade.
+file rw /var/www/faxes/**,
+file rw /var/spool/asterisk/fax/**,
+EOF
+    command -v apparmor_parser >/dev/null 2>&1 && { apparmor_parser -r /etc/apparmor.d/gs 2>/dev/null || true; }
+fi
 chgrp -R asterisk /var/spool/asterisk/voicemail /var/spool/asterisk/monitor 2>/dev/null || true
 chmod -R g+rX /var/spool/asterisk/voicemail /var/spool/asterisk/monitor 2>/dev/null || true
 # Portal login failures (read by the aipbx-web fail2ban jail)
+[[ -L /var/log/aipbx/web_login_failures.log ]] && rm -f /var/log/aipbx/web_login_failures.log
 touch /var/log/aipbx/web_login_failures.log
 chown -R www-data:adm /var/log/aipbx
-chmod 750 /var/log/aipbx
+chmod 1750 /var/log/aipbx
 chmod 640 /var/log/aipbx/web_login_failures.log
 # The fax scripts run as the asterisk user (System()) and write these files;
 # they cannot create files in /var/log themselves, so nothing was ever logged.
@@ -743,6 +1007,13 @@ if is_upgrade; then
     # The environment file belongs to the installation (admins edit it):
     # only keys added by newer releases are appended.
     env_ensure ODBC_DB_PASS "$ODBC_PASS"
+    # Own key for the mobile/chat sign-in tokens (they were signed with
+    # TURN_SECRET). Added once: every app signs in again after this upgrade.
+    if [[ -z "$(env_get CHAT_JWT_SECRET)" ]]; then
+        sed -i '/^CHAT_JWT_SECRET=$/d' /etc/ai-pbx.env
+        echo "CHAT_JWT_SECRET=$(gen_hex 32)" >> /etc/ai-pbx.env
+        ok "CHAT_JWT_SECRET added (mobile apps and chat sign in again)"
+    fi
     # Older installs sent clients coturn's own port; TURNS goes through the
     # 443 multiplexer now, which also passes networks that only allow 443.
     if [[ "$(env_get TURNS_PORT)" == 5349 ]]; then
@@ -797,6 +1068,8 @@ MAIL_FROM_NAME=AI PBX Portal
 # --- WebRTC TURN (coturn) ---
 TURN_HOST=${PORTAL_DOMAIN}
 TURN_SECRET=${TURN_SECRET}
+# Signs the mobile/chat sign-in tokens (own key, not shared with TURN).
+CHAT_JWT_SECRET=$(gen_hex 32)
 # Port given to clients for turns:. coturn listens on 5349; nginx on 443 hands
 # TURNS (no ALPN / "stun.turn") to it, so calls work where only 443 is open.
 TURNS_PORT=443
@@ -829,7 +1102,7 @@ systemctl enable mariadb
 mysql -e "CREATE DATABASE IF NOT EXISTS asterisk CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
 # App users: created when missing, password (re)applied — safe to re-run
-mysql -e "
+mysql <<EOF
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT SELECT, INSERT, UPDATE, DELETE ON asterisk.* TO '${DB_USER}'@'localhost';
@@ -837,7 +1110,7 @@ CREATE USER IF NOT EXISTS '${MIGRATOR_USER}'@'localhost' IDENTIFIED BY '${MIGRAT
 ALTER USER '${MIGRATOR_USER}'@'localhost' IDENTIFIED BY '${MIGRATOR_PASS}';
 GRANT ALL PRIVILEGES ON asterisk.* TO '${MIGRATOR_USER}'@'localhost';
 FLUSH PRIVILEGES;
-"
+EOF
 
 # Load schema and seed (fresh install only)
 # Schema, seed data and the admin user are applied after Composer is installed
@@ -960,6 +1233,15 @@ a2enmod rewrite proxy proxy_wstunnel proxy_http ssl headers remoteip php* 2>/dev
 a2dismod mpm_event 2>/dev/null || true
 a2enmod mpm_prefork 2>/dev/null || true
 
+# Ubuntu's apache2.service has MemoryDenyWriteExecute=yes: PHP's PCRE JIT cannot
+# get executable memory, falls back to the interpreter and logged "Allocation of
+# JIT memory failed" for every request. Switch the JIT off for Apache's PHP.
+for php_conf_d in /etc/php/*/apache2/conf.d; do
+    if [[ -d "$php_conf_d" ]]; then
+        printf '; AiPBX (install.sh): apache2.service denies executable memory\npcre.jit=0\n' > "$php_conf_d/99-aipbx.ini"
+    fi
+done
+
 # Apache ports: Listen 80 for HTTP/ACME, 127.0.0.1:8443 for HTTPS behind Nginx
 cat > /etc/apache2/ports.conf << 'PORTS'
 # Apache listens on 80 for HTTP and 127.0.0.1:8443 for HTTPS (behind nginx)
@@ -977,9 +1259,19 @@ cat > /etc/apache2/sites-available/aipbx.conf << VHOST
     # cannot do HTTPS to an IP address or do not follow redirects, and phone
     # networks often have no DNS. The files are still limited to the allowed
     # networks and the per-phone token (PhoneProvisionService).
+    # The path is checked after Apache has resolved it (/provision/../login is
+    # /login); internal redirects to index.php (REDIRECT_STATUS set) are skipped,
+    # otherwise /provision/ would be redirected on its second pass.
     RewriteEngine On
     RewriteCond %{REQUEST_URI} !^/\.well-known/acme-challenge/
-    RewriteCond %{THE_REQUEST} !\s/provision/
+    RewriteCond %{ENV:REDIRECT_STATUS} ^\$
+    RewriteCond %{REQUEST_URI} !^/provision/
+    # Plugin endpoints and the IVR data step lookup stay on plain HTTP only for
+    # the PBX itself (Asterisk CURL() to http://127.0.0.1/api/...; CURL() does
+    # not follow a redirect); everyone else is sent to HTTPS like the rest of
+    # the portal (sign-in callbacks, widgets).
+    RewriteCond %{REQUEST_URI} !^/api/(plugins/|ivr_data_lookup\.php\$) [OR]
+    RewriteCond %{REMOTE_ADDR} !^(127\.0\.0\.1|::1)\$
     RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [END,NE,R=permanent]
 
     ErrorLog \${APACHE_LOG_DIR}/aipbx_error.log
@@ -1033,7 +1325,9 @@ cat > /etc/apache2/conf-available/aipbx-routing.conf << 'ROUTING'
     AllowOverride All
     Require all granted
 
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
     RewriteEngine On
+    RewriteCond %{REQUEST_URI} !^/api/(v1|plugins)(/|$)
     RewriteRule ^(api|assets|modules)(/|$) - [L]
     RewriteRule ^chat/(ws|api|media)(/|$) - [L]
     RewriteCond %{REQUEST_FILENAME} !-f
@@ -1094,7 +1388,7 @@ cd "$INSTALL_DIR/web"   # the migrations below run from here (vendor/bin/phinx)
 # makes lands in its cache, so that directory is handed over as the progress
 # signal — bytes arriving there count as work, and only a fetch that neither
 # prints nor delivers for COMPOSER_SILENCE seconds is called a stall. Output
-# goes straight to stdout (the CI tees it), so a cancelled job still has the
+# goes straight to stdout now (the CI tees it), so a cancelled job still has the
 # lines; a file-and-tail pipe was what hid the apt phase on 2026-10-26.
 COMPOSER_CACHE="${COMPOSER_CACHE_DIR:-$COMPOSER_HOME/cache}"   # where every dist lands (COMPOSER_CACHE_DIR wins if set)
 mkdir -p "$COMPOSER_CACHE" 2>/dev/null || true   # so the first byte of progress is measurable
@@ -1125,18 +1419,22 @@ info "Applying database migrations..."
     || error "Database migrations failed (see output above)"
 # seed.sql uses INSERT IGNORE: safe on a migrated or already-seeded database.
 mysql asterisk < "$INSTALL_DIR/db/seed.sql" || error "Loading seed data failed"
+# Ensure plg_* tables exist for all enabled plugins (schema.sql) on install/upgrade
+php -r "require '$INSTALL_DIR/web/config.php'; if (is_file('$INSTALL_DIR/web/src/core/PluginManager.php')) { require_once '$INSTALL_DIR/web/src/core/PluginManager.php'; PluginManager::syncAllEnabledPluginSchemas(); }" || warn "One or more plugin schema syncs reported an issue"
 
 if ! is_upgrade; then
-ADMIN_HASH=$(php -r "echo password_hash('${ADMIN_PASS}', PASSWORD_BCRYPT);")
+ADMIN_HASH=$(printf '%s' "$ADMIN_PASS" | php -r 'echo password_hash(stream_get_contents(STDIN), PASSWORD_BCRYPT);')
 ADMIN_EXISTS=$(mysql -sN asterisk -e "SELECT COUNT(*) FROM sys_users WHERE username='admin';" 2>/dev/null || echo "0")
 if [[ "${ADMIN_EXISTS:-0}" -eq 0 ]]; then
-    mysql asterisk -e "
+    mysql asterisk <<EOF
     INSERT INTO sys_users (username, password_hash, full_name, extension, sip_password, role, is_active, can_listen_recordings, can_view_all_cdrs, can_view_queue_monitor)
     VALUES ('admin', '${ADMIN_HASH}', 'Administrator', '1000', '${ADMIN_SIP_PASS}', 'admin', 1, 1, 1, 1);
-    "
+EOF
     ok "Admin user created"
 else
-    mysql asterisk -e "UPDATE sys_users SET password_hash='${ADMIN_HASH}' WHERE username='admin';" 2>/dev/null || true
+    mysql asterisk <<EOF 2>/dev/null || true
+    UPDATE sys_users SET password_hash='${ADMIN_HASH}' WHERE username='admin';
+EOF
     ok "Admin password updated in existing database"
 fi
 fi   # install mode — the admin password is never touched on upgrade
@@ -1145,13 +1443,13 @@ fi   # install mode — the admin password is never touched on upgrade
 # (extconfig → asteriskqueue) through ODBC; call reports, call history and
 # call-center reports read those tables. This user did not exist before, so
 # nothing was ever recorded.
-mysql -e "
+mysql <<EOF
 CREATE USER IF NOT EXISTS 'asterisk_odbc'@'localhost' IDENTIFIED BY '${ODBC_PASS}';
 ALTER USER 'asterisk_odbc'@'localhost' IDENTIFIED BY '${ODBC_PASS}';
 GRANT SELECT, INSERT ON asterisk.asteriskcdr TO 'asterisk_odbc'@'localhost';
 GRANT SELECT, INSERT ON asterisk.asteriskqueue TO 'asterisk_odbc'@'localhost';
 FLUSH PRIVILEGES;
-"
+EOF
 ok "Database schema migrated, seed data and ODBC user in place"
 
 # Nginx Stream Multiplexer on Port 443 (ALPN routing: HTTPS/WSS -> Apache 8443, TURNS -> coturn 5349)
@@ -1208,7 +1506,7 @@ ProtectProc=default
 InaccessiblePaths=
 InaccessiblePaths=/boot /root -/etc/ssh -/etc/apt -/etc/.git -/etc/.svn
 # ProtectSystem=full makes /etc read-only for Apache and for aipbx-priv run
-# through sudo inside it: "Apply" could not write any Asterisk config.
+# through sudo inside it: "Apply" writes generated dialplan/endpoint files under /etc/asterisk/pbx and settings in /etc/asterisk.
 ReadWritePaths=/etc/asterisk /etc/postfix /etc/fail2ban/jail.d -/etc/chrony/conf.d
 APACHEOVERRIDE
 systemctl daemon-reload
@@ -1237,6 +1535,31 @@ install -o root -g root -m 0755 "$INSTALL_DIR/conf/sbin/aipbx-selftest" /usr/loc
 
 # DHCP check for PBX → Network services; the portal calls it through aipbx-priv.
 install -o root -g root -m 0755 "$INSTALL_DIR/conf/sbin/aipbx-dhcp-probe" /usr/local/sbin/aipbx-dhcp-probe
+# --- phone discovery engine (PBX -> Phones -> Discovered on the network):
+# looks at the DHCP lease file, the ARP table and dnsmasq's log (opt-in sweep)
+# and records what it found; the portal decides what happens to it. Installed on
+# fresh installs AND by --upgrade.
+if [ -d "$INSTALL_DIR/engine" ]; then
+    if command -v apt-get >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_WAIT" install -y -qq python3-pymysql
+    fi
+    install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/engine
+    # dnsmasq's DHCP log is read with journalctl and it is the source that finds a
+    # phone whose lease has expired. Without this group www-data gets "No journal
+    # files were opened due to insufficient permissions" (exit 1) and the engine's
+    # journal reader returns nothing on every run, with no other sign of trouble.
+    usermod -a -G systemd-journal www-data 2>/dev/null || true
+    install -o root -g root -m 0755 "$INSTALL_DIR/conf/sbin/aipbx-phone-discovery" /usr/local/sbin/aipbx-phone-discovery
+    chmod 755 "$INSTALL_DIR/engine"
+    # The CLI the wrapper and an operator both call, next to the other bin scripts.
+    for script in aipbx_phone_discovery.php aipbx_cisco_firmware.php; do
+        if [ -f "$INSTALL_DIR/web/bin/$script" ]; then
+            chmod 755 "$INSTALL_DIR/web/bin/$script"
+            ln -sf "$INSTALL_DIR/web/bin/$script" "/usr/local/bin/$script"
+        fi
+    done
+fi
+
 # --- signaling capture (opt-in: asterisk-config/hep.conf decides whether
 # Asterisk sends HEP; the local daemon stores events for the portal's
 # Signaling page). Installed here on fresh installs AND by --upgrade, so
@@ -1250,17 +1573,18 @@ if [ -d "$INSTALL_DIR/signaling" ]; then
     install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/signaling
     if [ -d /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         install -o root -g root -m 0644 "$INSTALL_DIR/conf/systemd/aipbx-signaling.service" /etc/systemd/system/aipbx-signaling.service
-    # hep.conf: never overwrite an operator's target, but make sure the portal
-    # can generate it (AI -> Echo): www-data owns the file, the asterisk group
-    # can still read it for res_hep.
-    if [[ -f "$INSTALL_DIR/asterisk-config/hep.conf" ]]; then
-        [[ -e /etc/asterisk/hep.conf ]] || cp "$INSTALL_DIR/asterisk-config/hep.conf" /etc/asterisk/hep.conf
-        chown www-data:asterisk /etc/asterisk/hep.conf 2>/dev/null || true
-        chmod 664 /etc/asterisk/hep.conf 2>/dev/null || true
-    fi
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl enable --now aipbx-signaling.service >/dev/null 2>&1 || true
     fi
+fi
+
+# hep.conf: never overwrite an operator's target, but make sure the portal
+# can generate it (AI -> Echo): www-data owns the file, the asterisk group
+# can still read it for res_hep.
+if [[ -f "$INSTALL_DIR/asterisk-config/hep.conf" ]]; then
+    [[ -e /etc/asterisk/hep.conf ]] || cp "$INSTALL_DIR/asterisk-config/hep.conf" /etc/asterisk/hep.conf
+    chown www-data:asterisk /etc/asterisk/hep.conf 2>/dev/null || true
+    chmod 664 /etc/asterisk/hep.conf 2>/dev/null || true
 fi
 
 # PBX → Network services (DHCP/TFTP for desk phones): dnsmasq in its own unit,
@@ -1270,6 +1594,31 @@ fi
 # /var/lib/aipbx/tftp, never the per-phone configuration.
 install -d -o root -g root -m 0755 /var/lib/aipbx-netsvc
 install -d -o www-data -g www-data -m 0755 /var/lib/aipbx/tftp
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/plugins
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/api-ratelimit
+
+cat > /etc/systemd/system/aipbx-webhook-worker.service << 'WEBHOOKUNIT'
+[Unit]
+Description=AiPBX Outbound Webhook & Plugin Event Worker
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/html
+ExecStart=/usr/bin/php /var/www/html/bin/webhook_worker.php --daemon
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
+WEBHOOKUNIT
+systemctl daemon-reload
+systemctl enable aipbx-webhook-worker.service >/dev/null 2>&1 || true
+systemctl restart aipbx-webhook-worker.service 2>/dev/null || true
 cat > /etc/systemd/system/aipbx-dnsmasq.service << 'NETSVC'
 [Unit]
 Description=AiPBX DHCP/TFTP for desk phones (PBX -> Network services)
@@ -1405,23 +1754,30 @@ for f in "$INSTALL_DIR/asterisk-config/pbx/"*.conf; do
     [[ -e "/etc/asterisk/pbx/$(basename "$f")" ]] || cp "$f" /etc/asterisk/pbx/
 done
 
-for f in extensions.conf pjsip.conf pjsip_notify.conf queues.conf musiconhold.conf http.conf rtp.conf modules.conf cdr.conf res_odbc.conf cdr_adaptive_odbc.conf extconfig.conf; do
+for f in extensions.conf pjsip.conf pjsip_notify.conf queues.conf musiconhold.conf http.conf rtp.conf hep.conf modules.conf cdr.conf res_odbc.conf cdr_adaptive_odbc.conf extconfig.conf; do
     if [[ -f "$INSTALL_DIR/asterisk-config/$f" ]]; then
         cp "$INSTALL_DIR/asterisk-config/$f" /etc/asterisk/"$f"
     fi
 done
+
+# Voicemail: Ensure Asterisk app_voicemail doesn't emit "maxsilence should be less than minsecs"
+if [[ -f /etc/asterisk/voicemail.conf ]]; then
+    sed -i -E 's/^[; ]*minsecs\s*=.*/minsecs=3/' /etc/asterisk/voicemail.conf
+    sed -i -E 's/^[; ]*maxsilence\s*=.*/maxsilence=2/' /etc/asterisk/voicemail.conf
+fi
 # res_odbc.conf ships with a ${ODBC_PASS} placeholder (no secret in the repo).
-sed -i "s/\${ODBC_PASS}/${ODBC_PASS}/" /etc/asterisk/res_odbc.conf
-chown asterisk:asterisk /etc/asterisk/res_odbc.conf
-chmod 640 /etc/asterisk/res_odbc.conf
+escaped_odbc_pass="$(printf '%s\n' "$ODBC_PASS" | sed 's/[&/\]/\\&/g')"
+sed -i "s/\${ODBC_PASS}/${escaped_odbc_pass}/" /etc/asterisk/res_odbc.conf
+chown asterisk:root /etc/asterisk/res_odbc.conf
+chmod 600 /etc/asterisk/res_odbc.conf
 
 # ODBC data source "asterisk" used by res_odbc.conf (MariaDB Connector/ODBC).
 cat > /etc/odbc.ini << 'ODBCINI'
 [asterisk]
 Description = AI PBX MariaDB (Asterisk CDR / queue_log)
 Driver      = MariaDB Unicode
-Server      = localhost
 Socket      = /run/mysqld/mysqld.sock
+Server      = localhost
 Database    = asterisk
 Charset     = utf8mb4
 ODBCINI
@@ -1443,6 +1799,8 @@ read = originate,call,agent
 write = originate,call,agent
 writetimeout = 5000
 MANAGER
+chown asterisk:root /etc/asterisk/manager.conf
+chmod 600 /etc/asterisk/manager.conf
 
 # Install Asterisk Sound Prompts (Turkish & WebRTC/IVR custom sounds)
 info "Installing Asterisk sound prompts (Turkish & WebRTC/IVR sounds)..."
@@ -1541,28 +1899,55 @@ else
     fi
 fi
 chown -R asterisk:asterisk /etc/asterisk/
-# The portal (www-data, in the asterisk group) writes rtp.conf, udptl.conf,
-# voicemail.conf and asterisk.conf atomically (temp file + rename in the same
-# directory): without group write on /etc/asterisk those settings never applied.
-chmod 775 /etc/asterisk
-chmod -R 775 /etc/asterisk/pbx
-chmod 664 /etc/asterisk/pbx/*.conf 2>/dev/null || true
+chown asterisk:asterisk /etc/asterisk && chmod 2775 /etc/asterisk
+chown -R asterisk:asterisk /etc/asterisk/pbx
+chmod 2775 /etc/asterisk/pbx
+chmod 664 /etc/asterisk/pbx/*.conf /etc/asterisk/rtp.conf /etc/asterisk/voicemail.conf 2>/dev/null || true
+for secret_conf in /etc/asterisk/manager.conf /etc/asterisk/res_odbc.conf /etc/asterisk/keys/privkey.pem /etc/asterisk/keys/asterisk.key /etc/asterisk/keys/asterisk.pem; do
+    if [[ -f "$secret_conf" ]]; then
+        chown asterisk:root "$secret_conf"
+        chmod 600 "$secret_conf"
+    fi
+done
 
 # Voicemail/recording files created by Asterisk are group-writable (UMask 0002)
 # so the portal (www-data, group asterisk) can delete voicemail; with 0022
 # deletion silently failed.
+# Asterisk starts after MariaDB: started together (boot, or needrestart after
+# a library update) Asterisk came up first, cdr_adaptive_odbc found no
+# connection and wrote no CDRs until the next Asterisk restart (11 hours on
+# production, 2026-10-21).
 mkdir -p /etc/systemd/system/asterisk.service.d
 cat > /etc/systemd/system/asterisk.service.d/aipbx.conf << 'UNIT'
+[Unit]
+Wants=mariadb.service
+After=mariadb.service
+
 [Service]
 UMask=0002
 UNIT
 systemctl daemon-reload
 
+# needrestart (unattended-upgrades) restarted Asterisk after library updates
+# at 06:35 and dropped the calls in progress. Asterisk is left out; it picks
+# up new libraries on the next update or reboot.
+if [[ -d /etc/needrestart ]]; then
+    mkdir -p /etc/needrestart/conf.d
+    cat > /etc/needrestart/conf.d/aipbx.conf << 'NR'
+# Managed by AiPBX install.sh: never restart Asterisk automatically (drops calls).
+$nrconf{override_rc}{qr(^asterisk\.service$)} = 0;
+NR
+fi
+
 # A restart can fail although Asterisk comes up a moment later through the
 # unit's Restart=on-failure (seen once on an update: the new process got a
 # SIGKILL at start and was running 2 s later). Wait for that before failing
 # the whole install — a failed upgrade rolls back.
-if ! systemctl restart asterisk; then
+if is_upgrade && [[ "${AIPBX_ASTERISK_RESTART:-yes}" == no ]] && systemctl is-active --quiet asterisk; then
+    # aipbx-update found nothing that needs a restart: reload instead, calls stay up.
+    asterisk -rx "core reload" >/dev/null 2>&1 || true
+    ok "Asterisk reloaded (no restart needed, calls kept)"
+elif ! systemctl restart asterisk; then
     warn "Asterisk did not start on the first try — waiting for the automatic restart"
     for _ in $(seq 1 20); do
         systemctl is-active --quiet asterisk && break
@@ -1575,7 +1960,10 @@ systemctl enable asterisk
 
 # Sync initial endpoints, dialplans, and transports from DB to Asterisk
 info "Syncing database endpoints and dialplan to Asterisk..."
-php /var/www/html/src/asterisk_sync.php 2>/dev/null || true
+# Not silent: phones point at generated contexts (from-internal-desktop/-mobile/-web);
+# if this fails they cannot call until the configuration is applied from the portal.
+php /var/www/html/src/asterisk_sync.php \
+    || warn "Asterisk configuration sync reported an error — open the portal and apply the pending changes"
 
 ok "Asterisk configured"
 
@@ -1779,7 +2167,7 @@ for ip in $(hostname -I); do
     TURN_ALLOWED+="allowed-peer-ip=${ip}"$'\n'
 done
 
-cat > /etc/turnserver.conf << TURNCONF
+cat > /etc/turnserver.conf.new << TURNCONF
 listening-port=3478
 tls-listening-port=5349
 fingerprint
@@ -1830,7 +2218,15 @@ chmod 755 /etc/letsencrypt/renewal-hooks/deploy/aipbx.sh
 
 mkdir -p /var/log/turnserver
 chown turnserver:turnserver /var/log/turnserver 2>/dev/null || true
-systemctl restart coturn 2>/dev/null || true
+# Restart only when the configuration changed (or coturn is down): a restart
+# drops every WebRTC/app call relayed through TURN, and an update that keeps
+# Asterisk running must not drop them here instead.
+if cmp -s /etc/turnserver.conf.new /etc/turnserver.conf && systemctl is-active --quiet coturn; then
+    rm -f /etc/turnserver.conf.new
+else
+    mv -f /etc/turnserver.conf.new /etc/turnserver.conf
+    systemctl restart coturn 2>/dev/null || true
+fi
 systemctl enable coturn 2>/dev/null || true
 
 ok "coturn configured"
@@ -1881,6 +2277,7 @@ firewall-cmd --permanent --add-port=5060/udp 2>/dev/null || true
 firewall-cmd --permanent --add-port=5060/tcp 2>/dev/null || true
 firewall-cmd --permanent --add-port=5061/tcp 2>/dev/null || true
 firewall-cmd --permanent --add-port=10000-20000/udp 2>/dev/null || true
+firewall-cmd --permanent --add-port=4100-4999/udp 2>/dev/null || true   # T.38 (UDPTL, udptl.conf)
 firewall-cmd --permanent --add-port=3478/tcp 2>/dev/null || true
 firewall-cmd --permanent --add-port=3478/udp 2>/dev/null || true
 firewall-cmd --permanent --add-port=5349/tcp 2>/dev/null || true
@@ -1888,6 +2285,16 @@ firewall-cmd --permanent --add-port=5349/udp 2>/dev/null || true
 firewall-cmd --permanent --add-port=49152-65535/udp 2>/dev/null || true
 firewall-cmd --reload 2>/dev/null || true
 fi   # install mode
+# T.38 fax travels on the UDPTL ports (udptl.conf, 4100-4999), which the first
+# install never opened: a carrier accepted T.38 and every packet was dropped
+# ("Disconnected after permitted retries", live system 2026-10-22). Opened on
+# upgrade too, but only where the RTP range is open as installed, so an admin
+# who closed media ports on purpose is not overruled.
+if command -v firewall-cmd >/dev/null 2>&1 \
+   && firewall-cmd --permanent --query-port=10000-20000/udp >/dev/null 2>&1 \
+   && ! firewall-cmd --permanent --query-port=4100-4999/udp >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port=4100-4999/udp >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 || true
+fi
 
 # Asterisk's direct WSS (8089) now listens on loopback only; clients use 443 /ws.
 # Close the port that earlier versions opened.
@@ -1952,6 +2359,11 @@ systemctl enable fail2ban 2>/dev/null || true
 systemctl restart fail2ban 2>/dev/null || true
 ok "firewall and fail2ban configured"
 
+# The installed version, for the bridge check of later releases (see UPGRADE_FROM).
+install -d -m 0755 /var/lib/aipbx
+tr -d '[:space:]' < "$INSTALL_DIR/VERSION" > /var/lib/aipbx/installed-version
+chmod 0644 /var/lib/aipbx/installed-version
+
 if is_upgrade; then
     echo ""
     ok "Upgrade to $(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?') applied"
@@ -1962,6 +2374,7 @@ fi
 # STEP 14: SAVE CREDENTIALS TO FILE
 # ============================================================================
 CREDS_FILE="/root/aipbx-credentials.txt"
+install -m 0600 -o root -g root /dev/null "$CREDS_FILE"
 
 cat > "$CREDS_FILE" << CREDS
 ================================================================

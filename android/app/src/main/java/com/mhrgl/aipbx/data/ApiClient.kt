@@ -496,7 +496,40 @@ class ApiClient(private val prefsProvider: (() -> AppPreferences?)? = null) {
                 if (response.isSuccessful && result != null && result.success) {
                     Result.success(result)
                 } else {
-                    Result.failure(Exception("FCM token kaydedilemedi (HTTP ${response.code})"))
+                    Result.failure(Exception(L10n.str(R.string.api_fcm_token_failed, response.code)))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun unregisterFcmToken(
+        baseUrl: String,
+        token: String,
+        deviceId: String? = null,
+        fcmToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            val cleanUrl = baseUrl.trim().trimEnd('/')
+            val endpoint = "$cleanUrl/api/mobile/fcm_token.php"
+
+            val jsonBody = JSONObject().apply {
+                if (!deviceId.isNullOrEmpty()) put("device_id", deviceId)
+                if (!fcmToken.isNullOrEmpty()) put("fcm_token", fcmToken)
+            }.toString()
+
+            val request = Request.Builder()
+                .url(endpoint)
+                .addHeader("Authorization", "Bearer $token")
+                .delete(jsonBody.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    Result.failure(Exception("Failed to unregister FCM token: ${response.code}"))
                 }
             }
         } catch (e: Exception) {
@@ -990,7 +1023,7 @@ class ApiClient(private val prefsProvider: (() -> AppPreferences?)? = null) {
                     if (response.isSuccessful && res != null && res.success) {
                         Result.success(true)
                     } else {
-                        Result.failure(Exception(res?.error ?: "Grup silinemedi (HTTP ${response.code})"))
+                        Result.failure(Exception(res?.error ?: L10n.str(R.string.api_group_delete_failed, response.code)))
                     }
                 }
             } catch (e: Exception) {

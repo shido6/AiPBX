@@ -28,6 +28,20 @@ class RoleRepository extends BaseRepository
             'my_phone'           => ['title' => 'My Phone', 'group' => 'General', 'actions' => self::VAE],
             'chat'               => ['title' => 'Chat', 'group' => 'General', 'actions' => self::VA],
             'cdr_reports'        => ['title' => 'Call Reports', 'group' => 'General', 'actions' => self::VAD],
+            'call_quality'       => ['title' => 'Call Quality', 'group' => 'General', 'actions' => self::VAE, 'admin_only' => true],
+            'system_users'       => ['title' => 'Users', 'group' => 'Administration', 'actions' => $all, 'admin_only' => true],
+            'roles'              => ['title' => 'Roles & Permissions', 'group' => 'Administration', 'actions' => $all, 'admin_only' => true],
+            'asterisk_settings'  => ['title' => 'PBX Settings', 'group' => 'Administration', 'actions' => self::VAE],
+            'brand_settings'     => ['title' => 'Branding & Appearance', 'group' => 'Administration', 'actions' => self::VAE],
+            'push_settings'      => ['title' => 'Mobile Push', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only_edit' => true],
+            'mail_settings'      => ['title' => 'E-mail & Relay', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
+            'fax_mail_settings'  => ['title' => 'Fax Settings', 'group' => 'Administration', 'actions' => self::VAE],
+            'fax_settings'       => ['title' => 'Fax Units', 'group' => 'Administration', 'actions' => $all],
+            'file_storage'       => ['title' => 'File Storage', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
+            'pending_sync'       => ['title' => 'Pending Changes', 'group' => 'Administration', 'actions' => self::VAE],
+            'system_update'      => ['title' => 'System Update', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
+            'scheduled_tasks'    => ['title' => 'Scheduled Tasks', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
+            'health'             => ['title' => 'Health Checks', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
             'trunks'             => ['title' => 'SIP Trunks', 'group' => 'Outbound Line Management', 'actions' => $all],
             'did_routes'         => ['title' => 'Inbound Routes', 'group' => 'Outbound Line Management', 'actions' => $all],
             'outbound_routes'    => ['title' => 'Outbound Routes', 'group' => 'Outbound Line Management', 'actions' => $all],
@@ -52,33 +66,42 @@ class RoleRepository extends BaseRepository
             'fax_inbox'          => ['title' => 'Incoming Faxes', 'group' => 'Fax System', 'actions' => $all],
             'fax_send'           => ['title' => 'Send Fax', 'group' => 'Fax System', 'actions' => self::VAE],
             'fax_sent'           => ['title' => 'Sent Faxes', 'group' => 'Fax System', 'actions' => $all],
-            'ai_tts'             => ['title' => 'Cloud TTS', 'group' => 'AI', 'actions' => $all],
+            'ai_tts'             => ['title' => 'Cloud TTS', 'group' => 'AI', 'actions' => $all, 'plugin' => 'ai-tts'],
             'assistant'          => ['title' => 'Dialplan editor', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
-            'ai_voip_engineer'  => ['title' => 'AI VoIP Engineer', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
+            'ai_voip_engineer'   => ['title' => 'AI VoIP Engineer', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
             'echo'               => ['title' => 'Echo (SIP troubleshooting)', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
-            'ai_apps'            => ['title' => 'AI Applications', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
-            'ai_models'          => ['title' => 'Local Models', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
-            'ai_cloud'           => ['title' => 'Cloud Services', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true],
-            'google_integration' => ['title' => 'Google Sign-in', 'group' => 'Integrations', 'actions' => self::VAE, 'admin_only' => true],
-            'ms_teams'           => ['title' => 'Microsoft Teams', 'group' => 'Integrations', 'actions' => $all],
-            'web_widgets'        => ['title' => 'Web Widgets', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true],
+            'ai_apps'            => ['title' => 'AI Applications', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true, 'plugin' => 'ai-apps'],
+            'ai_models'          => ['title' => 'Local Models', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true, 'plugin' => 'ai-models'],
+            'ai_cloud'           => ['title' => 'Cloud Services', 'group' => 'AI', 'actions' => self::VAE, 'admin_only' => true, 'plugin' => 'ai-cloud'],
+            'plugins'            => ['title' => 'Plugin Catalog', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true],
+            'api_keys'           => ['title' => 'REST API Keys', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true],
+            'webhooks'           => ['title' => 'Outbound Webhooks', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true],
+            'external_dbs'       => ['title' => 'External Databases', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true],
+            'google_integration' => ['title' => 'Google Sign-in', 'group' => 'Integrations', 'actions' => self::VAE, 'admin_only' => true, 'plugin' => 'google-auth'],
+            'ms_teams'           => ['title' => 'Microsoft Teams', 'group' => 'Integrations', 'actions' => $all, 'plugin' => 'ms-teams'],
+            'web_widgets'        => ['title' => 'Web Widgets', 'group' => 'Integrations', 'actions' => $all, 'admin_only' => true, 'plugin' => 'web-widgets'],
             'firewall'           => ['title' => 'Firewall', 'group' => 'Security', 'actions' => $all, 'admin_only' => true],
             'fail2ban'           => ['title' => 'Fail2ban', 'group' => 'Security', 'actions' => $all, 'admin_only' => true],
             'certificates'       => ['title' => 'Certificates', 'group' => 'Security', 'actions' => self::VAE, 'admin_only' => true],
+            'privacy'            => ['title' => 'GDPR & Data Privacy', 'group' => 'Security', 'actions' => $all, 'admin_only' => true],
             'audit_log'          => ['title' => 'Audit Log', 'group' => 'Security', 'actions' => self::VA],
-            'system_users'       => ['title' => 'Users', 'group' => 'Administration', 'actions' => $all, 'admin_only' => true],
-            'roles'              => ['title' => 'Roles & Permissions', 'group' => 'Administration', 'actions' => $all, 'admin_only' => true],
-            'asterisk_settings'  => ['title' => 'PBX Settings', 'group' => 'Administration', 'actions' => self::VAE],
-            'brand_settings'     => ['title' => 'Branding & Appearance', 'group' => 'Administration', 'actions' => self::VAE],
-            'push_settings'      => ['title' => 'Mobile Push', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only_edit' => true],
-            'mail_settings'      => ['title' => 'E-mail & Relay', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
-            'fax_mail_settings'  => ['title' => 'Fax Settings', 'group' => 'Administration', 'actions' => self::VAE],
-            'fax_settings'       => ['title' => 'Fax Units', 'group' => 'Administration', 'actions' => $all],
-            'file_storage'       => ['title' => 'File Storage', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
-            'pending_sync'       => ['title' => 'Pending Changes', 'group' => 'Administration', 'actions' => self::VAE],
-            'system_update'      => ['title' => 'System Update', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
-            'health'             => ['title' => 'Health Checks', 'group' => 'Administration', 'actions' => self::VAE, 'admin_only' => true],
         ];
+    }
+
+    /**
+     * Maps RBAC module keys to their corresponding plugin slug in `sys_plugins`.
+     *
+     * @return array<string, string>
+     */
+    public static function pluginModuleMap(): array
+    {
+        $map = [];
+        foreach (self::modulesDefinition() as $key => $info) {
+            if (!empty($info['plugin'])) {
+                $map[$key] = (string)$info['plugin'];
+            }
+        }
+        return $map;
     }
 
     /** Module keys only the admin role can use (must match auth.php's circuit breaker). */

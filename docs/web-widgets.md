@@ -1,4 +1,6 @@
-# Website call widget and call-back form
+# Website call widget and call-back form (Plugin)
+
+> **Plugin (`web-widgets`)**: Optional plugin from the official catalog. Enable it under **Integrations → Plugins** (see [Plugin system & developer guide](plugin-development.md)).
 
 **Integrations → Web widgets** puts a "Call us" button on any website. A visitor either talks to the
 company from the browser over WebRTC, without a phone or an app, or leaves a number and the PBX
@@ -53,7 +55,7 @@ then. **Switch off** (the power button) refuses new calls at once, before Apply.
 Paste it before `</body>` on the website, and add the site to the widget's allowed websites.
 **Try it** (▶) opens a page on the portal with the same code.
 
-**WordPress**: the plugin is in [`integrations/wordpress/aipbx-call-widget`](../integrations/wordpress/aipbx-call-widget).
+**WordPress**: the plugin is in [`plugins/web-widgets/wordpress/aipbx-call-widget`](../plugins/web-widgets/wordpress/aipbx-call-widget).
 Zip the folder, upload it under *Plugins → Add New → Upload*, activate it, and paste the embed code
 under *Settings → AiPBX Call Widget*. The button shows on every page, or only on pages with the
 `[aipbx_call_widget]` shortcode.

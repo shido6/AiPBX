@@ -14,8 +14,6 @@ import androidx.appcompat.app.AlertDialog
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.View
-import androidx.activity.enableEdgeToEdge
-import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
@@ -31,7 +29,7 @@ import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import org.json.JSONObject
 
-class LoginActivity : AppCompatActivity() {
+class LoginActivity : BaseActivity() {
 
     private lateinit var binding: ActivityLoginBinding
     private lateinit var prefs: AppPreferences
@@ -45,23 +43,15 @@ class LoginActivity : AppCompatActivity() {
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         prefs = AppPreferences.getInstance(this)
 
         binding = ActivityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        com.mhrgl.aipbx.util.DisclaimerPrompt.showIfNeeded(this)
 
         // Edge-to-edge WindowInsets support
-        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
-            val systemBars = insets.getInsets(
-                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
-            )
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-            val bottom = maxOf(systemBars.bottom, ime.bottom)
-            view.setPadding(systemBars.left, systemBars.top, systemBars.right, bottom)
-            insets
-        }
+        applyEdgeToEdgeInsets(binding.root, consumeIme = true)
 
         if (intent.getBooleanExtra(SessionExpiry.EXTRA_SESSION_EXPIRED, false)) {
             showError(L10n.str(R.string.session_expired_text))
@@ -101,7 +91,7 @@ class LoginActivity : AppCompatActivity() {
 
         binding.btnLogin.setOnClickListener {
             val username = binding.etUsername.text.toString().trim()
-            val password = binding.etPassword.text.toString().trim()
+            val password = binding.etPassword.text.toString()
 
             if (username.isEmpty() || password.isEmpty()) {
                 showError(getString(R.string.err_enter_credentials))
@@ -113,7 +103,7 @@ class LoginActivity : AppCompatActivity() {
 
         binding.btnGoogleLogin.setOnClickListener {
             val serverUrl = prefs.serverUrl.trim().trimEnd('/')
-            if (serverUrl.isEmpty()) {
+            if (!serverUrl.startsWith("https://", ignoreCase = true)) {
                 showError(getString(R.string.err_set_server_first))
                 return@setOnClickListener
             }
@@ -128,6 +118,7 @@ class LoginActivity : AppCompatActivity() {
 
         binding.btnQrLogin.setOnClickListener {
             val options = ScanOptions().apply {
+                setCaptureActivity(QrCaptureActivity::class.java)
                 setPrompt(getString(R.string.qr_prompt_login))
                 setBeepEnabled(true)
                 setOrientationLocked(false)
@@ -147,7 +138,7 @@ class LoginActivity : AppCompatActivity() {
             if (type == "aipbx_qr_login") {
                 val serverUrl = json.optString("server").trim().trimEnd('/')
                 val qrToken = json.optString("qr_token")
-                if (serverUrl.isNotEmpty() && qrToken.isNotEmpty()) {
+                if (serverUrl.startsWith("https://", ignoreCase = true) && qrToken.isNotEmpty()) {
                     // Ask when connecting to a server different from the saved one:
                     // a random QR must not connect the app to another PBX.
                     if (serverUrl.equals(prefs.serverUrl.trim().trimEnd('/'), ignoreCase = true)) {
@@ -193,7 +184,7 @@ class LoginActivity : AppCompatActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent?) {
+    override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleAuthDeepLink(intent)
@@ -210,7 +201,7 @@ class LoginActivity : AppCompatActivity() {
             "login" -> {
                 val serverUrl = uri.getQueryParameter("server")?.trim()?.trimEnd('/') ?: ""
                 val token = uri.getQueryParameter("token")?.trim() ?: ""
-                val validServer = serverUrl.startsWith("https://", true) || serverUrl.startsWith("http://", true)
+                val validServer = serverUrl.startsWith("https://", ignoreCase = true)
                 if (!validServer || token.isEmpty()) {
                     showError(getString(R.string.err_login_link))
                     return

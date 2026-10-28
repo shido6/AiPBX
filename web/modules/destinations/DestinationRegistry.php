@@ -65,6 +65,10 @@ class DestinationRegistry {
      */
     public static function resolveLabel(?string $destType, $destId, array &$cache = []): ?string {
         if (empty($destType)) return null;
+        if ($destType === 'extension' && (string)$destId === '__did__') {
+            self::init();
+            return ExtensionModule::autoDidOption()['name'];
+        }
         $mod = self::getModule($destType);
         if (!$mod) return null;
         if (!isset($cache[$destType])) {
@@ -72,6 +76,20 @@ class DestinationRegistry {
         }
         foreach ($cache[$destType] as $opt) {
             if ((string)$opt['id'] === (string)$destId) return $opt['name'];
+        }
+        // A queue is listed by name, but the dialplan also accepts its numeric
+        // id (DialplanDestinationBuilder), which is what the REST API and the
+        // services store when given an id: the call reached the queue while
+        // the IVR page said "not found".
+        if ($destType === 'queue' && ctype_digit((string)$destId)) {
+            $stmt = getDB()->prepare('SELECT queue_name FROM pbx_queues WHERE id = ?');
+            $stmt->execute([(int)$destId]);
+            $name = $stmt->fetchColumn();
+            if ($name !== false) {
+                foreach ($cache[$destType] as $opt) {
+                    if ((string)$opt['id'] === (string)$name) return $opt['name'];
+                }
+            }
         }
         return null;
     }

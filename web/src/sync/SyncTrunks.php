@@ -52,7 +52,8 @@ function __syncAllTrunksBody() {
         $t38 = (!empty($sip_map['t38_udptl']) && $sip_map['t38_udptl'] === 'yes') || !empty($t['t38_support']);
         $dtmf_mode = toCleanAscii(!empty($sip_map['dtmf_mode']) ? $sip_map['dtmf_mode'] : (!empty($t['dtmf_mode']) ? $t['dtmf_mode'] : 'rfc4733'));
         $direct_media = toCleanAscii(!empty($sip_map['direct_media']) ? $sip_map['direct_media'] : (!empty($t['direct_media']) ? $t['direct_media'] : 'no'));
-        $timers = toCleanAscii(!empty($sip_map['timers']) ? $sip_map['timers'] : (!empty($t['timers']) ? $t['timers'] : 'yes'));
+        $timers = TrunkService::timersValue((string)(!empty($sip_map['timers']) ? $sip_map['timers'] : ($t['timers'] ?? '')));
+        $prack_100rel = toCleanAscii(!empty($sip_map['100rel']) ? $sip_map['100rel'] : (!empty($t['prack_100rel']) ? $t['prack_100rel'] : 'yes'));
 
         $rtp_symmetric = toCleanAscii(!empty($sip_map['rtp_symmetric']) ? $sip_map['rtp_symmetric'] : (!empty($t['rtp_symmetric']) ? $t['rtp_symmetric'] : 'yes'));
         $force_rport = toCleanAscii(!empty($sip_map['force_rport']) ? $sip_map['force_rport'] : (!empty($t['force_rport']) ? $t['force_rport'] : 'yes'));
@@ -130,6 +131,7 @@ function __syncAllTrunksBody() {
         $conf .= "rewrite_contact={$rewrite_contact}\n";
         $conf .= "dtmf_mode={$dtmf_mode}\n";
         $conf .= "timers={$timers}\n";
+        $conf .= "100rel={$prack_100rel}\n";
 
         if ($outbound_proxy !== '') {
             $conf .= "outbound_proxy={$outbound_proxy}\n";
@@ -228,6 +230,14 @@ function __syncAllTrunksBody() {
         }
         $conf .= "max_contacts={$max_contacts}\n";
         $conf .= "qualify_frequency={$qualify}\n";
+        // Asterisk's 3 s left room for only two UDP retransmits of the OPTIONS
+        // probe: a 2-3 s network hiccup marked the trunk Unavailable until the
+        // next probe, and for that minute every call to it failed at once
+        // ("Could not create dialog to invalid URI '<trunk>'"; ~100 calls in
+        // two weeks on a live system). 8 s also covers the retransmit at 7.5 s.
+        if ($qualify > 0) {
+            $conf .= "qualify_timeout=8\n";
+        }
         if ($outbound_proxy !== '') {
             $conf .= "outbound_proxy={$outbound_proxy}\n";
         }
@@ -267,7 +277,7 @@ function __syncAllTrunksBody() {
     }
 
     return writeConfWithRollback("pjsip_trunks.conf", $conf, function() {
-        AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadPJSIP()], 'Trunk senkronizasyonu');
-    }, 'Trunk senkronizasyonu');
+        AsteriskHelper::assertReloadsOk([AsteriskHelper::reloadPJSIP()], t('pending_sync.domain_trunks'));
+    }, t('pending_sync.domain_trunks'));
 }
 

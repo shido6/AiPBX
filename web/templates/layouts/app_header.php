@@ -42,7 +42,11 @@ if ($is_spa_request) {
     require_once dirname(__DIR__, 2) . '/src/asterisk_sync.php';
     $pending_sync_count_for_spa = hasModulePermission('pending_sync', 'view') ? getPendingSyncCount() : 0;
     ob_start();
-    echo '<div id="spa-page-data" data-title="' . htmlspecialchars(($page_title ?? '') . ' - ' . $site_title) . '" data-page="' . htmlspecialchars($active_page) . '" data-pending-sync-count="' . (int)$pending_sync_count_for_spa . '"></div>';
+    // A plugin was switched on/off: the sidebar's plugin pages changed, and
+    // spa_router.js fetches the new sidebar (it is not in this response).
+    $menu_changed_for_spa = class_exists('PluginManager', false) && PluginManager::$menuChanged;
+    echo '<div id="spa-page-data" data-title="' . htmlspecialchars(($page_title ?? '') . ' - ' . $site_title) . '" data-page="' . htmlspecialchars($active_page) . '" data-pending-sync-count="' . (int)$pending_sync_count_for_spa . '"'
+        . ($menu_changed_for_spa ? ' data-menu-changed="1"' : '') . '></div>';
     return;
 }
 $is_cc_agent = ($user['role'] === 'cc_agent');
@@ -64,6 +68,7 @@ if (!$is_cc_agent && !empty($user['extension'])) {
 <?php echo jsI18nScript(); ?>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?php echo htmlspecialchars(getCSRFToken()); ?>">
     <title><?php echo isset($page_title) ? htmlspecialchars($page_title) . ' - ' : ''; ?><?php echo htmlspecialchars($site_title); ?></title>
     <link rel="shortcut icon" href="<?php echo !empty($site_favicon_url) ? htmlspecialchars($site_favicon_url) : '/favicon.ico'; ?>">
 
@@ -96,7 +101,7 @@ if (!$is_cc_agent && !empty($user['extension'])) {
         // The SIP password is not embedded in the page source; it is fetched from /api/sip_credentials.php when needed
         window.ALLOWED_PHONE_MODE = "<?php echo htmlspecialchars($user['allowed_phone_mode'] ?? 'both'); ?>";
         window.USER_PHONE_MODES = <?php echo json_encode(parsePhoneModes($user['allowed_phone_mode'] ?? 'both')); ?>;
-        window.SYSTEM_EXTENSIONS = <?php echo json_encode($db->query("SELECT extension, full_name FROM sys_users WHERE extension IS NOT NULL AND extension != '' ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC)); ?>;
+        window.SYSTEM_EXTENSIONS = <?php echo json_encode($db->query("SELECT extension, full_name FROM sys_users WHERE extension IS NOT NULL AND extension != '' ORDER BY full_name ASC")->fetchAll(PDO::FETCH_ASSOC), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
         // Softphone ring/ringback tone — if none is chosen in the admin panel, header_phone.js uses its own default
         <?php $ring_in = getSystemSetting('webrtc_ring_incoming', ''); $ring_out = getSystemSetting('webrtc_ring_outgoing', ''); ?>
         window.WEBRTC_RING_INCOMING_URL = "<?php echo $ring_in !== '' ? '/api/sound_play.php?file=' . urlencode($ring_in) : ''; ?>";
