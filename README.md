@@ -383,9 +383,9 @@ Code comments, commit messages and documentation are written in English.
 AiPBX is MIT-licensed and stays that way: no seat counts, no licence keys, no gated features. If it
 earns a place in your stack and you want to keep it moving, you can fund the work:
 
-- **[Support the build](https://echoguard.ca/support.html)** — voluntary contributions in CAD, by
-  card or PayPal. No membership, nothing gated.
-- **[Paid work, if you would rather not run it yourself](https://echoguard.ca/offers.html)** —
+- **[Support the build](https://echoguard.s2insights.cloud/support.html)** — voluntary contributions in
+  CAD, by card or PayPal. No membership, nothing gated.
+- **[Paid work, if you would rather not run it yourself](https://echoguard.s2insights.cloud/offers.html)** —
   install and hand-over, or monthly care. The software stays free either way.
 
 Sponsoring buys time to work on the project. It is not a support contract and it does not buy
@@ -413,6 +413,6 @@ The PBX, the portal and the mobile apps are his work and that of AiPBX's contrib
 foundation, and it is credited on purpose.
 
 **EchoGuard's layer** — the plain-English change engine, Greg the AI VoIP engineer, and the Echo,
-Relay and Forge agents — is built by **Kaiel**: [echoguard.ca](https://echoguard.ca) ·
+Relay and Forge agents — is built by **Kaiel**: [echoguard.s2insights.cloud](https://echoguard.s2insights.cloud) ·
 [github.com/shido6](https://github.com/shido6). The commits that made it are in this repository's
 history, one reason per change.
