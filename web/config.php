@@ -44,6 +44,11 @@ function portalEnv($key, $default = '') {
 }
 
 define('DB_HOST', portalEnv('DB_HOST', 'localhost'));
+// MariaDB's port is a deployment setting, not a constant: the compose stack
+// publishes it on 127.0.0.1:${AIPBX_DB_PORT} and passes it in as DB_PORT.
+// Assuming 3306 here left the portal unable to connect on any other port,
+// while aipbx-init (which reads DB_PORT) had already migrated the schema fine.
+define('DB_PORT', portalEnv('DB_PORT', '3306'));
 define('DB_NAME', portalEnv('DB_NAME', 'asterisk'));
 define('DB_USER', portalEnv('DB_USER'));          // secret: NO fallback
 define('DB_PASS', portalEnv('DB_PASS'));          // secret: NO fallback
@@ -194,8 +199,8 @@ function getDB() {
     static $pdo = null;
     if ($pdo === null) {
         try {
-            $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
-            if (file_exists('/var/lib/mysql/mysql.sock')) {
+            $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+            if ((DB_HOST === 'localhost' || DB_HOST === '127.0.0.1') && DB_PORT === '3306' && file_exists('/var/lib/mysql/mysql.sock')) {
                 $dsn = 'mysql:unix_socket=/var/lib/mysql/mysql.sock;dbname=' . DB_NAME . ';charset=utf8mb4';
             }
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [

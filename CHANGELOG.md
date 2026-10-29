@@ -5,215 +5,91 @@ the git tag message and the GitHub Release notes, and installations show it as
 "What's new" on the **System Update** page. To update an installation:
 `sudo aipbx-update` (or portal → System → System Update).
 
-## Unreleased
+## 1.50.25
 
-Remote monitoring and operations:
+- **Admin Documentation & Markdown Engine Hardening:**
+  - Fixed UTF-8 multibyte line-splitting flaw in `DocsService`: standard PCRE `\R` without `/u` treated byte `0x85` (the second byte of Greek upsilon `υ` / `\xCF\x85` and similar multibyte characters) as an isolated newline (NEL), inadvertently splitting words across lines. Switched to CommonMark-compliant `/\r\n|\r|\n/`.
+  - Prevented infinite loop in `DocsService::render()` when encountering non-table text starting with pipe (`|`) characters by guaranteeing paragraph loop consumption on the first line.
+  - Added regression test suite in `web/tests/unit/DocsServiceTest.php` verifying multibyte Greek characters and non-table pipes render correctly without stalling.
+- **Database Port Customization & Socket Fallback:**
+  - Added support for reading custom database ports via `DB_PORT` in `phinx.php`, `web/config.php`, and `PluginManager.php` (#142).
+  - Hardened local Unix socket fallback in `web/config.php` so custom ports (e.g. 3307 or forwarded ports) and remote hosts are not mistakenly forced to `/var/lib/mysql/mysql.sock`.
+- **Installer & Minimal Environment Robustness:**
+  - Added missing `curl` and `cron` package requirements to `install.sh` for minimal Linux installations, and enabled the `cron` service automatically (#141).
+  - Added `docker/web/aipbx-init.sh` first-boot provisioning script (#141).
+- **Internationalization (i18n) & Translation Standards:**
+  - Standardized Greek translations in `web/lang/el.php` for `provisioning` across discovery and phones management to `παραμετροποίηση` (#138).
+  - Added canonical terminology guide to `docs/translating.md` defining standardized terms across all 22 supported languages for core telephony concepts (`provisioning`, `discovery`, `extension`, `trunk`) (#140).
 
-- **Cloud AI: two providers instead of one point of failure**: *AI → Cloud services* now recommends
-  configuring at least two different language-model providers. When a free tier runs out of tokens, a key is
-  revoked or a provider has an outage, the Assistant and Greg (with the System AI brain) try the
-  next configured provider in list order and only the provider that answers is counted in this
-  month's use; when every account fails the error names the providers rather than one key. The
-  prompt goes to whichever provider answers, so the page says plainly to add only accounts the
-  business is willing to send that data to. Speech engines still switch manually.
-- **Two engineers can split a problem, not only review it**: on a multi-part question, the
-  engineer on duty now divides the work into at most three sections and hands some to the relief
-  engineer. Each investigates their own section, the on-duty engineer writes one answer from both
-  sets of findings, and the chat shows a quiet line naming the split. Simple questions are not split;
-  a broken plan or a colleague with nothing to report falls back to the ordinary single answer. On
-  by default under *AI → VoIP Engineer → Relief engineer*; up to three extra model calls on a
-  question that is actually split.
-- **Several engineers, one AI account — without colliding**: *AI → Cloud services* now shows
-  whether the configured language-model providers allow parallel sessions or only one request at a
-  time. Free plans impose both a rate limit and a concurrency limit, so each free-tier provider gets
-  a per-provider turnstile: a second engineer's request waits up to 15 seconds instead of racing the
-  first into a 429, and then gets a clear busy message. Providers with concurrent sessions are not
-  serialized; the page turns to **Parallel sessions** as soon as one is configured. Each engineer
-  keeps their own Greg conversation, and the Dialplan editor now takes a short per-target lock while
-  it captures the before-value and applies a change, so two engineers editing the same extension,
-  group or queue take turns instead of both capturing the same old state (different targets never
-  wait). Every change keeps its audit row and undo. True parallel work still needs a paid plan — the
-  portal cannot tell a free key from a paid one.
-- **Observability coverage: the more Greg can see, the better he diagnoses**: `/ai-voip-engineer`
-  now shows a gauge (0–100, as a pie and a temperature bar) built from what is actually installed —
-  HEP capture on this PBX, HOMER, VoIPmonitor, a local heplify-server, Sipfront keys with Echo on,
-  local RTCP reports, and opencode's own log for self-diagnosis. A configured but unreachable
-  collector earns little; a missing one earns
-  nothing and is named. The same map goes into Greg's prompt, so he cites what he can read, says
-  plainly when a collector is configured but not queryable, and asks for a Call-ID instead of
-  inventing a SIP ladder. opencode's log is read only to explain a missing, slow or refused answer —
-  never as call evidence — and tokens are redacted before it reaches a page or the prompt.
-  Detection is passive: saved settings, the last stored health check and
-  fixed install paths — no scan, no login, no shell. This gauge is separate from the handover
-  temperature: one is what he was told, the other is what he can see. A next-step list under the
-  gauge names each source still short of full, the points it would add, and the one action that
-  earns them.
-- **opencode traffic ledger (admin only)**: when Greg's opencode brain or the workshop uses a
-  remote model, the exact prompt handed to the CLI, the final answer or error, the provider and
-  model, duration and the administrator who asked are now recorded on AI → Echo. Payloads are
-  encrypted with the installation's settings key before they touch the database, so a dump alone
-  does not reveal what a customer told Greg; only metadata, sizes and hashes stay readable. Local
-  providers (`ollama`, `lmstudio`, `llamacpp`, …) are not recorded because nothing leaves the
-  server. The page is admin-only, states that it records the application-level prompt and final
-  text (not provider TLS), keeps 90 days, and has a deliberate "delete all records" action that is
-  itself written to the audit log.
-- **Greg watches and helps set up HOMER and VoIPmonitor**: the Health page now has a **SIP
-  correlation collector** check (every 15 minutes) that follows Echo's target — HOMER, VoIPmonitor,
-  an external collector, or both — and asks the collector's own web UI for an answer. A sign-in
-  redirect or 401 is healthy, a 5xx is a warning, no answer is a failure and sends the normal
-  health alarm; without a UI address only a TCP listener can be proven, so a UDP-only collector is
-  reported as information instead of a false alarm. Echo shows the stored result, and Greg quotes
-  it and can walk an administrator through installation and the VoIPmonitor HEP settings using the
-  same commands the page shows — he cannot run them or change the remote collector.
-- **Cloud connector** (`aipbx-agent`, [docs/connector.md](docs/connector.md)): this installation can
-  register as a node of an EchoGuard-compatible portal and be seen and operated from there.
-  Outbound-only (no inbound port, no port forwarding), four allowlisted operations — `snapshot`,
-  `diagnose`, `reload`, `module_reload` — checked both in the agent and in the op executor. `reload`
-  runs the portal's own apply path, so a remote change gets the same config rollback and the same
-  audit-log record as pressing **Apply**; `module_reload` accepts `core` and `pjsip` only and refuses
-  FreePBX-only module names (`ivr`, `queues`, …) with a reason instead of reporting success. No
-  sudoers entry and no new privileged helper. Off until `/etc/aipbx/agent.conf` is written.
-- **Greg: optional add-on — a face and a voice (Anam.ai)** ([howtos/greg-anam-avatar.md](howtos/greg-anam-avatar.md)):
-  an administrator can create a persona in Anam and give Greg a video avatar that speaks his
-  answers in the chat. Off, and without a persona, until one is configured — none ships with the
-  code and the API key is stored encrypted with the installation's settings key. The browser only
-  ever receives a short-lived session token minted by `web/api/anam.php`; each session carries a
-  hard length (`maxSessionLengthSeconds`, 180 s by default, 30–3600), the face starts only on a
-  click, and leaving the page ends it. The Anam JavaScript SDK is vendored, so no CDN is needed on
-  an on-premise server. An optional listening mode opens the microphone for a two-way conversation
-  (the persona then answers with its own model), and the same card can send the persona into a
-  Google Meet, Zoom or Teams call through Anam's Meetings API — now or up to seven days ahead,
-  group calls waiting to be addressed by name. The card links to anam.ai/pricing and states how a
-  minute is counted, because the avatar is billed separately from the PBX. Sessions also carry
-  Anam's AI-avatar disclosure (`sessionOptions.showAIAvatarDisclosure`), bound to the session token
-  so the browser cannot drop it, and the video stage itself is labelled *AI avatar*.
-- **Greg: the onboarding brief** (`web/src/services/GregBrief.php`): Greg now asks, once, on the
-  first answer of a conversation, for the one document a VoIP engineer would want on their first
-  morning — what the business does, who calls, which numbers matter, the carriers, the call flows
-  that must not break, who to wake at 3 a.m. — as a **single markdown file**. It is added under
-  *AI → VoIP Engineer*, either uploaded (`.md`, `.markdown`, `.txt`) or pasted, with a template to
-  download that lists the questions. Stored as `/var/lib/aipbx/greg/BRIEF.md`, outside the git
-  checkout, so an update never overwrites it; read before every answer, so the brief's facts are
-  part of what he reasons from. Missing, the ask appears on the first answer and never again until
-  the next conversation; present, he is told to say which of the two looks stale when the file
-  disagrees with live data, and never to quote secrets from it. Admin-only page and downloads, the
-  120,000-character limit refused rather than truncated, and saves and removals audited without
-  the content.
-- **Greg: onboarding as a conversation** (`web/src/services/GregOnboardingService.php`): when no
-  handover document exists, saying "onboard me" — or the *Onboard him in chat* button — starts the
-  six questions a new engineer asks: the business, hours and the line that matters, flows that must
-  not break, carriers, people, and what good looks like. One at a time, and each answer is written
-  into the same `BRIEF.md` as it arrives, in a marked section: closing the tab loses nothing, a
-  second answer replaces the block instead of copying it, and the file can still be downloaded and
-  handed to a human engineer. A real question mid-interview is answered normally and the interview
-  waits; "skip" passes, "later" stops and keeps what was written, and running it again asks only
-  what is missing. Admin-only, audited with counts rather than answers, and the card shows how many
-  of the six the file already holds.
-- **Greg: the relief engineer — quiet-hours handoff** (`web/src/services/GregHandoffService.php`):
-  Greg sleeps inside his quiet hours, and a relief engineer — **Mahir Gul** by default — takes the
-  phones. The handoff is a real event: the last ten handoffs are kept in `AGENTS.md`, each is written
-  to the captain's log and audited, and it is recorded once rather than on every message. Both
-  engineers read the same brief, notes and log, but each has his own model source, so the night can
-  run on a different provider with its own credentials — the same source shares Greg's key, and its
-  blind spots. The relief engineer has his own persona (the night shift, a second pair of eyes that
-  says when it disagrees with what was written), and the phones can be handed over or taken back
-  manually until the next edge of the quiet window. Configured under *AI → VoIP Engineer → Relief
-  engineer*; the chat greeting names whoever is on duty.
-- **Greg: the two engineers agree before anyone hears an answer** (`web/src/services/GregCouncilService.php`):
-  an answer is no longer one model's opinion. The engineer on duty drafts it; the other reads the
-  question, the draft and the same working context — health, CDRs, RTCP evidence, brief, notes — and
-  either agrees or says what is wrong. A disagreement is settled by the on-duty engineer in one more
-  pass, so the administrator hears one engineer, never two. If the reviewer is unavailable or cannot
-  follow the review format, the draft still goes out and is marked unreviewed; if the settling pass
-  fails, the reviewer's correction is used rather than a draft it called wrong. Chat shows a quiet
-  line when both stand behind the answer and when it took a reconciliation, and the latter (plus any
-  unsettled answer) is audited without its content. One extra model call per reply, on by default and
-  switchable under *AI → VoIP Engineer → Relief engineer* — no relief engineer, no second reader.
-- **Greg: how ready is he — the handover gauge** (`web/src/services/GregReadinessService.php`,
-  `web/src/services/GregSystems.php`): the model is not the bottleneck; what it has been told is.
-  The *AI → VoIP Engineer* page now opens with a 0–100 temperature — a percentage, a bar and a
-  cold/cool/warm/hot reading — that names exactly what is missing: the business brief (who calls,
-  what the business does, when it is open, where it operates, why customers stay) and the systems
-  map (carriers and trunks, the CRM behind them, monitoring and alerting, ownership, and what is
-  deliberately out of scope). The business side comes from the six onboarding answers or an
-  uploaded brief; the systems side is a second markdown document, with its own template, download,
-  upload and editor, and it is read into Greg's prompt before every answer once it exists. The
-  score is computed locally from the files — no model call, nothing written on a page view — so a
-  good model with neither map is told plainly that it is guessing, and an administrator sees the
-  gap in Greg's chat too until both maps exist.
-- **Greg: the Asterisk reference, fetched from upstream** (`web/src/services/AsteriskDocsService.php`):
-  the two maps describe this installation; they should not have to explain what PJSIP is. A new card
-  under *AI → VoIP Engineer* downloads 26 curated pages of the official documentation
-  (`asterisk/documentation`: PJSIP, NAT, dialplan, CDRs, AMI/ARI, queues, hangup causes, logging,
-  troubleshooting) into `/var/lib/aipbx/greg/asterisk-docs`, where an offline box keeps them.
-  Nothing is fetched on a page view or a chat message: the administrator downloads or refreshes it,
-  a page that fails keeps its previous copy, and a refresh that reaches nothing leaves the cache
-  untouched. Greg gets at most three cited excerpts (about 4 KB), and only when the question shares
-  words with the manual — a Turkish "tek yönlü ses" is mapped to RTP/media/NAT terms, so the English
-  docs are still reachable — and every excerpt names its source URL. Content stays CC BY-SA 3.0 US,
-  credited in the card and in the prompt. The reference is deliberately excluded from the readiness
-  percentage: upstream knowledge is not a substitute for the two maps, it just stops Greg from
-  asking the administrator to explain Asterisk.
-- **Greg: HOMER or VoIPmonitor as correlation assistance** (`web/src/services/ai/HepSettingsService.php`):
-  the HEP card under *AI → Echo* now offers **VoIPmonitor** beside **HOMER** as the place Asterisk
-  sends SIP/RTCP, with a neutral correlation UI address Greg quotes when a Call-ID needs a call flow.
-  VoIPmonitor's sniffer must enable HEP (`hep = yes`, `hep_bind_ip`, `hep_bind_port = 9060`); the
-  page shows that snippet, keeps HOMER's one-command setup, and states both licensing facts — the
-  sniffer is GPL, the web GUI is licensed per channel. HEP over UDP is still unencrypted. The old
-  `hep.homer_url` setting is migrated to `hep.ui_url` on the next save. Greg does not query either
-  tool: his prompt names the chosen assistant and tells him to point the administrator to it
-  instead of claiming he looked. The systems-map template now asks for the correlation tool, its
-  UI address and its retention.
-- **Greg: HOMER *and* VoIPmonitor at the same time** (`web/src/services/ai/HepSettingsService.php`,
-  `signaling/aipbx_signaling/forward.py`): Asterisk has one `capture_address`, so choosing **both**
-  points it at the built-in daemon and the daemon forwards an unchanged copy of every HEPv3
-  datagram to HOMER (9060) and VoIPmonitor (9062). The list lives in
-  `/var/lib/aipbx/signaling/forward.json`, is re-read within a second without a restart, and is
-  removed when the target changes — no stale copies keep flowing. Both collectors must already be
-  running and need distinct UDP ports; local rows are still written, so Greg's own call counts and
-  SIP errors keep working. The card shows a host, port and UI address for each, opens either UI,
-  and tells Greg both are in use and that he cannot query them. It also states the cost — each
-  collector processes the full stream, roughly doubling their CPU/RAM/disk use — and that one or
-  both may run on another host, leaving only forwarding on the PBX. Before the picker, the card
-  measures this host's cores, one-minute load, available RAM and free data-disk space (including a
-  cgroup quota when containerised) and gives separate one-collector and both-collector verdicts;
-  the thresholds are planning gates from HOMER's and VoIPmonitor's published sizing, not a
-  benchmark. Greg receives the same measured capacity, so he does not recommend both locally when
-  the host is below the floor.
-- **A centralized collector needs SSH keys, not passwords**: when HOMER or VoIPmonitor runs on
-  another host, Greg now asks for key-only SSH before walking through the install — `ssh-keygen`,
-  `ssh-copy-id`, a login with `PasswordAuthentication=no` — and never asks for or suggests a
-  password. A new *SSH key-only login* health check (daily) reads `sshd -T` and warns while
-  password or keyboard-interactive login is accepted, fails if public keys are refused, and reports
-  information when only root may use a key or the configuration cannot be read. It never edits
-  `sshd`; the installer's warning now fires for any password login, not only root's, and
-  [docs/security.md](docs/security.md#ssh) carries the drop-in and the lockout-safe order. Keys are
-  recommended for every installation and required for a central host.
-- **Greg senses a call going bad — from RTCP, not from audio**: the signaling daemon now keeps the
-  packet-loss and jitter counters of every RTCP Sender/Receiver Report
-  (`rtcp_fraction_lost`, `rtcp_lost`, `rtcp_jitter`, `rtcp_ssrc`). A call is *poor* after two
-  reports at 5 %+ loss, *fair* above 1 %; one spike is not enough. A new **Call quality (RTCP)**
-  health check warns (and fails when the loss is widespread), Greg quotes the bad calls in his
-  prompt and is told plainly that he did not hear them, and a five-minute quality cron makes the
-  one safe automatic change: a lossy trunk whose media peer matches `pbx_trunks.ip_address` moves
-  to the end of its outbound route chain for **new calls only** — live calls keep their channel.
-  The move is audited, announced, limited to once per trunk per six hours, skipped while another
-  outbound change waits for Apply, rolled back if the dialplan reload fails, and can be switched
-  off under *AI → VoIP Engineer*. Local phones, Wi-Fi and a carrier that is bad on every trunk
-  become a notice for a human instead. No audio is captured or analysed. Sensing needs the
-  built-in capture (`builtin` or `both`); with a remote collector the check says so.
-- **Greg keeps the proof, not just the conclusion**: each quality incident is copied to
-  `pbx_quality_evidence` with its RTCP samples, the peer and time window, the thresholds, the
-  trunk match and the action taken, and a dedupe key so one incident is one record. Notices and
-  alarm e-mails cite `Evidence #N`; Greg's prompt carries the last five trails and requires him to
-  name the evidence id, source, peer, window and report count before he summarizes. The source is
-  written down as `res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events (proto='rtcp')`, and
-  `aipbx_quality.php --report=24` / `--evidence=N` print the day's incidents or one full record.
-  Evidence survives the raw rows' shorter retention (180 days by default, 7–3650 via
-  `call_quality.evidence_days`). With the automatic fix switched off he still keeps the evidence and
-  raises the notice; he just leaves the route alone.
-- **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
-  `pbx_signaling_events` and can forward them to the same portal. Off by default.
+## 1.50.24
+
+- **CDR Reports & Multi-Language Support (i18n Compliance):**
+  - Standardized `cdrs` SQL view (`web/db/migrations/20261029010000_standardize_cdrs_view_labels.php`) to generate canonical machine tokens (`fax_in`, `fax_out`, `internal`, `queue_call`, `did:...`) instead of hardcoded Turkish strings.
+  - Added `CdrReportRepository::formatRouteLabel()` to dynamically localize route and queue labels in the user's active language across all 23 supported languages in both the web portal and CSV exports, with full backwards compatibility for existing installations.
+- **Security & SecretBox Concurrency Hardening:**
+  - Implemented atomic file locking (`flock(LOCK_EX)`) during encryption key initialization in `web/src/secret_box.php`, eliminating race conditions when multiple processes start concurrently on uninitialized systems.
+  - Hardened Apache HTTP routing configuration in `install.sh` and `web/etc/apache2/aipbx-routing.conf.example` to deny direct access to developer files (`composer.*`, `phpunit.xml`, `phinx.php`, `phpstan.neon`, `.env*`) and the `tests/` directory.
+  - Strengthened system Content Security Policy (CSP) header with `base-uri 'self'` and `object-src 'none'`.
+- **System Scripts & Linter Polish:**
+  - Eliminated ShellCheck warnings and improved robustness in `install.sh`, `conf/sbin/aipbx-sounds`, `conf/sbin/aipbx-update`, `web/bin/process_incoming_fax.sh`, `web/bin/process_outgoing_fax_result.sh`, and `scripts/e2e/` scripts.
+  - Enhanced `web/bin/setup-test-db.sh` with automatic `sudo` and environment credential fallback for seamless local test runs.
+  - Removed lingering diagnostic `console.log` statements from the production WebRTC header softphone (`web/assets/js/header_phone.js`).
+- **Documentation & Navigation Polish:**
+  - Fixed 22 broken relative links in root `ROADMAP.md` and repaired links in `.github/pull_request_template.md`.
+  - Updated `ARCHITECTURE.md`, `AGENTS.md`, and `docs/translating.md` to cleanly point to decoupled native client repositories ([AiPBX-Android](https://github.com/mahirgul/AiPBX-Android) and [AiPBX-iOS](https://github.com/mahirgul/AiPBX-iOS)).
+
+## 1.50.23
+
+- **Core Stability, Linter Acceleration & Test Automation:**
+  - Optimized `web/bin/smoke.php` syntax checker to exclude `.phpstan-cache/` and `.phpunit.cache/` directories, preventing thousands of temporary cache files from being repeatedly scanned and reducing smoke lint execution time from minutes to under 3 seconds.
+  - Hardened `SecretBox` credential management to verify write permissions before attempting to write `/var/lib/aipbx/settings.key`, providing an in-memory encryption key fallback for non-root CLI processes, CI environments, and automated test runners without throwing unhandled exceptions or PHP warnings.
+- **Background Workers Logging & Hardening:**
+  - Added explicit error logging in `web/bin/webhook_worker.php` for CDR and fax event sweep cycles to surface database disconnects and transient polling failures.
+  - Enforced shell argument escaping (`escapeshellarg`) for task IDs and triggers in `web/bin/task_dispatcher.php` as part of defense-in-depth background task invocation.
+- **UI & Repository Navigation:**
+  - Updated web portal persistent footer bar to directly link to the official [AiPBX GitHub Repository](https://github.com/mahirgul/AiPBX).
+  - Integrated UpCloud cloud infrastructure partnership recommendations and \$250 promo credits across project documentation.
+  - Added project maintainer LinkedIn connectivity.
+
+## 1.50.22
+
+- **Mobile Clients Decoupling & Independent Repositories:**
+  - Separated Android and iOS native mobile clients into dedicated standalone repositories ([AiPBX-Android](https://github.com/mahirgul/AiPBX-Android) and [AiPBX-ios](https://github.com/mahirgul/AiPBX-ios)) with independent CI/CD build automation.
+  - Removed heavy mobile workflows (`android-build.yml`, `ios-build.yml`, `mobile-lang.yml`) from the core repository, accelerating core CI runs and eliminating redundant mobile builds on server releases.
+  - Audited all repositories to guarantee zero secrets, keystores, or private signing credentials in git history.
+- **Native Plugin Contract & Manifest Validator (`scripts/check_plugins.py`):**
+  - Added standalone plugin layout and manifest validator enforcing `plugin.json` contracts, hooks, and scopes across official and community plugins.
+  - Added static code analysis ensuring plugin PHP code does not read undeclared settings keys.
+  - Enforced `schema.sql` database security rules (`plg_*` table prefix sandbox and rejection of destructive DDL).
+  - Added 22 unit tests (`scripts/test_check_plugins.py`) and integrated into `Web & Chat CI` pipeline.
+- **Language Files & Translation Parity Cleanup:**
+  - Removed 46 orphan and unused external AI keys across all 23 language files (`web/lang/*.php`).
+  - Preserved 100% key parity across all 22 localized languages (5405/5405 keys aligned).
+
+## 1.50.21
+
+- **PJSIP TLS Settings in Admin UI & Config Sync:**
+  - Added configurable TLS port (`pjsip_tls_port`, default 5061), TLS SIP domain/FQDN (`pjsip_tls_domain`), and TLS protocol method selection (`pjsip_tls_method`, supporting `tlsv1_2`, `tlsv1_2,tlsv1_3`, and `tlsv1_3`) in PBX Settings -> Asterisk Settings (PJSIP tab).
+  - Synchronized TLS transport directives into `pjsip_transports.conf` (`domain=` and `method=`) so TLS registrations cleanly bind to the TLS transport.
+  - Mirrored TLS transport values into `pjsipsettings` (`tls_bindport`, `tls_domain`, `tls_method`) and aligned provisioning services.
+  - Added full multi-language translations across all 22 supported locales.
+  - Added test coverage in `PjsipTransportTest`.
+- **Installer SSH advisory fault tolerance (`install.sh`):**
+  - Made the post-installation SSH configuration advisory non-fatal (`sshd -T 2>/dev/null || true`), preventing aborted installs on containerized or minimal cloud environments without `sshd` or host keys.
+  - Added automated test case in `scripts/test_install_watchdog.sh`.
+- **Cisco CallManager firmware documentation i18n:**
+  - Completed `phones.cisco_loads_help` guidance across all 18 locales explaining automatic TFTP provisioning and firmware reboot handling.
+- **Unit test suite isolation:**
+  - Added database settings cleanup in `VoicemailPolicyTest` and `MyPhoneVoicemailSettingsTest` tearDown to prevent test state leakage across full test suite runs.
+
+## 1.50.20
+
+- **Duplicate extension row stability in PJSIP and Voicemail sync:**
+  - Added deterministic deduplication (`ORDER BY extension ASC, id ASC`) in `SyncExtensions` and `SyncVoicemail` when multiple user rows share the same extension number (e.g. following CSV imports).
+  - Keeps the first created user and logs collisions, preventing Asterisk PJSIP duplicate object errors (`configuration contains a duplicate object`) that caused full endpoint registration drops.
+  - Added duplicate extension unit test in `SyncGeneratorTest`.
+- **Cisco CallManager firmware translation alignment:**
+  - Aligned Turkish `phones.cisco_loads_help` guidance with English documentation, explaining local server TFTP verification and firmware application upon phone reboot.
 
 ## 1.50.19
 
