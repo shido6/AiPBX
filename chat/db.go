@@ -215,8 +215,11 @@ func GetContacts(currentExt string) ([]Contact, error) {
 		           JOIN chat_messages m ON m.conversation_id = c.id AND m.id > p.last_read_message_id AND m.sender_ext = u.extension AND m.is_deleted = 0
 		           WHERE p.extension = ? AND p.left_at IS NULL
 		       ), 0) AS unread_count
-		FROM sys_users u
-		WHERE u.is_active = 1 AND u.extension IS NOT NULL AND u.extension != '' AND u.extension != ? AND u.role != 'fax_user'
+		FROM (SELECT extension, MIN(id) AS id FROM sys_users
+		      WHERE is_active = 1 AND extension IS NOT NULL AND extension != '' AND role != 'fax_user'
+		      GROUP BY extension) pu
+		JOIN sys_users u ON u.id = pu.id
+		WHERE u.extension != ?
 		ORDER BY (u.extension REGEXP '^[0-9]+$') DESC, CAST(u.extension AS UNSIGNED) ASC, u.extension ASC
 	`
 	rows, err := db.Query(query, currentExt, currentExt)
@@ -402,14 +405,25 @@ func GetMessages(convID int, limit int, beforeID int64) ([]Message, error) {
 	var rows *sql.Rows
 	var err error
 
+	// Chat identity is the extension, but sys_users does not force one user per
+	// extension: an installation can have two accounts on the same desk phone
+	// (or a second administrator on the first extension). A plain join on
+	// extension then returns the SAME message once per account. The name is
+	// picked by a correlated subquery instead — the active account first, then
+	// the oldest — so one extension always yields one row and one stable name.
+	const senderName = `COALESCE((
+			SELECT COALESCE(u.full_name, u.username) FROM sys_users u
+			WHERE u.extension = m.sender_ext
+			ORDER BY u.is_active DESC, u.id ASC LIMIT 1
+		), m.sender_ext) AS sender_name`
+
 	if beforeID > 0 {
 		query := `
-			SELECT m.id, m.conversation_id, m.sender_ext, COALESCE(u.full_name, u.username, m.sender_ext) AS sender_name,
+			SELECT m.id, m.conversation_id, m.sender_ext, ` + senderName + `,
 			       m.msg_type, COALESCE(m.message, ''), COALESCE(m.attachment_url, ''),
 			       COALESCE(m.file_name, ''), m.file_size, COALESCE(m.mime_type, ''),
 			       COALESCE(m.system_event, ''), COALESCE(m.system_meta, ''), m.created_at, m.is_deleted
 			FROM chat_messages m
-			LEFT JOIN sys_users u ON u.extension = m.sender_ext
 			WHERE m.conversation_id = ? AND m.id < ?
 			ORDER BY m.id DESC
 			LIMIT ?
@@ -417,12 +431,11 @@ func GetMessages(convID int, limit int, beforeID int64) ([]Message, error) {
 		rows, err = db.Query(query, convID, beforeID, limit)
 	} else {
 		query := `
-			SELECT m.id, m.conversation_id, m.sender_ext, COALESCE(u.full_name, u.username, m.sender_ext) AS sender_name,
+			SELECT m.id, m.conversation_id, m.sender_ext, ` + senderName + `,
 			       m.msg_type, COALESCE(m.message, ''), COALESCE(m.attachment_url, ''),
 			       COALESCE(m.file_name, ''), m.file_size, COALESCE(m.mime_type, ''),
 			       COALESCE(m.system_event, ''), COALESCE(m.system_meta, ''), m.created_at, m.is_deleted
 			FROM chat_messages m
-			LEFT JOIN sys_users u ON u.extension = m.sender_ext
 			WHERE m.conversation_id = ?
 			ORDER BY m.id DESC
 			LIMIT ?
@@ -878,11 +891,17 @@ func GetGroupDetails(convID int, requesterExt string) (*Conversation, error) {
 		return nil, userError("This conversation is not a group")
 	}
 
+	// One name per participant extension: a second account on the same
+	// extension would otherwise duplicate the member in the list and inflate
+	// the member count.
 	rows, err := db.Query(`
-		SELECT p.extension, COALESCE(u.full_name, u.username, p.extension) AS full_name,
+		SELECT p.extension, COALESCE((
+		           SELECT COALESCE(u.full_name, u.username) FROM sys_users u
+		           WHERE u.extension = p.extension
+		           ORDER BY u.is_active DESC, u.id ASC LIMIT 1
+		       ), p.extension) AS full_name,
 		       COALESCE(p.role, 'member') AS role, p.joined_at
 		FROM chat_participants p
-		LEFT JOIN sys_users u ON u.extension = p.extension
 		WHERE p.conversation_id = ? AND p.left_at IS NULL
 		ORDER BY (p.role = 'admin') DESC, p.joined_at ASC
 	`, convID)

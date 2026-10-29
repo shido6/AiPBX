@@ -60,7 +60,6 @@ fi
 # aipbx-update compares it between releases (scripts/asterisk-restart-needed.sh):
 # when it and asterisk-config/ are unchanged, Asterisk is only reloaded and
 # calls in progress stay up.
-# shellcheck disable=SC2034 # Read externally by scripts/asterisk-restart-needed.sh from git tree
 ASTERISK_RESTART_EPOCH=1
 
 # --- Bounded waits: a stall must become an error, not a 45-minute silence ---
@@ -248,6 +247,161 @@ if [[ "$AIPBX_MODE" == "upgrade" && ! -f /etc/ai-pbx.env ]]; then
     error "--upgrade needs an existing installation (/etc/ai-pbx.env not found)"
 fi
 is_upgrade() { [[ "$AIPBX_MODE" == "upgrade" ]]; }
+
+# --- Bounded waits: a stall must become an error, not a 45-minute silence ---
+# On 2026-10-26 the install test sat inside this script until the job timeout
+# with nothing in the log, three times. Three steps here can wait far longer
+# than the work they are waiting on, and none of them says so:
+#   * `apt-get` on a held dpkg lock: with no bound set that wait has run into the
+#     quarter-hour range in the wild, and nothing here needs it to;
+#   * apt's own configure stage, where a postinst script can block for ever with
+#     nothing printed and no timeout of apt's own;
+#   * `composer install`, which has no network timeout at all, so a packagist or
+#     GitHub connection that stops answering is simply waited on.
+# `-o DPkg::Lock::Timeout` gives apt a bound (it then fails with apt's own "Could
+# not get lock" message). The other two are bounded below by stream_bounded,
+# which also streams their output, so the log says where they stopped instead of
+# staying empty.
+APT_LOCK_WAIT=120      # seconds apt-get may wait for the dpkg lock
+COMPOSER_TIMEOUT=900   # seconds the whole `composer install` may take
+COMPOSER_SILENCE=300   # no line and no download progress for this long means a real stall
+
+# --- Streaming, time-bounded apt and Composer --------------------------------
+# Both phases used to end in `... 2>&1 | tail -5` / `| tail -20`, and that pipe
+# is why a 2026-10-26 stall was invisible: it holds every line until the command
+# exits, so a phase that ran for 45 minutes wrote nothing at all — and even a
+# healthy run showed minutes of dpkg configuring, with no way to tell that from a
+# hang. Under stream_bounded every line reaches stdout as it arrives (the CI
+# keeps it through `tee`, so a cancelled job still has the evidence), a copy
+# stays in a file so the last lines can be printed after a kill, the phase has a
+# wall-clock budget, and its output may not stand still for long either. A stall
+# now ends in minutes with the phase named and its last lines shown.
+#
+# Standing still is judged on progress, not lines alone: a download prints
+# nothing while it arrives, so both apt calls and Composer name the directory
+# their downloads land in (--progress=) and bytes arriving there reset the same
+# clock. A postinst that hangs prints nothing AND writes nothing, so it is still
+# killed at the bound.
+APT_UPDATE_TIMEOUT=300    # apt-get update: a mirror that cannot answer in 5 min is down
+APT_INSTALL_TIMEOUT=1200  # apt-get install of every package; the healthy run took ~2.5 min
+APT_SILENCE=300           # no line and no download progress for this long means a real stall
+
+stream_bounded() {
+    local label="$1" budget="$2" quiet="$3"
+    local log rc=0 shown=0 lines=0 start last_out last_prog reason="" pid i elapsed
+    local progress="" bytes=0 seen=0 waited=0 quiet_at=0
+    shift 3
+    if [[ "${1:-}" == --progress=* ]]; then
+        progress="${1#--progress=}"
+        shift
+    fi
+    [[ "${1:-}" == "--" ]] && shift
+
+    log="$(mktemp)" || { "$@"; return $?; }
+    start=$SECONDS
+    last_out=$start
+    last_prog=$start
+    if [ -n "$progress" ]; then
+        info "$label — up to ${budget}s, ${quiet}s without a line or a byte counts as stuck"
+    else
+        info "$label — up to ${budget}s, ${quiet}s without a line counts as stuck"
+    fi
+
+    # `timeout` rather than a clock inside the loop: it puts the command in its
+    # own process group and signals the group, so a hung postinst goes with
+    # apt-get instead of being orphaned halfway through a configure.
+    timeout --signal=TERM --kill-after=60 "$budget" "$@" >>"$log" 2>&1 &
+    pid=$!
+
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 2
+        lines=$(wc -l <"$log" 2>/dev/null | tr -d ' ')
+        [ -n "$lines" ] || lines=0
+        if [ "$lines" -gt "$shown" ]; then
+            sed -n "$((shown + 1)),${lines}p" "$log"
+            shown=$lines
+            last_out=$SECONDS
+        fi
+        if [ -n "$progress" ]; then
+            # du, not a stat of one file: apt renames each download as it finishes,
+            # so the directory's total size is the measure that does not blink.
+            bytes=$({ du -sk "$progress" 2>/dev/null || true; } | awk '{print $1}')
+            [ -n "$bytes" ] || bytes=0
+            if [ "$bytes" != "$seen" ]; then
+                seen=$bytes
+                last_prog=$SECONDS
+                # Say it once per quiet window: without this a slow download
+                # reads exactly like the silence this clock exists to catch.
+                if [ $((SECONDS - last_out)) -ge "$quiet" ] && [ $((SECONDS - waited)) -ge "$quiet" ]; then
+                    waited=$SECONDS
+                    info "$label: no output for $((SECONDS - last_out))s, but $((bytes / 1024)) MB is now in ${progress} — still downloading"
+                fi
+            fi
+        fi
+        # Stuck means neither the output nor the downloads have moved.
+        quiet_at=$last_out
+        [ "$last_prog" -gt "$quiet_at" ] && quiet_at=$last_prog
+        if [ $((SECONDS - quiet_at)) -ge "$quiet" ]; then
+            if [ -n "$progress" ]; then
+                reason="printed nothing for $((SECONDS - last_out))s and received nothing for $((SECONDS - last_prog))s"
+            else
+                reason="went silent for $((SECONDS - last_out))s"
+            fi
+            break
+        fi
+    done
+
+    if [ -n "$reason" ]; then
+        # Signal the whole group (both GNU and uutils timeout make themselves
+        # the group leader, so the command's group id is their pid) and only
+        # fall back to the single pid: a postinst that ignores TERM must not be
+        # left orphaned in the middle of a configure step.
+        kill -s TERM -- "-$pid" 2>/dev/null || kill -s TERM "$pid" 2>/dev/null || true
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        kill -s KILL -- "-$pid" 2>/dev/null || kill -s KILL "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || rc=$?
+    # timeout has exited by now. If it ended on a clock and something in its
+    # group outlived it (a postinst that ignored TERM), sweep the group: the
+    # others are gone already, so this is normally a no-op.
+    if [ "$rc" -ne 0 ]; then
+        kill -s KILL -- "-$pid" 2>/dev/null || true
+    fi
+
+    # The loop stops looking the moment the process ends, so whatever was
+    # printed between the last tick and the exit still has to be flushed: on a
+    # failure those lines are the whole diagnosis.
+    lines=$(wc -l <"$log" 2>/dev/null | tr -d ' ')
+    [ -n "$lines" ] || lines=0
+    if [ "$lines" -gt "$shown" ]; then
+        sed -n "$((shown + 1)),${lines}p" "$log"
+    fi
+    rm -f "$log"
+
+    elapsed=$((SECONDS - start))
+    if [ -n "$reason" ]; then
+        warn "$label $reason — killed after ${elapsed}s; the lines above are the last thing it printed"
+        return 125
+    fi
+    # Ubuntu 26.04 ships uutils' timeout, which reports a child that had to be
+    # SIGKILLed as 137 where GNU timeout says 124. The clock we know about is
+    # our own, so "it died at or after the budget" is what identifies this, and
+    # the caller still gets a name for it instead of "failed (status 137)".
+    if [ "$rc" -ne 0 ] && [ "$elapsed" -ge "$budget" ]; then
+        warn "$label hit the ${budget}s budget — killed; the lines above are where it stopped"
+        return 124
+    fi
+    case $rc in
+        0)   ok "$label finished in ${elapsed}s" ; return 0 ;;
+        124) warn "$label hit the ${budget}s budget — killed; the lines above are where it stopped" ; return 124 ;;
+        *)   warn "$label failed (status $rc)" ; return "$rc" ;;
+    esac
+}
+
 
 # Reads KEY=value from the existing environment file (upgrade mode).
 env_get() {
@@ -519,6 +673,7 @@ PACKAGES=(
   odbc-mariadb
   composer
   coturn
+  tcpdump
   golang-go
   build-essential
   libc6-dev
@@ -630,7 +785,7 @@ ln -sf "$INSTALL_DIR/web" /var/www/html
 # fax processing).
 # A root-only 750 bin/ silently broke *60/*72 because System(... &) logs nothing.
 chmod 755 "$INSTALL_DIR/web/bin"
-for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php privacy_purge.php task_dispatcher.php; do
+for script in feature_code_action.php widget_claim.php ai_request.php push_dispatcher.php process_incoming_fax.sh process_outgoing_fax_result.sh fax_cleanup.sh fax_pending_sweep.sh sync_queue_logs.php recordings_to_mp3.php aipbx_health.php voicemail_notify.php fax_to_bucket.php voicemail_to_bucket.php provision_tftp.php privacy_purge.php task_dispatcher.php greg_watch.php aipbx_quality.php aipbx_ops.php; do
     if [[ -f "$INSTALL_DIR/web/bin/$script" ]]; then
         ln -sf "$INSTALL_DIR/web/bin/$script" "/usr/local/bin/$script"
         chmod 755 "$INSTALL_DIR/web/bin/$script"
@@ -681,6 +836,13 @@ cat > /etc/cron.d/aipbx << 'CRON'
 # the engine looks, then the portal provisions what its settings allow. Both halves
 # are in one script so the second can never run without the first.
 */5 * * * * www-data /usr/local/sbin/aipbx-phone-discovery >/dev/null 2>&1
+
+# Greg (AI -> AI VoIP Engineer): health results become his notices. Silent when disabled.
+7 * * * * root /usr/local/bin/greg_watch.php >/dev/null 2>&1
+
+# Call quality (RTCP): sustained packet loss becomes a notice, and a lossy trunk
+# moves to the backup position for new calls. Silent when there is nothing to do.
+*/5 * * * * root /usr/local/bin/aipbx_quality.php >/dev/null 2>&1
 CRON
 chmod 644 /etc/cron.d/aipbx
 
@@ -708,6 +870,37 @@ if ! find /var/lib/asterisk/moh -maxdepth 1 \( -type f -o -type l \) | grep -q .
     done
 fi
 mkdir -p /var/lib/aipbx/chat_files /var/lib/aipbx/tts
+# Greg's opencode workspace: throwaway folders, one per proposal. Owned by
+# www-data so the portal can create them; opencode itself is installed by the
+# operator (AI → Echo shows "opencode not installed" until it is).
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/opencode
+# Greg's memory: AGENTS.md plus one captain's-log file per day. Outside the
+# git checkout on purpose — an update must never overwrite what Greg learned,
+# and an operator can read or edit these with cat and vi.
+install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/greg /var/lib/aipbx/greg/captains-logs
+if [[ ! -e /var/lib/aipbx/greg/AGENTS.md ]]; then
+    cat > /var/lib/aipbx/greg/AGENTS.md <<'GREGNOTES'
+# Greg — notes about this installation
+
+Greg reads this file, and the latest entries from
+/var/lib/aipbx/greg/captains-logs/YYYY-MM-DD.md, before answering. AiPBX's
+database already records calls, settings and audit rows; this is for what no
+table knows — the network around the PBX, carrier quirks, why something was
+decided. Write facts, not wishes. Never put passwords or API keys here.
+
+## Known by default
+
+- The brain is Big Pickle, the free model that ships with the opencode CLI:
+  no API key and no account. Other sources are on AI → VoIP Engineer.
+- opencode is allowed to read and plan, never to write, run a shell or reach
+  outside its throwaway workspace. Tool proposals wait for an administrator
+  on AI → Echo → Greg's workshop; approving one installs nothing.
+- The HEP capture target lives on AI → Echo; /etc/asterisk/hep.conf is the
+  generated truth. HEP is plain UDP with a shared password, not encryption.
+GREGNOTES
+    chown www-data:www-data /var/lib/aipbx/greg/AGENTS.md
+    chmod 0640 /var/lib/aipbx/greg/AGENTS.md
+fi
 # Key that encrypts cloud credentials stored in the database (AI → Cloud TTS).
 # Created here so it belongs to the web server: one made by root would lock it out.
 [[ -L /var/lib/aipbx/settings.key ]] && rm -f /var/lib/aipbx/settings.key
@@ -1146,10 +1339,6 @@ cat > /etc/apache2/conf-available/aipbx-routing.conf << 'ROUTING'
     Require all denied
 </FilesMatch>
 
-<FilesMatch "(composer\.(json|lock)|phpunit\.xml|phinx\.php|phpstan(\.dist)?\.neon|\.env(\..+)?)$">
-    Require all denied
-</FilesMatch>
-
 <Directory "/var/www/html/src">
     Require all denied
 </Directory>
@@ -1160,9 +1349,6 @@ cat > /etc/apache2/conf-available/aipbx-routing.conf << 'ROUTING'
     Require all denied
 </Directory>
 <Directory "/var/www/html/bin">
-    Require all denied
-</Directory>
-<Directory "/var/www/html/tests">
     Require all denied
 </Directory>
 ROUTING
@@ -1176,7 +1362,7 @@ cat > /etc/apache2/conf-available/aipbx-security.conf << 'SECHDR'
 <IfModule mod_headers.c>
     Header always set X-Content-Type-Options "nosniff"
     Header always set X-Frame-Options "SAMEORIGIN"
-    Header always set Content-Security-Policy "frame-ancestors 'self'; base-uri 'self'; object-src 'none'"
+    Header always set Content-Security-Policy "frame-ancestors 'self'"
     Header setifempty Referrer-Policy "strict-origin-when-cross-origin"
     # Brand files uploaded by the admin (may be SVG): the regex clean-up can be
     # bypassed, so no script may ever run in an SVG opened directly.
@@ -1382,11 +1568,23 @@ if [ -d "$INSTALL_DIR/signaling" ]; then
     if command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout="$APT_LOCK_WAIT" install -y -qq python3-pymysql
     fi
+    # The portal writes the both-mode fan-out list here (www-data); the daemon
+    # reads it as root. Only the file is shared — the daemon has no other state.
+    install -d -o www-data -g www-data -m 0750 /var/lib/aipbx/signaling
     if [ -d /etc/systemd/system ] && command -v systemctl >/dev/null 2>&1; then
         install -o root -g root -m 0644 "$INSTALL_DIR/conf/systemd/aipbx-signaling.service" /etc/systemd/system/aipbx-signaling.service
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl enable --now aipbx-signaling.service >/dev/null 2>&1 || true
     fi
+fi
+
+# hep.conf: never overwrite an operator's target, but make sure the portal
+# can generate it (AI -> Echo): www-data owns the file, the asterisk group
+# can still read it for res_hep.
+if [[ -f "$INSTALL_DIR/asterisk-config/hep.conf" ]]; then
+    [[ -e /etc/asterisk/hep.conf ]] || cp "$INSTALL_DIR/asterisk-config/hep.conf" /etc/asterisk/hep.conf
+    chown www-data:asterisk /etc/asterisk/hep.conf 2>/dev/null || true
+    chmod 664 /etc/asterisk/hep.conf 2>/dev/null || true
 fi
 
 # PBX → Network services (DHCP/TFTP for desk phones): dnsmasq in its own unit,
@@ -1841,6 +2039,31 @@ if ! id -u aipbx-ai >/dev/null 2>&1; then
 fi
 install -d -o aipbx-ai -g aipbx-ai -m 0755 /var/lib/aipbx-ai
 install -d -o root -g root -m 0755 "$AI_BASE"
+# Greg's free brain: the opencode CLI carries Big Pickle, with no API key and
+# no account. Downloaded once, only when absent; the portal stays honest about
+# it either way (AI → Echo shows "opencode not installed" if this failed).
+if ! command -v opencode >/dev/null 2>&1; then
+    case "$(uname -m)" in
+        x86_64|amd64) OC_ARCH=x64 ;;
+        aarch64|arm64) OC_ARCH=arm64 ;;
+        *) OC_ARCH="" ;;
+    esac
+    if [[ -n "$OC_ARCH" && -x "$(command -v curl 2>/dev/null || true)" ]]; then
+        OC_TMP=$(mktemp -d)
+        if curl -fsSL --retry 2 --max-time 180 \
+                -o "$OC_TMP/opencode.tar.gz" \
+                "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${OC_ARCH}.tar.gz" \
+            && tar -xzf "$OC_TMP/opencode.tar.gz" -C "$OC_TMP" \
+            && install -m 0755 "$OC_TMP/opencode" /usr/local/bin/opencode; then
+            info "opencode installed — Greg's Big Pickle model needs no key."
+        else
+            warn "Could not download opencode. Greg will say it is not installed; re-run the installer to retry."
+        fi
+        rm -rf "$OC_TMP"
+    else
+        warn "opencode was not installed (no curl, or unsupported CPU). Greg will say so until it is."
+    fi
+fi
 # Code: replaced on every install/upgrade (root-owned; the service only reads it).
 rm -rf "$AI_BASE/app.new"
 mkdir -p "$AI_BASE/app.new"
@@ -2271,15 +2494,15 @@ else
 fi
 echo ""
 
-# Advisory only, so it may not decide whether this install succeeded: `sshd -T`
-# exits 127 on a host with no SSH server at all (a container, a minimal cloud
-# image) and non-zero when there is no host key yet to read the config with.
-# Under `set -e` that status ended the script here — everything installed, exit
-# 1 — and `aipbx-update` rolled a healthy box back over it.
-ssh_cfg="$(sshd -T 2>/dev/null || true)"
-if grep -qi '^permitrootlogin yes' <<<"$ssh_cfg" && grep -qi '^passwordauthentication yes' <<<"$ssh_cfg"; then
-    echo -e "  ${YELLOW}⚠️  SSH allows root login with a password. Consider key-only logins and${NC}"
-    echo -e "  ${YELLOW}   limiting port 22 to trusted networks (see docs/security.md).${NC}"
+ssh_cfg="$(sshd -T 2>/dev/null)"
+if grep -qi '^passwordauthentication yes' <<<"$ssh_cfg" || grep -qi '^kbdinteractiveauthentication yes' <<<"$ssh_cfg"; then
+    echo -e "  ${YELLOW}⚠️  SSH still accepts passwords. Use key-only remote logins,${NC}"
+    echo -e "  ${YELLOW}   especially for a centralized collector or portal (docs/security.md).${NC}"
+    echo ""
+fi
+if grep -qi '^permitrootlogin yes' <<<"$ssh_cfg"; then
+    echo -e "  ${YELLOW}⚠️  SSH allows root login with a password. Prefer key-only root login${NC}"
+    echo -e "  ${YELLOW}   (PermitRootLogin prohibit-password).${NC}"
     echo ""
 fi
 echo -e "  ${BOLD}📄 All credentials saved to:${NC} ${CYAN}${CREDS_FILE}${NC}"

@@ -11,6 +11,11 @@
  * They run as root from bin/aipbx_health.php (cron, `aipbx-selftest`), so they
  * may read anything; none of them changes anything.
  */
+require_once __DIR__ . '/../SipProbeService.php';
+require_once __DIR__ . '/../ai/SipfrontClient.php';
+require_once __DIR__ . '/../ai/HepSettingsService.php';
+require_once __DIR__ . '/../SshAccessService.php';
+
 final class HealthChecks
 {
     public const STATUSES = ['ok', 'warn', 'fail', 'info', 'off', 'unknown'];
@@ -22,6 +27,7 @@ final class HealthChecks
         'web' => 5,
         'chat' => 5,
         'trunks' => 5,
+        'sip_calltest' => 60,
         'trunk_limits' => 5,
         'disk' => 60,
         'memory' => 15,
@@ -34,7 +40,9 @@ final class HealthChecks
         'failed_registrations' => 15,
         'network_services' => 15,
         'server_address' => 60,
+        'ssh_access' => 1440,
         'local_ai' => 15,
+        'hep_collector' => 15,
         'certificate' => 1440,
         'backup' => 1440,
         'installation' => 1440,
@@ -54,6 +62,7 @@ final class HealthChecks
                 'web' => self::web(),
                 'chat' => self::service('aipbx-chat'),
                 'trunks' => self::trunks(),
+                'sip_calltest' => self::sipCalltest(),
                 'trunk_limits' => self::trunkLimits(),
                 'disk' => self::disk(),
                 'memory' => self::memory(),
@@ -66,7 +75,9 @@ final class HealthChecks
                 'failed_registrations' => self::failedRegistrations(),
                 'network_services' => self::networkServices(),
                 'server_address' => self::serverAddress(),
+                'ssh_access' => self::sshAccess(),
                 'local_ai' => self::localAi(),
+                'hep_collector' => self::hepCollector(),
                 'certificate' => self::certificate(),
                 'backup' => self::backup(),
                 'installation' => self::installation(),
@@ -79,6 +90,29 @@ final class HealthChecks
     }
 
     // ------------------------------------------------------------------ checks
+
+    /** HOMER / VoIPmonitor reachability, from the target Echo is configured for. */
+    private static function hepCollector(): array
+    {
+        return HepSettingsService::health();
+    }
+
+    /**
+     * Remote login for a centralized installation: keys only, never a
+     * password. Read-only — the check never edits sshd, because a wrong line
+     * there locks the administrator out of the machine.
+     */
+    private static function sshAccess(): array
+    {
+        if (!SshAccessService::installed()) {
+            return ['off', t('health.msg_ssh_off')];
+        }
+        $cfg = SshAccessService::effective();
+        if ($cfg === null) {
+            return ['info', t('health.msg_ssh_unknown')];
+        }
+        return SshAccessService::verdict($cfg);
+    }
 
     private static function asterisk(): array
     {
@@ -111,13 +145,78 @@ final class HealthChecks
         return ['ok', sprintf(t('health.msg_database_ok'), $tables)];
     }
 
+    /**
+     * The portal's own sign-in page, asked over the loopback interface.
+     *
+     * Done with a socket rather than the curl binary or file_get_contents: a
+     * server without curl, or with allow_url_fopen off (hardened installs),
+     * used to report a working portal as broken — and Greg would then reload
+     * Apache for it on every single health check.
+     *
+     * The HTTPS ports come from Apache's own SSL virtual hosts (443 is only
+     * the usual one; a reverse proxy or a dev box may put it elsewhere), then
+     * plain port 80, which answers with its redirect to HTTPS. A 200 or a
+     * redirect means the portal is serving; anything else is reported as it is.
+     */
     private static function web(): array
     {
-        $code = trim(self::sh('curl -sk -o /dev/null -w "%{http_code}" --max-time 10 https://127.0.0.1/login'));
-        if ($code === '200') {
-            return ['ok', t('health.msg_web_ok')];
+        $last = 0;
+        foreach (self::portalPorts() as [$port, $tls]) {
+            $last = self::httpStatus($port, $tls);
+            if ($last === 200 || ($last >= 300 && $last < 400)) {
+                return ['ok', t('health.msg_web_ok')];
+            }
         }
-        return ['fail', sprintf(t('health.msg_web_fail'), $code !== '' ? $code : '—')];
+        return ['fail', sprintf(t('health.msg_web_fail'), $last ?: '—')];
+    }
+
+    /** @return array<int, array{0:int, 1:bool}> [port, tls]: SSL vhosts, 443, then plain 80 */
+    public static function portalPorts(): array
+    {
+        $ports = [];
+        foreach (glob('/etc/apache2/sites-enabled/*.conf') ?: [] as $file) {
+            $port = 0;
+            foreach ((array) preg_split('/\R/', (string) @file_get_contents($file)) as $line) {
+                if (preg_match('#<VirtualHost\s+[^>]*:(\d{2,5})\s*>#', (string) $line, $m)) {
+                    $port = (int) $m[1];
+                } elseif (preg_match('#^\s*SSLEngine\s+on#i', (string) $line) && $port > 0) {
+                    $ports[$port] = [$port, true];
+                } elseif (stripos((string) $line, '</VirtualHost>') !== false) {
+                    $port = 0;
+                }
+            }
+        }
+        $ports[443] = $ports[443] ?? [443, true];
+        $ports[80] = $ports[80] ?? [80, false];
+        return array_values($ports);
+    }
+
+    /** The status line of GET /login on 127.0.0.1:$port, 0 when nothing answers. */
+    private static function httpStatus(int $port, bool $tls): int
+    {
+        $ctx = stream_context_create(['ssl' => ['verify_peer' => false, 'verify_peer_name' => false]]);
+        $sock = @stream_socket_client(
+            ($tls ? 'ssl' : 'tcp') . '://127.0.0.1:' . $port,
+            $errno,
+            $errstr,
+            10,
+            STREAM_CLIENT_CONNECT,
+            $ctx
+        );
+        if (!is_resource($sock)) {
+            return 0;
+        }
+        stream_set_timeout($sock, 10);
+        @fwrite($sock, "GET /login HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n");
+        $head = '';
+        while (!feof($sock) && strlen($head) < 4096) {
+            $head .= (string) fread($sock, 512);
+            if (str_contains($head, "\r\n\r\n")) {
+                break;
+            }
+        }
+        fclose($sock);
+        return preg_match('#^HTTP/\S+\s+(\d{3})#m', $head, $m) ? (int) $m[1] : 0;
     }
 
     private static function service(string $unit): array
@@ -126,6 +225,41 @@ final class HealthChecks
         return $state === 'active'
             ? ['ok', sprintf(t('health.msg_service_ok'), $unit)]
             : ['fail', sprintf(t('health.msg_service_down'), $unit, $state ?: 'unknown')];
+    }
+
+    /**
+     * An independent SIP test of this server: Sipfront when it has keys,
+     * otherwise SIPp — or the built-in OPTIONS probe — on loopback, with a
+     * tcpdump capture of the exchange. This check runs as root from cron, so
+     * the capture is allowed; what it tests is the PBX itself, not the carrier.
+     */
+    private static function sipCalltest(): array
+    {
+        if (SipfrontClient::configured()) {
+            return ['ok', t('health.msg_sip_calltest_sipfront')];
+        }
+        $r = SipProbeService::run(6);
+        if (!$r['ran']) {
+            return ['warn', t('health.msg_sip_calltest_failed')];
+        }
+        $engine = t('health.probe_engine_' . $r['engine']);
+        $code = (int) ($r['code'] ?? 0);
+        $cap = $r['capture'];
+        $captured = sprintf(
+            t('health.msg_sip_calltest_capture'),
+            (int) ($cap['sip_messages'] ?? 0),
+            (string) ($cap['source'] ?? 'none')
+        );
+        if ($code >= 200 && $code < 300) {
+            return ['ok', sprintf(t('health.msg_sip_calltest_ok'), $engine, $code, $captured)];
+        }
+        if ($code === 401 || $code === 407) {
+            return ['ok', sprintf(t('health.msg_sip_calltest_auth'), $engine, $code, $captured)];
+        }
+        if ($code === 0) {
+            return ['warn', sprintf(t('health.msg_sip_calltest_noanswer'), $engine, $captured)];
+        }
+        return ['warn', sprintf(t('health.msg_sip_calltest_code'), $engine, $code, $captured)];
     }
 
     private static function trunks(): array

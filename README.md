@@ -18,7 +18,6 @@
   <a href="https://play.google.com/store/apps/details?id=com.mhrgl.AiPBX"><img src="https://img.shields.io/badge/Google_Play-Download-4285F4?logo=googleplay&logoColor=white" alt="Google Play"></a>
   <a href="https://github.com/mahirgul/AiPBX/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://github.com/sponsors/mahirgul"><img src="https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub"></a>
-  <a href="https://signup.upcloud.com/?promo=affiliate-aipbx250&amp;utm_source=aipbx&amp;utm_medium=affiliate&amp;utm_campaign=affiliate-aipbx250"><img src="https://img.shields.io/badge/UpCloud-$250_Free_Credit-7b1fa2?logo=cloud&amp;logoColor=white" alt="Deploy on UpCloud"></a>
   <img src="https://img.shields.io/badge/Ubuntu-26.04%20LTS-E95420?logo=ubuntu&logoColor=white" alt="Ubuntu 26.04 LTS">
   <img src="https://img.shields.io/badge/Asterisk-22-green" alt="Asterisk 22">
   <img src="https://img.shields.io/badge/PHP-8.x-blue?logo=php" alt="PHP 8">
@@ -34,9 +33,9 @@
   <a href="docs/README.md">📚 Documentation</a> •
   <a href="#-architecture">🏗️ Architecture</a> •
   <a href="CHANGELOG.md">📋 Changelog</a> •
-  <a href="ROADMAP.md">🗺️ Roadmap</a> •
+  <a href="docs/roadmap.md">🗺️ Roadmap</a> •
   <a href="#-contributing">🤝 Contributing</a> •
-  <a href="#-sponsor--cloud-partners">💖 Sponsor &amp; Partners</a> •
+  <a href="#-sponsor">💖 Sponsor</a> •
   <a href="#️-disclaimer--legal-notice--sorumluluk-reddi">⚖️ Disclaimer</a>
 </p>
 
@@ -45,14 +44,7 @@
 ## 🚀 Quick Install
 
 ```bash
-# Recommended one-liner installation (installs the latest release)
-curl -fsSL aipbx.bid/i | sudo bash
-```
-
-Or via direct GitHub raw URL:
-
-```bash
-# Alternative direct GitHub script
+# One-liner installation (installs the latest release)
 curl -fsSL https://raw.githubusercontent.com/mahirgul/AiPBX/main/install.sh | sudo bash
 ```
 
@@ -74,8 +66,6 @@ The installer:
 4. 📄 Prints the credentials and saves them to `/root/aipbx-credentials.txt`
 
 > 💡 **Requirements**: Ubuntu 26.04 LTS · 2 GB RAM · 10 GB disk · root access
->
-> ☁️ **Cloud Server**: Deploy on **[UpCloud](https://signup.upcloud.com/?promo=affiliate-aipbx250&amp;utm_source=aipbx&amp;utm_medium=affiliate&amp;utm_campaign=affiliate-aipbx250)** (fast MaxIOPS storage) with **$250 free cloud credits** using promo code `affiliate-aipbx250`.
 >
 > 🛠️ **Developers**: `AIPBX_REF=main` installs the current development branch instead of the latest release.
 
@@ -175,13 +165,6 @@ release first; `aipbx-update` does both steps in one run. See [INSTALL.md](INSTA
 - **Call recordings** — converted automatically to mono 16 kbps MP3 (~8× smaller than WAV), played in
   CDR reports, *My Phone* and the apps
 
-### ☎️ IP Desk Phones, Auto-Discovery & Zero-Touch Provisioning
-- **Local Network Phone Discovery (`/phones`)** — automated discovery daemon (`aipbx-phone-discovery`) monitors local subnets, DHCP lease files, ARP cache, and `dnsmasq` logs every 5 minutes; new devices appear instantly in the *Discovered on the network* panel
-- **Zero-Touch Pool Provisioning** — automatically allocates extensions from an administrator-configured pool (`provision_discovery_pool`) and maps detected OUI vendors to default models (`provision_discovery_models`), producing TFTP/HTTP configuration files without manual entry
-- **Multi-Vendor Provisioning Engine** — automated configuration generation for Yealink (T3x, T4x, T5x), Fanvil (X series), Grandstream (GXP, GRP), Snom, Gigaset, and Cisco (SPA series and CallManager enterprise series)
-- **Cisco 7900 & 8800 CallManager Series** — native `SEP<MAC>.cnf.xml` XML profile generation, XML directory services, and line keys across 11 enterprise models (`cisco-cm-7941g` through `7975g`, `8841`, `8851`, `8861`); see [docs/cisco-callmanager.md](docs/cisco-callmanager.md)
-- **Automated SCCP-to-SIP Firmware Switching** — model-by-model firmware migration pipeline that moves Cisco 7900 phones from proprietary SCCP to Cisco SIP firmware upon restart, with server-side `.loads` manifest validation before deployment
-
 ### 📠 Fax
 - **Inbound/outbound fax** — T.38 and G.711 (res_fax + SpanDSP)
 - **Compose in the browser** (rich-text editor) or **upload a PDF**; resend failed faxes
@@ -221,9 +204,9 @@ release first; `aipbx-update` does both steps in one run. See [INSTALL.md](INSTA
   </a>
 </p>
 
-- **Android** (Kotlin) — [AiPBX-Android](https://github.com/mahirgul/AiPBX-Android): WebRTC calling with push wake-up and a foreground service, chat,
+- **Android** (Kotlin) — WebRTC calling with push wake-up and a foreground service, chat,
   directory with presence, call history, DND / call forward, in-app log viewer. Available on [Google Play](https://play.google.com/store/apps/details?id=com.mhrgl.AiPBX).
-- **iOS** (SwiftUI, CallKit) — [AiPBX-ios](https://github.com/mahirgul/AiPBX-ios): calling with native incoming-call screen, chat, directory, features.
+- **iOS** (SwiftUI, CallKit) — calling with native incoming-call screen, chat, directory, features
 - **Sign-in** with username + password (+ 2FA code), by scanning a QR code on the portal, or with the
   one-time link in the invitation e-mail
 - **Same version as the server** — the Android app of release 1.50.1 is 1.50.1 too
@@ -323,8 +306,8 @@ AiPBX/
 ├── plugins/                # 🔌 Bundled plugins: official (auto-dialer, ms-teams, web-widgets, ai-*, …) and community
 ├── ai/                     # 🤖 Local & cloud AI service (aipbx-ai, Python)
 ├── chat/                   # 💬 Go WebSocket chat service (aipbx-chat)
-├── android/                # 📱 Pointer to [AiPBX-Android](https://github.com/mahirgul/AiPBX-Android)
-├── ios/                    # 🍎 Pointer to [AiPBX-ios](https://github.com/mahirgul/AiPBX-ios)
+├── android/                # 📱 Kotlin Android app
+├── ios/                    # 🍎 SwiftUI iOS app
 ├── integrations/wordpress/ # 🧩 WordPress click-to-call & callback plugin
 ├── asterisk-config/        # ☎️ Asterisk base configuration
 ├── sounds/                 # 🔊 bundled custom sounds + Turkish prompt texts (core-sounds-tr.txt)
@@ -348,9 +331,9 @@ AiPBX/
 | 🛡️ **Edge** | nginx stream on 443 (ALPN + PROXY protocol) → Apache |
 | 💬 **Chat** | Go + gorilla/websocket |
 | 🎧 **WebRTC** | coturn TURN/STUN, DTLS-SRTP, Opus |
-| 🤖 **Android** | Kotlin, WebRTC, FCM ([AiPBX-Android](https://github.com/mahirgul/AiPBX-Android)) |
-| 🍎 **iOS** | Swift, SwiftUI, CallKit ([AiPBX-ios](https://github.com/mahirgul/AiPBX-ios)) |
-| ⚙️ **CI** | GitHub Actions: PHPStan, PHPUnit, page smoke tests, Go tests |
+| 🤖 **Android** | Kotlin, WebRTC, FCM |
+| 🍎 **iOS** | Swift, SwiftUI, CallKit |
+| ⚙️ **CI** | GitHub Actions: PHPStan, PHPUnit, page smoke tests, Go tests, Android/iOS builds |
 
 ---
 
@@ -362,20 +345,6 @@ AiPBX/
 - 🔥 Ports and updating: [INSTALL.md](INSTALL.md).
 - ✉️ Set an e-mail relay (fax-to-e-mail, voicemail, invitations): [docs/mail.md](docs/mail.md).
 - 📖 Configuring trunks, routes, roles and more: [documentation](docs/README.md).
-
----
-
-## 🗺️ Project Roadmap & Architecture Vision
-
-AiPBX follows a transparent, phased engineering roadmap. For the complete specification, architectural diagrams, and upcoming milestones, see **[ROADMAP.md](ROADMAP.md)** (or online at [aipbx.bid/docs/roadmap](https://aipbx.bid/docs/roadmap)).
-
-- **✅ Wave 1 (Delivered in v1.50.10):** Trunk rate limits, early media announcements, night dialing protection, voicemail PIN policies.
-- **✅ Wave 2 (Delivered in v1.50.11):** Sandboxed scheduled background tasks (`systemd-run`), encrypted external database integrations, IVR caller lookup steps, PBX fine-tuning & Asterisk night restarts.
-- **🚀 Wave 3 (In Active Development & Planning):**
-  - **Modular Containerization (Decoupled Docker Compose):** High-performance decoupled service stack (`aipbx-asterisk` on host network for zero-jitter media, `aipbx-web` for zero-call-downtime hot updates, `aipbx-db`, `aipbx-ai`, `aipbx-signaling`).
-  - **True Multi-Tenant Cloud PBX:** Scalable SaaS carrier architecture with Edge SIP Session Border Controllers (SBC / Kamailio) and isolated per-tenant Asterisk nodes.
-  - **Group Voice Conferences from Instant Chat:** WebRTC conference rooms dynamically bridged from mobile and web chat groups.
-  - **Remote GPU Speech Engines:** Offloaded high-fidelity neural TTS engines on dedicated GPU compute instances.
 
 ---
 
@@ -409,23 +378,24 @@ Code comments, commit messages and documentation are written in English.
 
 ---
 
-## 💖 Sponsor & Cloud Partners
+## 💖 Sponsor
 
-If you find AiPBX useful for your organization or projects, consider sponsoring its ongoing development and maintenance:
+AiPBX is MIT-licensed and stays that way: no seat counts, no licence keys, no gated features. If it
+earns a place in your stack and you want to keep it moving, you can fund the work:
+
+- **[Support the build](https://echoguard.s2insights.cloud/support.html)** — voluntary contributions in
+  CAD, by card or PayPal. No membership, nothing gated.
+- **[Paid work, if you would rather not run it yourself](https://echoguard.s2insights.cloud/offers.html)** —
+  install and hand-over, or monthly care. The software stays free either way.
+
+Sponsoring buys time to work on the project. It is not a support contract and it does not buy
+features: everything in the installer is in every copy.
 
 <p align="center">
-  <a href="https://github.com/sponsors/mahirgul">
-    <img src="https://img.shields.io/badge/Sponsor%20on%20GitHub-%E2%9D%A4-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor on GitHub">
+  <a href="https://github.com/shido6/AiPBX?sponsor=1">
+    <img src="https://img.shields.io/badge/Sponsor%20AiPBX-%E2%9D%A4-ea4aaa?style=for-the-badge&logo=githubsponsors&logoColor=white" alt="Sponsor AiPBX">
   </a>
 </p>
-
-### ☁️ Recommended Cloud Infrastructure — UpCloud
-
-AiPBX runs great on [UpCloud](https://signup.upcloud.com/?promo=affiliate-aipbx250&amp;utm_source=aipbx&amp;utm_medium=affiliate&amp;utm_campaign=affiliate-aipbx250) high-performance European and global cloud servers with ultra-fast MaxIOPS block storage.
-
-Sign up via our affiliate link to claim **$250 in free cloud credits**:
-- **Affiliate Link:** [signup.upcloud.com (with $250 credit)](https://signup.upcloud.com/?promo=affiliate-aipbx250&amp;utm_source=aipbx&amp;utm_medium=affiliate&amp;utm_campaign=affiliate-aipbx250)
-- **Promo Code:** `affiliate-aipbx250`
 
 ---
 
@@ -437,4 +407,12 @@ Sign up via our affiliate link to claim **$250 in free cloud credits**:
 
 ## 👤 Author & Creator
 
-**Mahir Gül** · [mhrgl.com](https://mhrgl.com) · [LinkedIn](https://www.linkedin.com/in/mhrgl/) · [@mahirgul](https://github.com/mahirgul)
+**Mahir Gül** · [mhrgl.com](https://mhrgl.com) · [@mahirgul](https://github.com/mahirgul)
+
+The PBX, the portal and the mobile apps are his work and that of AiPBX's contributors. That is the
+foundation, and it is credited on purpose.
+
+**EchoGuard's layer** — the plain-English change engine, Greg the AI VoIP engineer, and the Echo,
+Relay and Forge agents — is built by **Kaiel**: [echoguard.s2insights.cloud](https://echoguard.s2insights.cloud) ·
+[github.com/shido6](https://github.com/shido6). The commits that made it are in this repository's
+history, one reason per change.

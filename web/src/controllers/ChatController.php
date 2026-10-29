@@ -2,6 +2,9 @@
 
 require_once __DIR__ . '/../../api/mobile/auth_helper.php';
 require_once __DIR__ . '/../services/ChatSettingsService.php';
+require_once __DIR__ . '/../services/GregService.php';
+require_once __DIR__ . '/../services/GregReadinessService.php';
+require_once __DIR__ . '/../services/AnamService.php';
 
 /**
  * Chat page (/chat).
@@ -16,6 +19,10 @@ class ChatController extends BaseController
     {
         requireLogin();
         static::requireModule('chat', 'view');
+
+        // A shift change is noticed the first time somebody opens the phones,
+        // so the handoff is in AGENTS.md before the greeting is rendered.
+        GregHandoffService::ensure();
 
         $user = getCurrentUser();
         $ext = trim($user['extension'] ?? '');
@@ -53,6 +60,10 @@ class ChatController extends BaseController
             'token' => $token,
             'page_title' => $page_title,
             'is_admin' => $isAdmin,
+            // The same temperature as the settings card, so an administrator
+            // working in Greg's chat sees the handover gap where he is used.
+            // Not computed for ordinary users: it is not their job to fix it.
+            'greg_readiness' => $isAdmin ? GregReadinessService::report() : null,
             'delete_window' => ChatSettingsService::deleteWindowMinutes(),
         ], ['title' => $page_title] + $notices);
     }

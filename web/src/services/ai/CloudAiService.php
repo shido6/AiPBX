@@ -17,7 +17,12 @@ require_once dirname(__DIR__, 2) . '/secret_box.php';
 require_once dirname(__DIR__, 2) . '/audit_log.php';
 require_once dirname(__DIR__) . '/AiTtsService.php';
 
-final class CloudAiException extends RuntimeException
+class CloudAiException extends RuntimeException
+{
+}
+
+/** A free provider is already answering another engineer; the turnstile timed out. */
+final class CloudAiBusyException extends CloudAiException
 {
 }
 
@@ -157,6 +162,78 @@ class CloudAiService
     {
         return array_values(array_filter(array_keys(self::providers()),
             fn($id) => in_array($cap, self::provider($id)['caps'], true) && self::configured($id)));
+    }
+
+    /**
+     * Several engineers can share one AI account, but only if the account can
+     * carry more than one request at a time. Free plans publish both a rate
+     * limit and a concurrency limit, so a second engineer's request is queued
+     * behind the first instead of both failing with 429; a paid provider is
+     * allowed to run in parallel.
+     *
+     * This is a description of the configured accounts, not a licence check:
+     * only the provider knows which plan a key belongs to. The UI uses it to
+     * say "serialized" or "parallel" honestly.
+     *
+     * @return array{providers:int, free:int, paid:int, parallel:bool,
+     *               free_titles:list<string>, paid_titles:list<string>}
+     */
+    public static function teamStatus(): array
+    {
+        $llm = self::withCap('llm');
+        $free = array_values(array_filter($llm, fn(string $id) => self::provider($id)['free']));
+        $paid = array_values(array_filter($llm, fn(string $id) => !self::provider($id)['free']));
+        return [
+            'providers' => count($llm),
+            'free' => count($free),
+            'paid' => count($paid),
+            'parallel' => count($paid) > 0,
+            'free_titles' => array_map(fn(string $id) => self::provider($id)['title'], $free),
+            'paid_titles' => array_map(fn(string $id) => self::provider($id)['title'], $paid),
+        ];
+    }
+
+    /**
+     * Run one provider call behind that provider's turnstile.
+     *
+     * A free plan handles one request at a time. Two engineers asking at once
+     * would otherwise race into the same rate limit and both get 429, so the
+     * second waits (temporal multiplexing) instead of colliding. Paid
+     * providers are not serialized: their plans allow concurrent sessions.
+     *
+     * The lock is per provider, not global, so a queued free account never
+     * blocks a paid account. The lock is released on every exit path, and if
+     * it cannot be created the call still runs rather than breaking AI.
+     *
+     * @template T
+     * @param callable():T $call
+     * @param float $waitSeconds how long to queue before refusing the request
+     * @return T
+     */
+    public static function withProviderSlot(string $id, callable $call, float $waitSeconds = 15.0)
+    {
+        if (!self::provider($id)['free']) {
+            return $call();
+        }
+        $path = rtrim(sys_get_temp_dir(), '/') . '/aipbx-ai-' . preg_replace('/[^a-z0-9_]/', '', $id) . '.lock';
+        $fp = @fopen($path, 'c');
+        if ($fp === false) {
+            return $call();
+        }
+        $deadline = microtime(true) + max(0.0, $waitSeconds);
+        while (!flock($fp, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) >= $deadline) {
+                fclose($fp);
+                throw new CloudAiBusyException(sprintf(t('ai_cloud.err_provider_busy'), self::provider($id)['title']));
+            }
+            usleep(100000);
+        }
+        try {
+            return $call();
+        } finally {
+            flock($fp, LOCK_UN);
+            fclose($fp);
+        }
     }
 
     /** The page's view of every provider: secrets only masked. */
@@ -404,6 +481,14 @@ class CloudAiService
         if (!in_array('llm', self::provider($id)['caps'], true) || !self::configured($id)) {
             throw new CloudAiException(t('ai_cloud.err_no_llm'));
         }
+        // Free plans get one request at a time; paid plans are not queued.
+        return self::withProviderSlot($id,
+            static fn() => self::chatOne($id, $prompt, $maxTokens, $timeout));
+    }
+
+    /** The actual request, already validated and inside its provider slot. */
+    private static function chatOne(string $id, string $prompt, int $maxTokens, int $timeout): string
+    {
         if ($id === 'google_ai') {
             $d = self::json(TtsHttp::request('POST', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent',
                 ['x-goog-api-key' => self::config($id)['api_key'] ?? '', 'Content-Type' => 'application/json'],
@@ -423,6 +508,50 @@ class CloudAiService
         ]), $timeout), $id);
         self::count($id, 'llm_tokens', (float) ($d['usage']['total_tokens'] ?? 0));
         return trim((string) ($d['choices'][0]['message']['content'] ?? ''));
+    }
+
+    /**
+     * Ask the first configured language model that answers.
+     *
+     * A free tier can run out of tokens and a provider can have an outage;
+     * one configured account must not be a single point of failure. Providers
+     * are tried in the same order the page lists them, and only the provider
+     * that answers is counted. Throws when every configured provider fails.
+     *
+     * The prompt is sent to whichever configured provider answers, so an
+     * administrator should only configure providers they are willing to send
+     * the data to.
+     */
+    public static function chatAny(string $prompt, int $maxTokens = 300, int $timeout = 30): string
+    {
+        $providers = self::withCap('llm');
+        if (!$providers) {
+            throw new CloudAiException(t('ai_cloud.err_no_llm'));
+        }
+        $lastError = null;
+        foreach ($providers as $id) {
+            try {
+                $reply = self::chat($id, $prompt, $maxTokens, $timeout);
+                if (trim($reply) !== '') {
+                    return $reply;
+                }
+            } catch (\Throwable $e) {
+                // Quota, timeout, bad key, provider 5xx: try the next account.
+                $lastError = $e;
+            }
+        }
+        if ($lastError instanceof CloudAiBusyException) {
+            // Every attempt ended in the same turnstile: say "still answering
+            // another engineer", not "check your keys".
+            throw $lastError;
+        }
+        if ($lastError !== null) {
+            // The page shows one honest summary, not one provider's error as
+            // if it were the whole truth; the detail stays in the server log.
+            error_log('CloudAiService: every configured language model failed: ' . $lastError->getMessage());
+        }
+        $tried = implode(', ', array_map(fn(string $id) => self::provider($id)['title'], $providers));
+        throw new CloudAiException(sprintf(t('ai_cloud.err_all_failed_providers'), $tried));
     }
 
     /** @return array{0: string, 1: string} body and Content-Type */

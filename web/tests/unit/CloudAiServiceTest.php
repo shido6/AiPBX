@@ -190,4 +190,104 @@ final class CloudAiServiceTest extends TestCase
             $this->assertSame(t('ai_cloud.err_base_url'), $e->getMessage());
         }
     }
+
+    public function testChatAnyFallsBackWhenAProviderRunsOut(): void
+    {
+        getDB()->exec("DELETE FROM ai_cloud_usage WHERE provider IN ('google_ai', 'groq')");
+        CloudAiService::save('google_ai', ['api_key' => 'google-test-key']);
+        CloudAiService::save('groq', ['api_key' => 'groq-test-key']);
+
+        TtsHttp::$transport = function (string $method, string $url, array $headers, ?string $body) {
+            $this->calls[] = compact('method', 'url', 'headers', 'body');
+            if (str_contains($url, 'generativelanguage.googleapis.com')) {
+                // What a provider at its free-tier limit actually returns.
+                return ['status' => 429, 'body' => json_encode(['error' => ['message' => 'quota exhausted']]), 'type' => 'application/json'];
+            }
+            return ['status' => 200, 'body' => json_encode([
+                'choices' => [['message' => ['content' => ' yedek yanit ']]],
+                'usage' => ['total_tokens' => 9],
+            ]), 'type' => 'application/json'];
+        };
+
+        $this->assertSame('yedek yanit', CloudAiService::chatAny('hi'));
+        $this->assertCount(2, $this->calls);
+        $this->assertStringContainsString('generativelanguage.googleapis.com', $this->calls[0]['url']);
+        $this->assertStringContainsString('api.groq.com', $this->calls[1]['url']);
+        $this->assertSame(9, (int) CloudAiService::usageThisMonth()['groq']['llm_tokens']);
+    }
+
+    public function testTeamStatusShowsWhetherEngineersCanRunInParallel(): void
+    {
+        $this->assertFalse(CloudAiService::teamStatus()['parallel'], 'no provider means no parallel work');
+
+        CloudAiService::save('groq', ['api_key' => 'groq-test-key']);
+        $free = CloudAiService::teamStatus();
+        $this->assertSame(1, $free['providers']);
+        $this->assertSame(1, $free['free']);
+        $this->assertSame(0, $free['paid']);
+        $this->assertFalse($free['parallel'], 'a free-only account is serialized');
+
+        CloudAiService::save('openai', ['api_key' => 'sk-test-1234567890']);
+        $mixed = CloudAiService::teamStatus();
+        $this->assertSame(2, $mixed['providers']);
+        $this->assertSame(1, $mixed['paid']);
+        $this->assertTrue($mixed['parallel'], 'a paid provider allows parallel sessions');
+    }
+
+    public function testAFreeProviderSlotIsReleasedAfterAFailedCall(): void
+    {
+        // The first call throws inside the slot. A leaked lock would make the
+        // next one wait for the 15-second deadline (or throw); it must not.
+        try {
+            CloudAiService::withProviderSlot('groq', static function (): void {
+                throw new RuntimeException('provider failed');
+            });
+            $this->fail('the exception must reach the caller');
+        } catch (RuntimeException $e) {
+            $this->assertSame('provider failed', $e->getMessage());
+        }
+
+        $started = microtime(true);
+        $answer = CloudAiService::withProviderSlot('groq', static fn() => 'second engineer');
+        $this->assertSame('second engineer', $answer);
+        $this->assertLessThan(2.0, microtime(true) - $started, 'the failed call must release its slot');
+    }
+
+    public function testAFreeProviderRefusesWhenTheTurnstileStaysBusy(): void
+    {
+        $path = rtrim(sys_get_temp_dir(), '/') . '/aipbx-ai-groq.lock';
+        $held = fopen($path, 'c');
+        $this->assertNotFalse($held, 'test could not open the provider lock');
+        $this->assertTrue(flock($held, LOCK_EX | LOCK_NB), 'test could not take the provider lock');
+        try {
+            CloudAiService::withProviderSlot('groq', static fn() => 'never', 0.1);
+            $this->fail('a busy free provider must refuse, not run in parallel');
+        } catch (CloudAiBusyException $e) {
+            $this->assertStringContainsString('Groq', $e->getMessage());
+        } finally {
+            flock($held, LOCK_UN);
+            fclose($held);
+        }
+    }
+
+    public function testChatAnyNamesEveryProviderWhenAllFail(): void
+    {
+        getDB()->exec("DELETE FROM ai_cloud_usage WHERE provider IN ('google_ai', 'groq')");
+        CloudAiService::save('google_ai', ['api_key' => 'google-test-key']);
+        CloudAiService::save('groq', ['api_key' => 'groq-test-key']);
+
+        TtsHttp::$transport = function (string $method, string $url, array $headers, ?string $body) {
+            $this->calls[] = compact('method', 'url', 'headers', 'body');
+            return ['status' => 503, 'body' => json_encode(['error' => ['message' => 'provider down']]), 'type' => 'application/json'];
+        };
+
+        try {
+            CloudAiService::chatAny('hi');
+            $this->fail('Every provider was down, chatAny must throw.');
+        } catch (CloudAiException $e) {
+            $this->assertStringContainsString('Google AI Studio', $e->getMessage());
+            $this->assertStringContainsString('Groq', $e->getMessage());
+        }
+        $this->assertCount(2, $this->calls);
+    }
 }

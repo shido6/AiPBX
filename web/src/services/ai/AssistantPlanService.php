@@ -34,38 +34,46 @@ class AssistantPlanService
         }
         $action = $plan['action'] ?? '';
         $arguments = $plan['arguments'] ?? [];
-        $before = self::captureBefore($action, $arguments);
 
-        switch ($action) {
-            case 'extension.forward':
-                self::applyForward($arguments);
-                break;
-            case 'extension.voicemail':
-                self::applyVoicemail($arguments);
-                break;
-            case 'extension.rename':
-                self::applyRename($arguments);
-                break;
-            case 'ringgroup.members':
-            case 'ringgroup.timeout':
-                self::applyRingGroup($arguments);
-                break;
-            case 'queue.members':
-            case 'queue.timeout':
-                self::applyQueue($arguments);
-                break;
-            case 'timecondition.create':
-                self::applyTimeCondition($arguments);
-                break;
-            case 'voicemail.greeting':
-                self::applyGreeting($arguments);
-                break;
-            default:
-                throw new RuntimeException("no applier for action {$action}");
-        }
+        // Two engineers can apply to the same extension, queue or ring group
+        // at the same moment. The read of the before-value and the write must
+        // be one critical section, or both capture the old state and the
+        // second change silently becomes the first one's undo target. The
+        // lock is per resource and short: different extensions do not wait.
+        return self::withResourceLock($arguments, static function () use ($plan, $request, $action, $arguments): int {
+            $before = self::captureBefore($action, $arguments);
 
-        $summary = self::summary($action, $arguments);
-        return self::record($request, $plan, $summary, $before, 'applied');
+            switch ($action) {
+                case 'extension.forward':
+                    self::applyForward($arguments);
+                    break;
+                case 'extension.voicemail':
+                    self::applyVoicemail($arguments);
+                    break;
+                case 'extension.rename':
+                    self::applyRename($arguments);
+                    break;
+                case 'ringgroup.members':
+                case 'ringgroup.timeout':
+                    self::applyRingGroup($arguments);
+                    break;
+                case 'queue.members':
+                case 'queue.timeout':
+                    self::applyQueue($arguments);
+                    break;
+                case 'timecondition.create':
+                    self::applyTimeCondition($arguments);
+                    break;
+                case 'voicemail.greeting':
+                    self::applyGreeting($arguments);
+                    break;
+                default:
+                    throw new RuntimeException("no applier for action {$action}");
+            }
+
+            $summary = self::summary($action, $arguments);
+            return self::record($request, $plan, $summary, $before, 'applied');
+        });
     }
 
     /** Undo one applied change from its recorded before-value. */
@@ -75,21 +83,80 @@ class AssistantPlanService
         if ($row === null) {
             throw new RuntimeException(t('ai_assistant.err_no_row'));
         }
-        if (($row['status'] ?? '') !== 'applied' || $row['before_json'] === null || $row['before_json'] === '') {
+        $before = json_decode((string) ($row['before_json'] ?? ''), true);
+        if (!is_array($before)) {
             throw new RuntimeException(t('ai_assistant.err_not_undoable'));
         }
-        $before = json_decode((string) $row['before_json'], true);
-        if (!is_array($before) || ($before['undone'] ?? false)) {
-            throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+
+        return self::withResourceLock($before['arguments'] ?? [], static function () use ($id): string {
+            // Re-read inside the critical section: another engineer may have
+            // rolled this row back between the first read and the lock.
+            $row = self::get($id);
+            if ($row === null) {
+                throw new RuntimeException(t('ai_assistant.err_no_row'));
+            }
+            if (($row['status'] ?? '') !== 'applied' || $row['before_json'] === null || $row['before_json'] === '') {
+                throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+            }
+            $before = json_decode((string) $row['before_json'], true);
+            if (!is_array($before) || ($before['undone'] ?? false)) {
+                throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+            }
+            $action = self::UNDO[(string) $row['action']] ?? '';
+            if ($action === '') {
+                throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+            }
+            self::run($action, $before['arguments'] ?? []);
+            // Only the first undo wins, even if the lock is ever bypassed.
+            $upd = getDB()->prepare("UPDATE pbx_ai_changes SET status = 'rolled_back', rolled_back_at = NOW()
+                                     WHERE id = ? AND status = 'applied'");
+            $upd->execute([$id]);
+            if ($upd->rowCount() !== 1) {
+                throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+            }
+            return (string) ($row['summary'] ?? '');
+        });
+    }
+
+    /**
+     * One short MySQL advisory lock per resource (extension, group, queue or
+     * time condition), so concurrent engineers serialize only when they touch
+     * the same thing. GET_LOCK is connection-scoped; RELEASE_LOCK runs in the
+     * finally block even when the change throws.
+     */
+    private static function withResourceLock(array $arguments, callable $change)
+    {
+        $key = self::resourceKey($arguments);
+        $lock = 'aipbx:assistant:' . substr(sha1($key), 0, 40);
+        $db = getDB();
+        $st = $db->prepare('SELECT GET_LOCK(?, 5)');
+        $st->execute([$lock]);
+        if ((int) $st->fetchColumn() !== 1) {
+            throw new RuntimeException(t('ai_assistant.err_busy'));
         }
-        $action = self::UNDO[(string) $row['action']] ?? '';
-        if ($action === '') {
-            throw new RuntimeException(t('ai_assistant.err_not_undoable'));
+        try {
+            return $change();
+        } finally {
+            $db->prepare('SELECT RELEASE_LOCK(?)')->execute([$lock]);
         }
-        self::run($action, $before['arguments'] ?? []);
-        getDB()->prepare("UPDATE pbx_ai_changes SET status = 'rolled_back', rolled_back_at = NOW() WHERE id = ?")
-            ->execute([$id]);
-        return (string) ($row['summary'] ?? '');
+    }
+
+    /** The one thing a change touches; unrelated changes never queue. */
+    private static function resourceKey(array $a): string
+    {
+        if (isset($a['group'])) {
+            return 'ringgroup:' . (int) $a['group'];
+        }
+        if (isset($a['queue'])) {
+            return 'queue:' . (int) $a['queue'];
+        }
+        if (isset($a['extension'])) {
+            return 'extension:' . trim((string) $a['extension']);
+        }
+        if (isset($a['title'])) {
+            return 'timecondition:' . mb_strtolower(trim((string) $a['title']));
+        }
+        return 'global';
     }
 
     public static function get(int $id): ?array

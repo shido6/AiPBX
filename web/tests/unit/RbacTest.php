@@ -44,6 +44,8 @@ final class RbacTest extends TestCase
         'ai_models',
         'ai_cloud',
         'ai_apps',
+        'ai_voip_engineer',
+        'echo',
         'assistant',
         'health',
         'call_quality',

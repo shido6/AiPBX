@@ -1,4 +1,10 @@
-# GitHub Sponsors configuration
-# https://docs.github.com/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/displaying-a-sponsor-button-in-your-repository
-
-github: [mahirgul]
+# Funding links for AiPBX. GitHub renders these as the repository's Sponsor
+# button; each entry needs to be a real page a supporter can pay on.
+#
+# `github:` only appears once the account is enrolled in GitHub Sponsors. Until
+# that is approved GitHub ignores the entry and the button opens the custom
+# links below, which are live today.
+github: shido6
+custom:
+  - https://echoguard.s2insights.cloud/support.html
+  - https://echoguard.s2insights.cloud/offers.html

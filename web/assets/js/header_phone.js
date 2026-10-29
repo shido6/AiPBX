@@ -78,6 +78,9 @@ ringerAudio.loop = true;
 var ringbackAudio = new Audio(window.WEBRTC_RING_OUTGOING_URL || "/assets/sounds/ring1.mp3");
 ringbackAudio.loop = true;
 var activeCallNotification = null;
+// One speaker-test sound at a time; the play button toggles to stop while it
+// rings. Kept here (not in testPhoneSpeaker) so stop works from every caller.
+var phoneSpeakerTestAudio = null;
 
 // =========================================================================
 // 1. PHONE MODE & BREAK STATUS MANAGEMENT
@@ -825,6 +828,7 @@ function openPhoneSettingsModal() {
 }
 
 function closePhoneSettingsModal() {
+    stopPhoneSpeakerTest();
     UIHelper.closeOverlayModal("phoneSettingsModal");
 }
 
@@ -913,6 +917,7 @@ function savePhoneMicDevice(val) {
 }
 
 function savePhoneSpeakerDevice(val) {
+    stopPhoneSpeakerTest();
     localStorage.setItem("phone_speaker_device_id", val);
     const s1 = document.getElementById("phone_speaker_select");
     const s2 = document.getElementById("my_phone_speaker_select");
@@ -935,18 +940,77 @@ function savePhoneRingVolume(val) {
     if (lbl) lbl.textContent = pct + "%";
 }
 
+function phoneSpeakerTestButtons() {
+    return ["phone_speaker_test_btn", "my_phone_speaker_test_btn"]
+        .map(id => document.getElementById(id))
+        .filter(Boolean);
+}
+
+function setPhoneSpeakerTestUi(playing) {
+    const label = playing ? __('js.phone.test_sound_stop') : __('js.phone.test_sound_play');
+    phoneSpeakerTestButtons().forEach(btn => {
+        const icon = btn.querySelector("i");
+        const iconClass = "fas " + (playing ? "fa-stop" : "fa-play");
+        if (icon) icon.className = iconClass;
+        else btn.innerHTML = '<i class="' + iconClass + '"></i>';
+        btn.title = label;
+        btn.setAttribute("aria-label", label);
+        btn.setAttribute("aria-pressed", playing ? "true" : "false");
+        btn.classList.toggle("btn-danger", playing);
+        btn.classList.toggle("btn-secondary", !playing);
+    });
+}
+
+/** Stop the speaker test from anywhere (button, modal close, call, tab switch). */
+function stopPhoneSpeakerTest() {
+    const audio = phoneSpeakerTestAudio;
+    phoneSpeakerTestAudio = null;
+    if (audio) {
+        try {
+            audio.pause();
+            audio.currentTime = 0;
+        } catch (e) {}
+    }
+    setPhoneSpeakerTestUi(false);
+}
+
 function testPhoneSpeaker() {
+    // The button is a toggle: a second press stops the sound.
+    if (phoneSpeakerTestAudio) {
+        stopPhoneSpeakerTest();
+        return;
+    }
+
     const spkSelect = document.getElementById("phone_speaker_select") || document.getElementById("my_phone_speaker_select");
     const savedId = (spkSelect && spkSelect.value) ? spkSelect.value : (localStorage.getItem("phone_speaker_device_id") || "default");
     const testAudio = new Audio(window.WEBRTC_RING_OUTGOING_URL || "/assets/sounds/ring1.mp3");
-    testAudio.volume = parseFloat(localStorage.getItem("phone_ring_volume")) || 1;
+
+    // 0 is a valid ring volume (silent); do not turn it into 100%.
+    const savedVol = parseFloat(localStorage.getItem("phone_ring_volume"));
+    testAudio.volume = isNaN(savedVol) ? 1 : Math.min(1, Math.max(0, savedVol));
+    phoneSpeakerTestAudio = testAudio;
+
+    const finish = () => {
+        if (phoneSpeakerTestAudio !== testAudio) return;
+        phoneSpeakerTestAudio = null;
+        setPhoneSpeakerTestUi(false);
+    };
+    testAudio.addEventListener("ended", finish, { once: true });
+    testAudio.addEventListener("error", finish, { once: true });
+
+    const start = () => {
+        if (phoneSpeakerTestAudio !== testAudio) return;
+        setPhoneSpeakerTestUi(true);
+        testAudio.play().catch(finish);
+    };
+
     if (savedId && savedId !== "default" && typeof testAudio.setSinkId === "function") {
-        testAudio.setSinkId(savedId).then(() => testAudio.play()).catch(err => {
+        testAudio.setSinkId(savedId).then(start).catch(err => {
             console.warn("Could not set the test speaker:", err);
-            testAudio.play().catch(() => {});
+            start();
         });
     } else {
-        testAudio.play().catch(() => {});
+        start();
     }
 }
 
@@ -955,6 +1019,8 @@ function testPhoneSpeaker() {
 // =========================================================================
 
 function playRingtone() {
+    // Never mix the test sound with a real call.
+    stopPhoneSpeakerTest();
     try {
         ringerAudio.currentTime = 0;
         const p = ringerAudio.play();
@@ -972,6 +1038,7 @@ function stopRingtone() {
 }
 
 function playRingback() {
+    stopPhoneSpeakerTest();
     try {
         ringbackAudio.currentTime = 0;
         const p = ringbackAudio.play();

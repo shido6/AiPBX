@@ -124,27 +124,26 @@ class AssistantModel
         }
     }
 
-    /** First configured CloudAiService LLM account, or null. */
+    /**
+     * The configured CloudAiService language models, tried in order.
+     *
+     * Free tiers run out and providers have outages. CloudAiService::chatAny
+     * moves to the next configured account instead of failing the whole
+     * answer, so two accounts are a business-continuity pair rather than two
+     * keys for the same single point of failure.
+     */
     private static function cloudChat(): ?callable
     {
-        $ids = CloudAiService::withCap('llm');
-        foreach ($ids as $id) {
-            try {
-                if (!CloudAiService::configured($id)) {
-                    continue;
-                }
-            } catch (\Throwable $e) {
-                continue;
-            }
-            return function (string $prompt) use ($id): ?string {
-                try {
-                    return CloudAiService::chat($id, $prompt, 300);
-                } catch (\Throwable $e) {
-                    return null;
-                }
-            };
+        if (!CloudAiService::withCap('llm')) {
+            return null;
         }
-        return null;
+        return function (string $prompt): ?string {
+            try {
+                return CloudAiService::chatAny($prompt, 300);
+            } catch (\Throwable $e) {
+                return null;
+            }
+        };
     }
 
     private static function localToken(): ?string

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../helpers.php';
 require_once __DIR__ . '/../services/HealthService.php';
+require_once __DIR__ . '/../services/GregHealthService.php';
 
 /** /health — Admin → Health checks: results, intervals, alarm recipients, daily summary. */
 class HealthController extends BaseController
@@ -23,6 +24,7 @@ class HealthController extends BaseController
             'recipientIds' => HealthService::recipientIds(),
             'users' => HealthService::candidateUsers(),
             'runQueued' => (string) getSystemSetting('health_run_all', '0') === '1',
+            'reports' => GregHealthService::reports(8),
         ], ['title' => t('health.title')] + $notices);
     }
 }

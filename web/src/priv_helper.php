@@ -17,6 +17,11 @@ class PrivHelper {
      * @return array{success: bool, output: string}
      */
     public static function run(array $args): array {
+        // The test bootstrap sets this: a seeded "service down" check must not
+        // restart a real service on the machine running the tests.
+        if (getenv('AIPBX_NO_PRIV') === '1') {
+            return ['success' => false, 'output' => 'privileged actions are disabled in tests'];
+        }
         $cmd = 'sudo -n ' . self::BIN . ' ' . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1';
         exec($cmd, $out, $ret);
         return ['success' => $ret === 0, 'output' => implode("\n", $out)];

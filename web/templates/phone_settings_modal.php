@@ -25,7 +25,7 @@
                     <select id="phone_speaker_select" class="form-control u-flex-1" onchange="savePhoneSpeakerDevice(this.value)">
                         <option value="default"><?php echo t('phone_settings.loading'); ?></option>
                     </select>
-                    <button type="button" class="btn btn-secondary" onclick="testPhoneSpeaker()" title="<?php echo t('phone_settings.test_sound_tooltip'); ?>"><i class="fas fa-play"></i></button>
+                    <button type="button" id="phone_speaker_test_btn" class="btn btn-secondary" onclick="testPhoneSpeaker()" title="<?php echo t('phone_settings.test_sound_tooltip'); ?>" aria-label="<?php echo t('phone_settings.test_sound_tooltip'); ?>" aria-pressed="false"><i class="fas fa-play"></i></button>
                 </div>
             </div>
             <div class="form-group" id="phone_speaker_unsupported" style="display: none;">

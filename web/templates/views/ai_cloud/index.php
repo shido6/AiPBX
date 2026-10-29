@@ -1,10 +1,11 @@
 <?php
-/** @var array $providers @var array $engines @var array $local_models @var string $csrf_token */
+/** @var array $providers @var array $engines @var array $local_models @var array $team @var string $csrf_token */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 $capLabel = fn($c) => t('ai_cloud.cap_' . $c);
 $langNames = ['tr' => t('ai_cloud.lang_tr'), 'de' => t('ai_cloud.lang_de'), 'en' => t('ai_cloud.lang_en')];
 $jobNames = ['tts' => t('ai_cloud.job_tts'), 'stt' => t('ai_cloud.job_stt'), 'llm' => t('ai_cloud.job_llm')];
 $configured = array_column(array_filter($providers, fn($p) => $p['configured']), null, 'id');
+$llmCount = count(array_filter($providers, fn($p) => $p['configured'] && in_array('llm', $p['caps'], true)));
 ?>
 <div class="card">
     <div class="card-header">
@@ -17,6 +18,38 @@ $configured = array_column(array_filter($providers, fn($p) => $p['configured']),
     </div>
     <div style="padding: 0 20px 20px;">
         <p style="color: var(--warning); margin: 0;"><i class="fas fa-shield-halved"></i> <?php echo t('ai_cloud.privacy'); ?></p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title"><i class="fas <?php echo $llmCount >= 2 ? 'fa-circle-check u-success' : 'fa-arrows-rotate u-primary'; ?>"></i> <?php echo $llmCount >= 2 ? sprintf(t('ai_cloud.continuity_ready_title'), $llmCount) : t('ai_cloud.continuity_title'); ?></div>
+        <span class="badge <?php echo $llmCount >= 2 ? 'badge-success' : 'badge-info'; ?> u-fs-11"><?php echo $llmCount >= 2 ? t('ai_cloud.continuity_ready_badge') : t('ai_cloud.continuity_badge'); ?></span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <p class="u-muted u-fs-12" style="margin-top: 0;"><?php echo $llmCount >= 2 ? sprintf(t('ai_cloud.continuity_ready_body'), $llmCount) : t('ai_cloud.continuity_body'); ?></p>
+        <p class="u-muted u-fs-12" style="margin-bottom: 0;"><?php echo t('ai_cloud.continuity_note'); ?></p>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title"><i class="fas <?php echo $team['parallel'] ? 'fa-users-gear u-success' : 'fa-user-clock u-primary'; ?>"></i> <?php echo t('ai_cloud.team_title'); ?></div>
+        <span class="badge <?php echo $team['parallel'] ? 'badge-success' : 'badge-warning'; ?> u-fs-11">
+            <?php echo $team['parallel'] ? t('ai_cloud.team_parallel_badge') : t('ai_cloud.team_serial_badge'); ?>
+        </span>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <p class="u-muted u-fs-12" style="margin-top: 0;">
+            <?php if (!$team['providers']): ?>
+                <?php echo t('ai_cloud.team_none'); ?>
+            <?php elseif ($team['parallel']): ?>
+                <?php echo $h(sprintf(t('ai_cloud.team_parallel_body'), $team['paid'])); ?>
+            <?php else: ?>
+                <?php echo $h(sprintf(t('ai_cloud.team_serial_body'), $team['free'])); ?>
+            <?php endif; ?>
+        </p>
+        <p class="u-muted u-fs-12" style="margin-bottom: 0;"><?php echo t('ai_cloud.team_note'); ?></p>
     </div>
 </div>
 

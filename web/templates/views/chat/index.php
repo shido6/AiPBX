@@ -7,6 +7,7 @@ $user = $user ?? [];
 $token = $token ?? '';
 $is_admin = !empty($is_admin);
 $delete_window = (int) ($delete_window ?? 0);
+$greg_readiness = $greg_readiness ?? null;
 ?>
 
 <link rel="stylesheet" href="<?php echo asset('/assets/css/pages/chat.css'); ?>">
@@ -83,6 +84,91 @@ $delete_window = (int) ($delete_window ?? 0);
                     <input type="text" id="chat-search-input" placeholder="<?php echo t('chat.search_ph'); ?>" oninput="filterChatList(this.value)">
                 </div>
             </div>
+
+            <?php if (GregService::enabled()): ?>
+            <!-- Greg, the AI VoIP Engineer: his status lives in the top bar,
+                 the conversation lives here. -->
+            <div data-greg-widget data-csrf="<?php echo getCSRFToken(); ?>" style="margin:8px 10px 4px;">
+                <?php if (\AnamService::active()): ?>
+                <!-- The face, when the administrator has configured an Anam
+                     persona. Hidden until somebody asks for it: a persona is
+                     billed by the minute. -->
+                <div data-greg-avatar
+                     data-csrf="<?php echo getCSRFToken(); ?>"
+                     data-listen="<?php echo \AnamService::listens() ? '1' : '0'; ?>"
+                     data-strings="<?php echo htmlspecialchars(json_encode([
+                         'start'      => t('greg.avatar_start'),
+                         'hint'       => t('greg.avatar_start_hint'),
+                         'stop'       => t('greg.avatar_stop'),
+                         'connecting' => t('greg.avatar_connecting'),
+                         'ready'      => t('greg.avatar_ready'),
+                         'listening'  => t('greg.avatar_listening'),
+                         'left'       => t('greg.avatar_left'),
+                         'ended'      => t('greg.avatar_ended'),
+                         'limit'      => t('greg.avatar_limit'),
+                         'failed'     => t('greg.avatar_failed'),
+                     ], JSON_UNESCAPED_UNICODE), ENT_QUOTES); ?>">
+                    <div id="greg-face-stage" hidden style="position: relative; border-radius: 10px; overflow: hidden; background: #0b0b14; margin-bottom: 6px;">
+                        <video id="greg-face-video" autoplay playsinline style="display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: cover; background: #0b0b14;"></video>
+                        <div style="position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; gap: 8px; padding: 4px 8px; background: linear-gradient(transparent, rgba(0,0,0,.72)); color: #fff; font-size: 11px;">
+                            <span class="badge badge-info" style="font-size: 10px; padding: 1px 6px; border-radius: 6px; flex-shrink: 0;">
+                                <?php echo t('ai_voip_engineer.anam_ai_label'); ?>
+                            </span>
+                            <span data-greg-face-state style="flex: 1;"></span>
+                            <button type="button" class="btn btn-sm btn-secondary" onclick="var b=document.querySelector('[data-greg-face-btn]');if(b)b.click();" title="<?php echo htmlspecialchars(t('greg.avatar_stop'), ENT_QUOTES); ?>"><i class="fas fa-stop"></i></button>
+                        </div>
+                    </div>
+                </div>
+                <?php endif; ?>
+                <?php if (is_array($greg_readiness) && (int) $greg_readiness['score'] < 100): ?>
+                <!-- The handover gap, where Greg is used: the settings page has
+                     the full card; this is the one-line reminder and a link. -->
+                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px; padding: 4px 7px; border-radius: 6px; font-size: 11px; background: var(--bg-main); border: 1px solid var(--border-color);">
+                    <span style="font-weight: 700; color: var(--warning);"><?php echo (int) $greg_readiness['score']; ?>%</span>
+                    <span class="u-muted" style="flex: 1;">
+                        <?php echo htmlspecialchars(sprintf(t('greg.ready_chip'), (int) $greg_readiness['score'], implode(', ', $greg_readiness['missing'])), ENT_QUOTES); ?>
+                    </span>
+                    <a href="/ai-voip-engineer" style="white-space: nowrap;"><?php echo t('greg.ready_chip_link'); ?></a>
+                </div>
+                <?php endif; ?>
+                <div id="greg-log" style="max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding:4px 2px;">
+                    <?php
+                    // Arriving mid-onboarding (or from the settings card's
+                    // button) shows the question he is waiting on, not a
+                    // greeting that pretends nothing is happening.
+                    $gregDuty = GregService::onDuty();
+                    $gregOpening = \GregOnboardingService::active()
+                        ? \GregOnboardingService::prompt()
+                        : ($gregDuty['relief']
+                            ? sprintf(t('greg.welcome_relief'), $gregDuty['name'], GregService::displayName())
+                            : sprintf(t('greg.welcome'), $gregDuty['name']));
+                    ?>
+                    <div class="greg-row greg-greg"><div class="greg-bubble"><?php echo nl2br(htmlspecialchars($gregOpening, ENT_QUOTES)); ?></div></div>
+                </div>
+                <div style="display:flex;gap:6px;margin-top:6px;">
+                    <input type="text" id="greg-input" class="form-control" style="flex:1;" placeholder="<?php echo htmlspecialchars(t('greg.chat_placeholder'), ENT_QUOTES); ?>" onkeydown="if(event.key==='Enter'){gregSend();}">
+                    <?php if (\AnamService::active()): ?>
+                    <button type="button" class="btn btn-secondary btn-sm" data-greg-face-btn title="<?php echo htmlspecialchars(t('greg.avatar_start_hint'), ENT_QUOTES); ?>"><i class="fas fa-user-tie"></i></button>
+                    <?php endif; ?>
+                    <button type="button" class="btn btn-primary btn-sm" id="greg-send" onclick="gregSend()"><i class="fas fa-paper-plane"></i></button>
+                </div>
+            </div>
+            <script>
+            function gregEsc(v){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+            function gregAppend(kind,text,note){var log=document.getElementById('greg-log');if(!log)return;var row=document.createElement('div');row.className='greg-row greg-'+kind;var b=document.createElement('div');b.className='greg-bubble';b.style.whiteSpace='pre-wrap';b.textContent=String(text);row.appendChild(b);if(note){var n=document.createElement('div');n.className='u-muted u-fs-10';n.style.marginTop='3px';n.textContent=String(note);row.appendChild(n);}log.appendChild(row);log.scrollTop=log.scrollHeight;}
+            function gregSend(){var i=document.getElementById('greg-input');var btn=document.getElementById('greg-send');var m=(i&&i.value||'').trim();if(!m||!btn||btn.disabled)return;if(i)i.value='';btn.disabled=true;gregAppend('user',m);gregAppend('greg','…');
+             var fd=new FormData();fd.append('action','chat');fd.append('message',m);var w=document.querySelector('[data-greg-widget]');fd.append('csrf_token',(window.CSRF_TOKEN||(w&&w.dataset.csrf)||''));
+             function swap(reply,note){var log=document.getElementById('greg-log');if(log&&log.lastChild)log.lastChild.remove();gregAppend('greg',reply,note);}
+             fetch((window.WEBROOT||'')+'/api/greg.php',{method:'POST',body:fd,credentials:'same-origin'})
+              .then(function(r){return r.json();})
+              .then(function(r){btn.disabled=false;var reply=r&&r.success?(r.message||r.reply||'…'):(r&&r.error?r.error:'…');var notes=[];if(r&&r.delegation&&r.delegation.note)notes.push(r.delegation.note);if(r&&r.council&&r.council.note)notes.push(r.council.note);swap(reply,notes.join(' · '));if(window.gregAvatarSay){try{window.gregAvatarSay(reply);}catch(e){}}})
+              .catch(function(){btn.disabled=false;swap('…');});}
+            </script>
+            <?php if (\AnamService::active()): ?>
+            <script src="<?php echo asset('/assets/vendor/anam/anam.js'); ?>"></script>
+            <script src="<?php echo asset('/assets/js/greg_avatar.js'); ?>"></script>
+            <?php endif; ?>
+            <?php endif; ?>
 
             <!-- List: conversations / directory -->
             <div id="chat-list-container" style="flex: 1; overflow-y: auto; padding: 6px;">

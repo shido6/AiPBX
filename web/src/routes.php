@@ -87,6 +87,8 @@ return [
     '/ai-models'       => ['controller' => AiModelsController::class, 'action' => 'index', 'module' => 'ai_models.php'],
     '/ai-cloud'        => ['controller' => AiCloudController::class, 'action' => 'index', 'module' => 'ai_cloud.php'],
     '/ai-apps'         => ['controller' => AiAppsController::class, 'action' => 'index', 'module' => 'ai_apps.php'],
+    '/ai-voip-engineer' => ['controller' => AiVoipEngineerController::class, 'action' => 'index', 'module' => 'ai_voip_engineer.php'],
+    '/ai-echo'         => ['controller' => AiEchoController::class, 'action' => 'index', 'module' => 'ai_echo.php'],
     '/assistant'       => ['controller' => AssistantController::class, 'action' => 'index', 'module' => 'assistant.php'],
     '/plugins'         => ['controller' => PluginsController::class, 'action' => 'index', 'module' => 'plugins.php'],
     '/api-keys'        => ['controller' => ApiKeysController::class, 'action' => 'index', 'module' => 'api_keys.php'],

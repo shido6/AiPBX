@@ -1,0 +1,591 @@
+<?php
+/**
+ * Greg's hands — opencode, but only to PROPOSE.
+ *
+ * On by default, like Greg himself; the switch on AI → Echo turns it off.
+ * opencode can read a codebase, consult docs and write a plan. It is not
+ * allowed to change anything here: every job runs with edit/write/bash/
+ * external_directory DENIED (OPENCODE_PERMISSION), in an empty throwaway
+ * workspace that holds nothing of the PBX, and its answer is stored as a
+ * proposal for an administrator to read and act on. Approving a proposal
+ * records the decision and the audit row; it does not install code.
+ *
+ * That is deliberate. opencode's docs offer permission rules, not a sandbox,
+ * and "add a tool from GitHub" means running code from the internet on a PBX.
+ * Greg proposes the tool and the exact config; a human decides.
+ */
+
+require_once __DIR__ . '/CloudAiService.php';
+require_once __DIR__ . '/OpencodeTrafficService.php';
+require_once __DIR__ . '/../../audit_log.php';
+require_once __DIR__ . '/../GregJournal.php';
+
+class OpencodeService
+{
+    public const DEFAULT_MODEL = 'opencode/big-pickle';
+    public const DEFAULT_BIN = 'opencode';
+    public const DEFAULT_WORKSPACE = '/var/lib/aipbx/opencode';
+    public const MAX_OUTPUT = 12000;
+    public const MIN_TASK = 8;
+    public const MAX_TASK = 2000;
+    public const LOG_MAX_FILES = 10;
+    public const LOG_MAX_BYTES = 131072; // 128 KB tail per file
+
+    /** @return array{enabled:bool, model:string, bin:string, workspace:string, timeout:int, available:bool} */
+    public static function settings(): array
+    {
+        $bin = trim((string) getSystemSetting('greg.opencode_bin', self::DEFAULT_BIN));
+        if ($bin === '') {
+            $bin = self::DEFAULT_BIN;
+        }
+        $ws = trim((string) getSystemSetting('greg.opencode_workspace', self::DEFAULT_WORKSPACE));
+        if ($ws === '' || $ws[0] !== '/') {
+            $ws = self::DEFAULT_WORKSPACE;
+        }
+        $timeout = (int) getSystemSetting('greg.opencode_timeout', '180');
+        if ($timeout < 30 || $timeout > 600) {
+            $timeout = 180;
+        }
+        return [
+            'enabled'   => getSystemSetting('greg.opencode_enabled', '1') === '1',
+            'model'     => trim((string) getSystemSetting('greg.opencode_model', self::DEFAULT_MODEL)) ?: self::DEFAULT_MODEL,
+            'bin'       => $bin,
+            'workspace' => $ws,
+            'timeout'   => $timeout,
+            'available' => self::available($bin),
+        ];
+    }
+
+    public static function save(array $post): array
+    {
+        $model = trim((string) ($post['opencode_model'] ?? self::DEFAULT_MODEL));
+        if ($model !== '' && !preg_match('#^[a-z0-9._-]+/[A-Za-z0-9._:-]{1,80}$#', $model)) {
+            throw new CloudAiException(t('ai_echo.oc_err_model'));
+        }
+        $db = getDB();
+        $up = $db->prepare(
+            'INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)'
+        );
+        $up->execute(['greg.opencode_enabled', !empty($post['opencode_enabled']) ? '1' : '0']);
+        $up->execute(['greg.opencode_model', $model !== '' ? $model : self::DEFAULT_MODEL]);
+        writeAuditLog('greg', 'opencode', 'greg',
+            'opencode proposals ' . (!empty($post['opencode_enabled']) ? 'enabled' : 'disabled')
+                . ' (model ' . ($model !== '' ? $model : self::DEFAULT_MODEL) . ')',
+            'update', $_SESSION['user_id'] ?? null);
+        return ['message' => t('ai_voip_engineer.msg_saved')];
+    }
+
+    /** Is the binary actually installed? Honest false, never an optimistic guess. */
+    public static function available(?string $bin = null): bool
+    {
+        $bin = $bin ?? trim((string) getSystemSetting('greg.opencode_bin', self::DEFAULT_BIN));
+        if ($bin === '') {
+            return false;
+        }
+        if (str_contains($bin, '/')) {
+            return is_file($bin) && is_executable($bin);
+        }
+        $path = getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin';
+        foreach (explode(':', $path) as $dir) {
+            if ($dir !== '' && is_file($dir . '/' . $bin) && is_executable($dir . '/' . $bin)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * What opencode wrote about itself. This is not call evidence: it says
+     * whether the engine ran, which model/provider it selected, and whether a
+     * request was refused or timed out. Only the newest bounded tail of each
+     * log is read, and provider tokens are redacted before anything reaches a
+     * page or a prompt.
+     *
+     * @return array{readable:bool, files:int, runs:int, errors:int, warnings:int,
+     *               parsed:int, updated:int, provider:string, model:string,
+     *               recent:array<int, array{time:string, level:string, message:string}>,
+     *               summary:string}
+     */
+    public static function logReport(?string $workspace = null): array
+    {
+        $ws = $workspace ?? self::settings()['workspace'];
+        $paths = self::logPaths($ws);
+        if (!$paths) {
+            return self::emptyLogReport('opencode logs: none found under ' . $ws . '.');
+        }
+
+        $runs = [];
+        $errors = 0;
+        $warnings = 0;
+        $parsed = 0;
+        $provider = '';
+        $model = '';
+        $recent = [];
+        $updated = 0;
+        foreach ($paths as $path) {
+            $updated = max($updated, (int) @filemtime($path));
+            $text = self::readLogTail($path);
+            foreach (preg_split('/\R/', $text) ?: [] as $line) {
+                if (!preg_match('/^timestamp=(\S+)\s+level=([A-Z]+)\s+(.*)$/', trim($line), $m)) {
+                    continue;
+                }
+                $parsed++;
+                $level = $m[2];
+                $rest = $m[3];
+                if (preg_match('/\brun=(\S+)/', $rest, $rm)) {
+                    $runs[$rm[1]] = true;
+                }
+                if (preg_match('/\bllm\.provider=([^\s]+)/', $rest, $pm)) {
+                    $provider = $pm[1];
+                }
+                if (preg_match('/\bllm\.model=([^\s]+)/', $rest, $mm)) {
+                    $model = $mm[1];
+                }
+                if ($provider === '' && preg_match('/\bproviderID=([^\s]+)/', $rest, $pm)) {
+                    $provider = $pm[1];
+                }
+                if ($model === '' && preg_match('/\bmodelID=([^\s]+)/', $rest, $mm)) {
+                    $model = $mm[1];
+                }
+                if ($level !== 'ERROR' && $level !== 'WARN') {
+                    continue;
+                }
+                $level === 'ERROR' ? $errors++ : $warnings++;
+                $message = self::logMessage($rest);
+                if ($message !== '') {
+                    $recent[] = [
+                        'time'    => self::logTime($m[1]),
+                        'level'   => $level,
+                        'message' => self::sanitizeLogMessage($message),
+                    ];
+                    if (count($recent) > 3) {
+                        array_shift($recent);
+                    }
+                }
+            }
+        }
+
+        $summary = sprintf(
+            'opencode logs: %d file(s), %d run(s), last write %s, %d error(s), %d warning(s)',
+            count($paths),
+            count($runs),
+            $updated > 0 ? gmdate('Y-m-d H:i', $updated) . ' UTC' : 'unknown',
+            $errors,
+            $warnings
+        );
+        if ($provider !== '' || $model !== '') {
+            $summary .= ', model ' . trim($provider . '/' . $model, '/');
+        }
+        if ($recent) {
+            $last = end($recent);
+            $summary .= '; latest ' . strtolower($last['level']) . ': ' . $last['message'];
+        }
+
+        return [
+            'readable' => true,
+            'files'    => count($paths),
+            'runs'     => count($runs),
+            'errors'   => $errors,
+            'warnings' => $warnings,
+            'parsed'   => $parsed,
+            'updated'  => $updated,
+            'provider' => $provider,
+            'model'    => $model,
+            'recent'   => $recent,
+            'summary'  => $summary,
+        ];
+    }
+
+    /** @return array<int, string> newest first, bounded */
+    private static function logPaths(string $workspace): array
+    {
+        $workspace = rtrim($workspace, '/');
+        $real = realpath($workspace);
+        if ($real === false || !is_dir($real)) {
+            return [];
+        }
+        $patterns = [
+            $real . '/.home/.local/share/opencode/log/opencode.log',
+            $real . '/*/.home/.local/share/opencode/log/opencode.log',
+            $real . '/*/.local/share/opencode/log/opencode.log',
+        ];
+        $found = [];
+        foreach ($patterns as $pattern) {
+            foreach (glob($pattern, GLOB_NOSORT) ?: [] as $path) {
+                $file = realpath($path);
+                if ($file === false || !is_file($file) || !is_readable($file)) {
+                    continue;
+                }
+                if (!str_starts_with($file, $real . DIRECTORY_SEPARATOR)) {
+                    continue; // never read a symlink that leaves the workspace
+                }
+                $found[$file] = (int) @filemtime($file);
+            }
+        }
+        arsort($found);
+        return array_slice(array_keys($found), 0, self::LOG_MAX_FILES);
+    }
+
+    private static function readLogTail(string $path): string
+    {
+        $size = @filesize($path);
+        if ($size === false || $size < 1) {
+            return '';
+        }
+        $fh = @fopen($path, 'rb');
+        if ($fh === false) {
+            return '';
+        }
+        if ($size > self::LOG_MAX_BYTES) {
+            @fseek($fh, $size - self::LOG_MAX_BYTES);
+        }
+        $text = (string) stream_get_contents($fh);
+        fclose($fh);
+        return $text;
+    }
+
+    private static function logMessage(string $rest): string
+    {
+        if (preg_match('/\bmessage="((?:[^"\\\\]|\\\\.)*)"/', $rest, $m)) {
+            return stripcslashes($m[1]);
+        }
+        if (preg_match('/\bmessage=(\S+)/', $rest, $m)) {
+            return $m[1];
+        }
+        return '';
+    }
+
+    /** Flatten and redact anything that looks like a credential. */
+    private static function sanitizeLogMessage(string $message): string
+    {
+        $message = preg_replace('/\s+/', ' ', $message) ?? $message;
+        $message = preg_replace(
+            '/\b(sk-[A-Za-z0-9_-]{8,}|ghp_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,})\b/',
+            '***',
+            $message
+        ) ?? $message;
+        $message = preg_replace('/(Bearer\s+)[A-Za-z0-9._~+\/-]+/i', '$1***', $message) ?? $message;
+        return mb_substr(trim($message), 0, 180);
+    }
+
+    private static function logTime(string $timestamp): string
+    {
+        $time = strtotime($timestamp);
+        return $time !== false ? gmdate('Y-m-d H:i', $time) . ' UTC' : $timestamp;
+    }
+
+    /** @return array{readable:bool, files:int, runs:int, errors:int, warnings:int,
+     *               parsed:int, updated:int, provider:string, model:string,
+     *               recent:array, summary:string} */
+    private static function emptyLogReport(string $summary): array
+    {
+        return [
+            'readable' => false, 'files' => 0, 'runs' => 0, 'errors' => 0,
+            'warnings' => 0, 'parsed' => 0, 'updated' => 0, 'provider' => '',
+            'model' => '', 'recent' => [], 'summary' => $summary,
+        ];
+    }
+
+    /**
+     * Ask opencode for an answer — Greg's Big Pickle brain.
+     *
+     * No API key, no account, no extra configuration: the model ships with
+     * the CLI. This path is deliberately independent of the workshop switch,
+     * because choosing Big Pickle as his source IS the configuration. It is
+     * still read-only: same denied writes/shell/outside folders.
+     */
+    public static function chat(string $prompt): string
+    {
+        $s = self::settings();
+        if (!$s['available']) {
+            throw new CloudAiException(sprintf(t('greg.err_opencode_missing'), $s['bin']));
+        }
+        $ws = rtrim($s['workspace'], '/') . '/chat-' . date('Ymd-His') . '-' . bin2hex(random_bytes(3));
+        if (!is_dir($ws) && !@mkdir($ws, 0700, true) && !is_dir($ws)) {
+            throw new CloudAiException(sprintf(t('ai_echo.oc_err_workspace'), $s['workspace']));
+        }
+        $res = self::run($s, $ws, $prompt, 'chat');
+        return trim($res['output']);
+    }
+
+    /**
+     * Run one read-only opencode job and store its answer as a proposal.
+     * @return array{id:int, output:string}
+     */
+    public static function propose(string $task, string $kind = 'tool'): array
+    {
+        $task = trim($task);
+        if (mb_strlen($task) < self::MIN_TASK) {
+            throw new CloudAiException(t('ai_echo.oc_err_task'));
+        }
+        $task = mb_substr($task, 0, self::MAX_TASK);
+        $s = self::settings();
+        if (!$s['enabled']) {
+            throw new CloudAiException(t('ai_echo.oc_err_disabled'));
+        }
+        if (!$s['available']) {
+            throw new CloudAiException(sprintf(t('ai_echo.oc_err_missing'), $s['bin']));
+        }
+
+        $ws = rtrim($s['workspace'], '/') . '/job-' . date('Ymd-His') . '-' . bin2hex(random_bytes(3));
+        if (!is_dir($ws) && !@mkdir($ws, 0700, true) && !is_dir($ws)) {
+            throw new CloudAiException(sprintf(t('ai_echo.oc_err_workspace'), $s['workspace']));
+        }
+
+        $prompt = "You are the planning half of an AiPBX assistant. You have NO write access and NO shell. "
+            . "Read nothing outside this empty workspace. Answer with a concise, concrete plan: what the tool "
+            . "is, where it comes from (GitHub URL or MCP server package), what it would need (env vars, ports, "
+            . "commands), the risks, and the exact configuration to add. Do not claim anything was installed.\n\n"
+            . "Task: " . $task;
+        $notes = GregJournal::context();
+        if ($notes !== '') {
+            $prompt .= "\n\n" . $notes;
+        }
+
+        $res = self::run($s, $ws, $prompt, 'proposal');
+        $output = $res['output'];
+        $db = getDB();
+        $ins = $db->prepare(
+            'INSERT INTO pbx_greg_proposals (created_at, created_by, kind, task, output, status, model)
+             VALUES (NOW(), ?, ?, ?, ?, ?, ?)'
+        );
+        $ins->execute([
+            $_SESSION['user_id'] ?? null,
+            $kind === 'research' ? 'research' : 'tool',
+            mb_substr($task, 0, 2000),
+            mb_substr($output, 0, 65535),
+            'pending',
+            mb_substr($s['model'], 0, 120),
+        ]);
+        $id = (int) $db->lastInsertId();
+        writeAuditLog('greg', 'proposal', $id, mb_substr($task, 0, 120), 'create', $_SESSION['user_id'] ?? null);
+        return ['id' => $id, 'output' => $output];
+    }
+
+    /** Approve/reject. Records the decision; installing anything stays manual. */
+    public static function decide(int $id, bool $approve): void
+    {
+        $db = getDB();
+        $task = (string) $db->query('SELECT task FROM pbx_greg_proposals WHERE id = ' . $id)->fetchColumn();
+        $st = $db->prepare(
+            'UPDATE pbx_greg_proposals
+             SET status = ?, decided_at = NOW(), decided_by = ?
+             WHERE id = ? AND status = ?'
+        );
+        $st->execute([$approve ? 'approved' : 'rejected', $_SESSION['user_id'] ?? null, $id, 'pending']);
+        if ($st->rowCount() === 0) {
+            throw new CloudAiException(t('ai_echo.oc_err_decision'));
+        }
+        writeAuditLog('greg', 'proposal', $id, 'proposal #' . $id, $approve ? 'approve' : 'reject', $_SESSION['user_id'] ?? null);
+        GregJournal::append(
+            'Tool proposal #' . $id . ($approve ? ' approved' : ' rejected'),
+            [$task !== '' ? 'task: ' . $task : '', $approve ? 'plan accepted; installation stays manual' : 'plan declined']
+        );
+    }
+
+    /** @return array<int, array> newest first */
+    public static function recent(int $limit = 10): array
+    {
+        $limit = max(1, min(50, $limit));
+        return getDB()->query(
+            'SELECT id, created_at, kind, task, output, status, model, decided_at
+             FROM pbx_greg_proposals ORDER BY id DESC LIMIT ' . $limit
+        )->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * One opencode process at a time per install.
+     *
+     * A chat is a 10–30 s subprocess, and the free tier is easy to trip. Two
+     * administrators (or one impatient double-click) would otherwise fork
+     * several of them, each waiting on the same rate limit. The lock is
+     * advisory and non-blocking: the second caller gets an honest "busy"
+     * instead of a queue that looks like a hang.
+     *
+     * @return array{output:string, exit:int, timed_out:bool}
+     * @throws CloudAiException
+     */
+    private static function run(array $s, string $ws, string $prompt, string $purpose): array
+    {
+        $lockPath = rtrim($s['workspace'], '/') . '/.run.lock';
+        $lock = @fopen($lockPath, 'c');
+        if ($lock !== false && !flock($lock, LOCK_EX | LOCK_NB)) {
+            fclose($lock);
+            throw new CloudAiException(t('ai_echo.oc_err_busy'));
+        }
+        $started = hrtime(true);
+        try {
+            $res = self::runOnce($s, $ws, $prompt);
+            OpencodeTrafficService::record(
+                $purpose,
+                (string) $s['model'],
+                $prompt,
+                (string) $res['output'],
+                null,
+                !empty($res['timed_out']) ? 'timeout' : 'ok',
+                (int) round((hrtime(true) - $started) / 1e6)
+            );
+            return $res;
+        } catch (\Throwable $e) {
+            OpencodeTrafficService::record(
+                $purpose,
+                (string) $s['model'],
+                $prompt,
+                null,
+                $e->getMessage(),
+                'error',
+                (int) round((hrtime(true) - $started) / 1e6)
+            );
+            throw $e;
+        } finally {
+            if ($lock !== false) {
+                flock($lock, LOCK_UN);
+                fclose($lock);
+            }
+        }
+    }
+
+    /**
+     * @return array{output:string, exit:int, timed_out:bool}
+     * @throws CloudAiException
+     */
+    private static function runOnce(array $s, string $ws, string $prompt): array
+    {
+        $cmd = [
+            $s['bin'], 'run',
+            '--dir', $ws,
+            '--model', $s['model'],
+            '--format', 'json',
+            '--pure',
+            $prompt,
+        ];
+        $permission = json_encode([
+            '*' => 'deny',
+            'read' => 'allow',
+            'glob' => 'allow',
+            'grep' => 'allow',
+            'edit' => 'deny',
+            'bash' => 'deny',
+            'external_directory' => 'deny',
+        ]);
+        $env = [
+            'PATH' => getenv('PATH') ?: '/usr/local/bin:/usr/bin:/bin',
+            'HOME' => $ws . '/.home',
+            'OPENCODE_PERMISSION' => $permission,
+            'OPENCODE_DISABLE_AUTOUPDATE' => '1',
+            'OPENCODE_DISABLE_DEFAULT_PLUGINS' => '1',
+            'NO_COLOR' => '1',
+        ];
+        @mkdir($ws . '/.home', 0700, true);
+
+        $desc = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = @proc_open($cmd, $desc, $pipes, $ws, $env);
+        if (!is_resource($proc)) {
+            throw new CloudAiException(t('ai_echo.oc_err_start'));
+        }
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $out = '';
+        $err = '';
+        $start = time();
+        $timedOut = false;
+        while (true) {
+            $status = proc_get_status($proc);
+            $out .= (string) stream_get_contents($pipes[1]);
+            $err .= (string) stream_get_contents($pipes[2]);
+            if (!$status['running']) {
+                break;
+            }
+            if (time() - $start > $s['timeout']) {
+                $timedOut = true;
+                proc_terminate($proc, 9);
+                break;
+            }
+            usleep(120000);
+        }
+        $out .= (string) stream_get_contents($pipes[1]);
+        $err .= (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+
+        // A provider refusal (free-tier limit, offline) arrives as an error
+        // event, not as an answer. Surface it honestly instead of showing the
+        // JSON to the administrator as if it were Greg's reply.
+        if ($providerError = self::extractError($out)) {
+            throw new CloudAiException(mb_substr($providerError, 0, 280));
+        }
+        $text = trim(self::extractText($out));
+        if ($text === '' && trim($err) !== '') {
+            $text = trim($err);
+        }
+        if ($timedOut) {
+            $text = ($text !== '' ? $text . "\n\n" : '') . '[stopped after ' . $s['timeout'] . ' s]';
+        }
+        if ($text === '') {
+            throw new CloudAiException(t('ai_echo.oc_err_empty'));
+        }
+        return ['output' => mb_substr($text, 0, self::MAX_OUTPUT), 'exit' => $exit, 'timed_out' => $timedOut];
+    }
+
+    /**
+     * opencode --format json streams JSON events. Keep readable text and the
+     * final answer; drop the noise. Falls back to the raw output when the
+     * binary prints plain text (an older version, or a stub in a test).
+     */
+    public static function extractText(string $raw): string
+    {
+        $raw = trim($raw);
+        if ($raw === '' || $raw[0] !== '{') {
+            return $raw;
+        }
+        $texts = [];
+        foreach (preg_split('/\R/', $raw) as $line) {
+            $ev = json_decode(trim($line), true);
+            if (!is_array($ev)) {
+                continue;
+            }
+            foreach (['text', 'content', 'message'] as $k) {
+                if (isset($ev[$k]) && is_string($ev[$k]) && trim($ev[$k]) !== '') {
+                    $texts[] = trim($ev[$k]);
+                }
+            }
+            // Final answer parts only: reasoning/thinking parts are the model
+            // talking to itself, and they must not appear as Greg's reply.
+            if (isset($ev['part']['text']) && is_string($ev['part']['text'])
+                && ($ev['part']['type'] ?? 'text') === 'text') {
+                $texts[] = trim(self::stripThinking($ev['part']['text']));
+            }
+        }
+        $texts = array_values(array_filter($texts, fn($t) => $t !== ''));
+        return $texts ? implode("\n", array_unique($texts)) : $raw;
+    }
+
+    /** Remove <think>…</think> blocks that some free models inline in text. */
+    private static function stripThinking(string $text): string
+    {
+        $text = preg_replace('/<think[^>]*>.*?<\/think>/is', '', $text) ?? $text;
+        return trim(preg_replace('/^\s*<\/think>\s*/i', '', $text) ?? $text);
+    }
+
+    /** The first provider error message in a JSON event stream, if any. */
+    public static function extractError(string $raw): ?string
+    {
+        if (trim($raw) === '' || trim($raw)[0] !== '{') {
+            return null;
+        }
+        foreach (preg_split('/\R/', $raw) as $line) {
+            $ev = json_decode(trim($line), true);
+            if (!is_array($ev) || ($ev['type'] ?? '') !== 'error') {
+                continue;
+            }
+            $msg = $ev['error']['data']['message'] ?? ($ev['error']['message'] ?? '');
+            if (is_string($msg) && trim($msg) !== '') {
+                return trim($msg);
+            }
+            return t('ai_echo.oc_err_provider');
+        }
+        return null;
+    }
+}

@@ -9,6 +9,7 @@ final class Fail2banCoverageTest extends TestCase
 {
     private static string $fakeBinDir = '';
     private static string $origPath = '';
+    private static string $origNoPriv = '';
 
     public static function setUpBeforeClass(): void
     {
@@ -86,6 +87,13 @@ SH;
 
         self::$origPath = (string)getenv('PATH');
         putenv('PATH=' . self::$fakeBinDir . ':' . self::$origPath);
+
+        // The bootstrap locks privileged actions out (AIPBX_NO_PRIV=1) so a seeded
+        // "service down" health check cannot restart a real service. These tests
+        // replace `sudo` itself with the stub above, so the lock would only stop
+        // the calls under test; lift it here and put it back afterwards.
+        self::$origNoPriv = (string)getenv('AIPBX_NO_PRIV');
+        putenv('AIPBX_NO_PRIV=0');
     }
 
     public static function tearDownAfterClass(): void
@@ -93,6 +101,7 @@ SH;
         if (self::$origPath !== '') {
             putenv('PATH=' . self::$origPath);
         }
+        putenv('AIPBX_NO_PRIV=' . self::$origNoPriv);
         if (self::$fakeBinDir !== '' && is_dir(self::$fakeBinDir)) {
             @unlink(self::$fakeBinDir . '/sudo');
             @rmdir(self::$fakeBinDir);

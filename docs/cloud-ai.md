@@ -66,6 +66,59 @@ card has a **Model** field; *Test* sends one tiny chat request, so a wrong model
 | Qwen (Alibaba Cloud Model Studio) | international `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` (default); mainland China `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
 | OpenAI-compatible | your address ending in `/v1`, e.g. `https://api.deepseek.com/v1`, `https://api.mistral.ai/v1`, `http://10.0.0.5:11434/v1` (Ollama on another server) | required; the key is optional |
 
+### Use more than one provider (business continuity)
+
+A free tier can run out of tokens, a key can be revoked and a provider can have an outage. Two
+different configured language-model providers are a continuity pair, not two keys for the same
+failure.
+The Assistant and Greg (with the System AI brain) try the configured providers in the order the
+page lists them: quota, timeout, bad key and provider 5xx move to the next account, and only the
+provider that answers is counted in *this month's use*. If every account fails, the error says so
+instead of exposing one provider's message as the whole story.
+
+The prompt is sent to whichever configured provider answers, so add only accounts the business is
+willing to send that data to. The choice of speech and speech-to-text engine is still manual; keep
+a local model or a second configured provider ready for those jobs.
+
+### Several engineers, one account (temporal multiplexing)
+
+Each engineer has their own Greg conversation, so two people can work at the same time without
+sharing a transcript or answering each other's questions. The limit is the provider's contract, not
+the portal: a free plan enforces both a rate limit and a concurrency limit, and a second
+simultaneous request can be refused even when tokens remain.
+
+Free-tier providers are therefore serialized per provider. The second request waits for the first
+to finish, up to 15 seconds, and then gets a clear "still answering another engineer" message. This
+is temporal multiplexing — one account serving several engineers by taking turns. It keeps two
+requests from racing into the same 429, but it is **not parallel work**.
+
+Providers with concurrent sessions are not serialized: OpenAI, a paid OpenAI-compatible endpoint, or a
+local OpenAI-compatible endpoint. Configure one when engineers must ask at the same time;
+*AI → Cloud services* shows **Parallel sessions** as soon as one is configured. The portal cannot
+tell a free key from a paid one, so that badge describes the provider's published plan, not the
+account's actual billing.
+
+Shared PBX changes are a separate matter: every applied change still gets an audit row and an undo
+button, and the Dialplan editor takes a short per-target lock (one extension, ring group, queue or
+time condition) while it reads the before-value and writes the change. Two engineers changing the
+same target therefore queue instead of both capturing the same old state; changes to different
+targets never wait. One engineer's work stays reviewable and undoable even when another engineer
+changes the same extension later.
+
+The choice of speech and speech-to-text engine is still manual, and this queue does not apply to
+them.
+
+### Splitting a question between the two engineers
+
+A multi-part question — a failing trunk and a queue that drops calls, say — can be split instead of
+answered twice. The engineer on duty divides it into at most three sections and hands some to the
+other engineer. Each investigates their own section only, and the engineer on duty writes one answer
+from both sets of findings. The chat shows a quiet line naming the split, never two competing
+answers; a simple question is not split at all. The feature is on by default under *AI → VoIP
+Engineer → Relief engineer* and costs up to three extra model calls on a question that is actually
+split. If the colleague finds nothing or the split cannot be parsed, the ordinary single-engineer
+answer is used instead.
+
 ## Voicemail as text
 
 *AI → Cloud services → Voicemail as text*: a new voicemail is written down with the

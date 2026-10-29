@@ -14,7 +14,7 @@ use Phinx\Migration\AbstractMigration;
  *
  *  - `rtcp_fraction_lost` is RFC 3550's 8-bit fixed-point fraction
  *    (255 = 100 %), exactly as Asterisk reports it.
- *  - `rtcp_lost` is the report block's cumulative packet count for the stream.
+ *  - `rtcp_lost` is the report's cumulative packet count for the stream.
  *  - `rtcp_jitter` is `ia_jitter` in RTP timestamp units. The sample rate is
  *    not in the report, so this is deliberately NOT converted to
  *    milliseconds — the portal must not invent precision Asterisk did not

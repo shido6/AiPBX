@@ -1,5 +1,5 @@
 <?php
-/** @var string $csrf @var array $checks @var array $settings @var array $recipientIds @var array $users @var bool $runQueued */
+/** @var string $csrf @var array $checks @var array $settings @var array $recipientIds @var array $users @var bool $runQueued @var array $reports */
 $h = fn($s) => htmlspecialchars((string) $s, ENT_QUOTES);
 $badge = ['ok' => 'badge-success', 'warn' => 'badge-warning', 'fail' => 'badge-danger', 'info' => 'badge-info', 'off' => 'badge-primary', 'unknown' => 'badge-primary'];
 $intervalLabel = fn(int $m) => $m === 0 ? t('health.interval_off') : ($m < 60 ? sprintf(t('health.interval_min'), $m) : ($m < 1440 ? sprintf(t('health.interval_hours'), $m / 60) : t('health.interval_daily')));
@@ -132,3 +132,45 @@ $problems = count(array_filter($checks, fn($c) => $c['interval'] > 0 && in_array
     </div>
 </div>
 </form>
+
+<div class="card" style="margin-top: 16px;">
+    <div class="card-header">
+        <div class="card-title"><i class="fas fa-user-astronaut u-primary"></i> <?php echo t('health.greg_report_title'); ?></div>
+        <a class="btn btn-secondary btn-sm" href="/ai-voip-engineer"><i class="fas fa-comments"></i> <?php echo t('health.greg_report_open'); ?></a>
+    </div>
+    <div style="padding: 0 20px 20px;">
+        <p class="u-muted u-fs-12" style="margin-top: 0;"><?php echo t('health.greg_report_hint'); ?></p>
+        <?php if (!$reports): ?>
+            <div class="u-muted u-fs-12"><?php echo t('health.greg_report_empty'); ?></div>
+        <?php else: ?>
+            <div class="table-responsive">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th><?php echo t('health.greg_report_when'); ?></th>
+                            <th><?php echo t('health.greg_report_who'); ?></th>
+                            <th><?php echo t('health.greg_report_verdict'); ?></th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                    <?php foreach ($reports as $r): ?>
+                        <?php $badgeR = ['ok' => 'badge-success', 'warn' => 'badge-warning', 'fail' => 'badge-danger'][$r['verdict']] ?? 'badge-primary'; ?>
+                        <tr>
+                            <td class="u-fs-12 u-muted"><?php echo $h($r['created_at']); ?></td>
+                            <td class="u-fs-12"><?php echo $h($r['username'] !== '' ? $r['username'] : '—'); ?></td>
+                            <td><span class="badge <?php echo $badgeR; ?> u-fs-11"><?php echo t('health.greg_verdict_' . $r['verdict']); ?></span></td>
+                            <td>
+                                <details>
+                                    <summary class="u-fs-11" style="cursor:pointer;"><?php echo t('health.greg_report_details'); ?> #<?php echo (int) $r['id']; ?></summary>
+                                    <pre style="background: var(--bg-main); padding: 10px; border-radius: 6px; white-space: pre-wrap; font-size: 11px; margin: 8px 0 0; max-height: 320px; overflow: auto;"><?php echo $h($r['summary']); ?></pre>
+                                </details>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        <?php endif; ?>
+    </div>
+</div>

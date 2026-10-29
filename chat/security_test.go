@@ -297,7 +297,9 @@ func TestGroupSecurityCH_G(t *testing.T) {
 	}
 
 	// Find 2 real active users from DB
-	rows, err := db.Query("SELECT extension FROM sys_users WHERE is_active = 1 AND extension IS NOT NULL AND extension != '' AND role != 'fax_user' ORDER BY id ASC LIMIT 2")
+	// DISTINCT for the same reason as testExtensions(): two users on one
+	// extension are one chat participant, so creator and member must differ.
+	rows, err := db.Query("SELECT DISTINCT extension FROM sys_users WHERE is_active = 1 AND extension IS NOT NULL AND extension != '' AND role != 'fax_user' ORDER BY extension ASC LIMIT 2")
 	if err != nil {
 		t.Skip("Cannot query sys_users:", err)
 	}

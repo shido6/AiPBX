@@ -47,6 +47,14 @@ by the rules or a model. Forwards and voicemail switches record the previous
 value and can be undone with one click from the same table. Changes made by
 a colleague stay visible — this page is also "who did the phones change".
 
+Two engineers can work on different extensions, groups and queues at the
+same time. Only the same target waits: while an apply or an undo reads the
+previous value and writes the change, it holds a short per-target lock, so
+the second engineer cannot capture the same old value as their undo point.
+A rollback also re-reads the audit row inside that lock; only the first undo
+of a row succeeds. If the lock is still held after five seconds the request
+is refused with a clear message instead of hanging.
+
 ## The Echo box
 
 "Ask about the phone system" on the same page answers *questions about
