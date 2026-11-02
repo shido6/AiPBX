@@ -4,6 +4,7 @@
  * Consolidates all active subscriber endpoints into a single master configuration file reading from `sip` key-value table.
  */
 
+require_once __DIR__ . '/../helpers.php';
 require_once __DIR__ . '/../sip_helper.php';
 
 /**
@@ -182,6 +183,8 @@ function __syncAllExtensionsBody() {
     $conf .= "rtp_timeout={$wss_timeout}\n";
     $conf .= "rtp_timeout_hold=" . ($video_codecs ? 0 : 300) . "\n";
     $conf .= "webrtc=yes\n";
+    $conf .= "max_audio_streams=10\n";
+    $conf .= "max_video_streams=10\n";
     $conf .= "rtcp_mux=yes\n";
     $conf .= "direct_media={$direct_media}\n";
     $conf .= "media_use_received_transport=yes\n";
@@ -408,6 +411,29 @@ function __syncAllExtensionsBody() {
         $conf .= "[{$ext}-sip](aor-dual)\nmax_contacts={$max_c}\n\n";
         $conf .= "[{$ext}](aor-dual)\nmax_contacts={$max_c}\n\n";
     }
+
+    // 3. Dedicated WebRTC endpoint for /meet/{token} browser conference participants.
+    // Strictly isolated to [app-meeting-guest]: guests reach only the room of a meeting their
+    // token is valid for, and can never place outbound or internal extension calls.
+    $guest_audio = pbxAudioCodecs(getSystemSetting('pjsip_codecs', 'opus,ulaw,alaw,g722'));
+    $guest_video = $video_codecs ?: ['vp8', 'h264'];
+    $guest_codecs = implode(',', array_unique(array_merge($guest_audio, $guest_video)));
+    $guest_secret = getMeetingGuestSipSecret();
+
+    $conf .= "; Video Meeting Guest WebRTC Endpoint (isolated to app-meeting-guest)\n";
+    $conf .= "[meeting-guest](endpoint-wss)\n";
+    $conf .= "auth=auth-meeting-guest\n";
+    $conf .= "context=app-meeting-guest\n";
+    $conf .= "disallow=all\n";
+    $conf .= "allow={$guest_codecs}\n";
+    // A browser that vanishes sends no BYE; without a timeout its seat stays taken for good.
+    $conf .= "rtp_timeout=30\n";
+    $conf .= "rtp_timeout_hold=60\n";
+    $conf .= "set_var=AIPBX_CLIENT_TYPE=web-guest\n\n";
+
+    $conf .= "[auth-meeting-guest](auth-userpass)\n";
+    $conf .= "username=meeting-guest\n";
+    $conf .= "password={$guest_secret}\n\n";
 
     // Clean up old individual files if any exist
     $old_files = glob(ASTERISK_PBX_DIR . '/pjsip_ext_*.conf');

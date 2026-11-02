@@ -60,7 +60,7 @@ if ($path === '/accept-license' && ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'PO
         exit;
     }
     $acceptedAt = date('Y-m-d H:i:s');
-    $clientIp = (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
+    $clientIp = function_exists('getClientIP') ? getClientIP() : (string)($_SERVER['REMOTE_ADDR'] ?? 'unknown');
     $acceptedBy = (string)($_SESSION['username'] ?? 'admin') . ' (' . $clientIp . ')';
     $db = getDB();
     $stmt = $db->prepare(
@@ -110,6 +110,14 @@ if (preg_match('#^/plugins/([a-z0-9][a-z0-9-]{1,48})$#', $path, $_pluginMatch)) 
     require_once __DIR__ . '/src/controllers/PluginsController.php';
     $_SERVER['PHP_SELF'] = '/plugin_' . $_pluginMatch[1] . '.php';
     PluginsController::detail($_pluginMatch[1]);
+    exit;
+}
+
+// 0g. Public Video Meeting Lobby (/meet and /meet/<token>)
+if ($path === '/meet' || str_starts_with($path, '/meet/')) {
+    $meetToken = trim(substr($path, strlen('/meet')), '/');
+    require_once __DIR__ . '/src/controllers/MeetingLobbyController.php';
+    MeetingLobbyController::index($meetToken);
     exit;
 }
 

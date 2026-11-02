@@ -147,6 +147,7 @@ function __syncGeneralDialplanBody() {
     // The include is searched after the shared context's OWN extensions:
     // a real extension number always wins.
     $conf .= "include => internal-numbers-pbx\n";
+    $conf .= "include => custom-dialplan-pbx\n";
 
     $conf .= "\n; Default (group 1) — internal + outbound routes\n";
     $conf .= "[from-internal-pbx]\n";
@@ -278,7 +279,9 @@ function __syncGeneralDialplanBody() {
 
     $conf .= "; Enterprise Adaptive Jitter Buffer (AJB) Subroutine for Callee Channels\n";
     $conf .= "[sub-callee-jb]\n";
-    $conf .= "exten => s,1,NoOp(Applying Adaptive Jitter Buffer to Callee Channel \${CHANNEL})\n";
+    $conf .= "exten => s,1,NoOp(Applying Adaptive Jitter Buffer & Outbound Headers to Channel \${CHANNEL})\n";
+    $conf .= " same => n,ExecIf(\$[\"\${AIPBX_GEOLOCATION_URI}\" != \"\"]?Set(PJSIP_HEADER(add,Geolocation)=\${AIPBX_GEOLOCATION_URI}))\n";
+    $conf .= " same => n,ExecIf(\$[\"\${AIPBX_GEOLOCATION_ROUTING}\" != \"\"]?Set(PJSIP_HEADER(add,Geolocation-Routing)=\${AIPBX_GEOLOCATION_ROUTING}))\n";
     // Not for a fax sent from the portal (AIPBX_FAX, inherited): a jitter buffer
     // reshapes the modem's timing.
     $conf .= jitterBufferLine();

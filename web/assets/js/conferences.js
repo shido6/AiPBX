@@ -2,15 +2,23 @@
 
 let currentActiveRoomNumber = '';
 
+function updateConfDialPreview(val) {
+    const el = document.getElementById('modal_conf_number_preview');
+    if (el) el.textContent = val ? val.replace(/[^0-9]/g, '') : '...';
+}
+
 function openCreateConfModal() {
     document.getElementById('confModalTitle').innerHTML = '<i class="fas fa-plus-circle u-primary"></i> ' + __('js.conf.new_room') + '';
     document.getElementById('modal_conf_id').value = '0';
     document.getElementById('modal_conf_number').value = '';
+    updateConfDialPreview('');
     document.getElementById('modal_conf_title').value = '';
     document.getElementById('modal_conf_user_pin').value = '';
     document.getElementById('modal_conf_admin_pin').value = '';
     document.getElementById('modal_conf_max_members').value = '50';
     document.getElementById('modal_conf_moh').value = 'default';
+    if (document.getElementById('modal_conf_video_mode')) document.getElementById('modal_conf_video_mode').value = 'none';
+    if (document.getElementById('modal_conf_max_video_streams')) document.getElementById('modal_conf_max_video_streams').value = '10';
     document.getElementById('modal_conf_wait_marked').checked = false;
     document.getElementById('modal_conf_end_marked').checked = false;
     document.getElementById('modal_conf_record').checked = false;
@@ -25,11 +33,14 @@ function openEditConfModal(cf) {
     document.getElementById('confModalTitle').innerHTML = '<i class="fas fa-edit u-primary"></i> ' + __('js.conf.edit_room') + '' + escapeHtml(cf.title || '');
     document.getElementById('modal_conf_id').value = cf.id || '0';
     document.getElementById('modal_conf_number').value = cf.room_number || '';
+    updateConfDialPreview(cf.room_number || '');
     document.getElementById('modal_conf_title').value = cf.title || '';
     document.getElementById('modal_conf_user_pin').value = cf.user_pin || '';
     document.getElementById('modal_conf_admin_pin').value = cf.admin_pin || '';
     document.getElementById('modal_conf_max_members').value = cf.max_members || 50;
     document.getElementById('modal_conf_moh').value = cf.music_on_hold || 'default';
+    if (document.getElementById('modal_conf_video_mode')) document.getElementById('modal_conf_video_mode').value = cf.video_mode || 'none';
+    if (document.getElementById('modal_conf_max_video_streams')) document.getElementById('modal_conf_max_video_streams').value = cf.max_video_streams || 10;
     document.getElementById('modal_conf_wait_marked').checked = (cf.wait_marked == 1);
     document.getElementById('modal_conf_end_marked').checked = (cf.end_marked == 1);
     document.getElementById('modal_conf_record').checked = (cf.record_conference == 1);

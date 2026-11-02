@@ -40,6 +40,12 @@ final class Fixtures
         'pbx_phones',
         'pbx_phones_waiting',
         'pbx_phone_discoveries',
+        'pbx_inbound_blacklist',
+        'pbx_conferences',
+        'pbx_meetings',
+        'pbx_meeting_invites',
+        'pbx_ring_groups',
+        'pbx_ai_apps',
         'sip',
         'sys_pending_sync',
     ];

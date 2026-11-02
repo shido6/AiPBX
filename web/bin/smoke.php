@@ -97,7 +97,17 @@ function check_routes(?string $onlyRoute = null): void
     // no page is correct, only "no fatal/PHP error" is checked.
     // /force-reset → goes to /login without $_SESSION['pending_reset_user_id'].
     // /login-2fa   → goes to /login without $_SESSION['pending_2fa_user_id'].
-    $REDIRECT_OK = ['/force-reset', '/login-2fa', '/auth/google', '/auth/google/callback'];
+    $REDIRECT_OK = [
+        '/force-reset',
+        '/login-2fa',
+        '/auth/google',
+        '/auth/google/callback',
+        '/auth/oidc',
+        '/auth/oidc/callback',
+        '/auth/saml',
+        '/auth/saml/acs',
+        '/auth/saml/metadata',
+    ];
 
     // Lower bound for a full page. /reset-password without a token prints a
     // legitimate ~1700-byte form; the threshold sits below that but still
@@ -211,6 +221,17 @@ function check_rbac(): void
         '/scheduled-tasks',
         '/external-dbs',
         '/ivr-data-steps',
+        '/reverse-proxy',
+        '/network-settings',
+        '/network-services',
+        '/phone-logs',
+        '/custom-dialplan',
+        '/privacy',
+        '/ai-cloud',
+        '/assistant',
+        '/mail-templates',
+        '/conferences',
+        '/meetings',
     ];
     $n = 0;
 
@@ -284,6 +305,7 @@ function check_api(): void
         ['api/assistant.php', 'action=changes'],
         ['api/sound_packs.php', 'action=status'],
         ['api/system_update.php', 'action=status'],
+        ['api/conferences.php', 'action=members&room=1001'],
     ];
     $n = 0;
 
@@ -476,6 +498,8 @@ function check_conventions(): void
         'ForgotPasswordController.php',
         'MobileLoginController.php',
         'GoogleAuthController.php',
+        'OidcAuthController.php',
+        'SamlAuthController.php',
         // Desk phones fetch their configuration without a session; the token,
         // allowed networks and rate limit guard it (PhoneProvisionService).
         'ProvisionController.php',
@@ -485,6 +509,9 @@ function check_conventions(): void
         // REST API v1 authenticates stateless Bearer tokens (apbx_...), IP
         // allowlists, rate limits and scopes via ApiRequestContext::authenticate().
         'ApiV1Controller.php',
+        // Video meeting lobby (/meet/{token}) allows external anonymous guests
+        // to join video conferences without registration.
+        'MeetingLobbyController.php',
     ];
     $n++;
     foreach (glob(SMOKE_ROOT . '/src/controllers/*.php') as $f) {
@@ -566,7 +593,7 @@ function check_lint(): void
     );
     foreach ($it as $f) {
         $p = $f->getPathname();
-        if (strpos($p, '/vendor/') !== false) { continue; }
+        if (strpos($p, '/vendor/') !== false || strpos($p, '/.phpstan-cache/') !== false || strpos($p, '/.phpunit.cache/') !== false) { continue; }
         if (substr($p, -4) !== '.php') { continue; }
         $files[] = $p;
     }

@@ -5,6 +5,7 @@
  */
 
 require_once __DIR__ . '/../config.php';
+require_once __DIR__ . '/helpers.php';
 require_once __DIR__ . '/file_helper.php';
 require_once __DIR__ . '/asterisk_helper.php';
 require_once __DIR__ . '/priv_helper.php';
@@ -150,6 +151,7 @@ const PENDING_SYNC_DOMAIN_MAP = [
     'permissions'       => 'syncPermissions',
     'widgets'           => 'syncWidgets',
     'ai_apps'           => 'syncAiApps',
+    'custom_dialplan'   => 'syncCustomDialplan',
 ];
 
 /**
@@ -331,6 +333,7 @@ require_once __DIR__ . '/sync/SyncVoicemail.php';
 require_once __DIR__ . '/sync/SyncPermissions.php';
 require_once __DIR__ . '/sync/SyncWidgets.php';
 require_once __DIR__ . '/sync/SyncAiApps.php';
+require_once __DIR__ . '/sync/SyncCustomDialplan.php';
 
 /**
  * Updates the system default language (/etc/asterisk/asterisk.conf [options]
@@ -392,10 +395,11 @@ function syncEverything() {
     syncWidgets();
     syncAiApps();
     syncFeatureCodes();
-    // The number context must be generated BEFORE the general dialplan that
-    // includes it; otherwise on a fresh install Asterisk includes a context
-    // that does not exist.
+    // The number and custom contexts must be generated BEFORE the general
+    // dialplan that includes them; otherwise on a fresh install Asterisk includes
+    // a context that does not exist.
     syncInternalNumbers();
+    syncCustomDialplan();
     syncGeneralDialplan();
     if (is_file(__DIR__ . '/core/PluginManager.php')) {
         require_once __DIR__ . '/core/PluginManager.php';

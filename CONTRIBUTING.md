@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **AI PBX**! 🎉
 
-AI PBX is an open-source enterprise IP PBX and Unified Communications platform created by [Mahir Gül](https://mhrgl.com). We welcome contributions from developers, VoIP engineers, sysadmins, and technical writers worldwide.
+AI PBX is an open-source enterprise IP PBX and Unified Communications platform created by [Mahir Gül](https://mhrgl.com) ([LinkedIn](https://www.linkedin.com/in/mhrgl/)). We welcome contributions from developers, VoIP engineers, sysadmins, and technical writers worldwide.
 
 ---
 
@@ -23,7 +23,7 @@ AI PBX is organized as a unified monorepo:
 |---|---|---|
 | `web/` | Web Management Portal, REST API v1 &amp; Built-in Privacy Engine | PHP 8.x MVC, JavaScript, CSS |
 | `plugins/` | Official First-Class Modular Plugins | PHP 8.x, JSON Manifests |
-| `asterisk-config/` | PBX Dialplan &amp; PJSIP Configs | Asterisk 22, PJSIP, SpanDSP |
+| `conf/asterisk/` | PBX Dialplan &amp; PJSIP Configs | Asterisk 22, PJSIP, SpanDSP |
 | `chat/` | High-Concurrency Chat Engine | Go (Gorilla WebSocket) |
 | `ai/` | Local &amp; Cloud AI Runtime (`aipbx-ai`) | Python |
 | `signaling/` | Local Loopback HEPv3 SIP Signaling Capture (`aipbx-signaling`) | Python |
@@ -123,7 +123,7 @@ Please adhere to the [Conventional Commits](https://www.conventionalcommits.org/
   PHP values reach them through a small data block (`window.X = {...}`), not PHP inside the script.
 - **Sidebar** entries are data in `web/templates/sidebar_menu.php`.
 - **Asterisk restarts on update:** `aipbx-update` restarts Asterisk only when the update needs it
-  (`scripts/asterisk-restart-needed.sh`): when a file in `asterisk-config/` (outside `pbx/`) changed,
+  (`scripts/asterisk-restart-needed.sh`): when a file in `conf/asterisk/` (outside `pbx/`) changed,
   or `ASTERISK_RESTART_EPOCH` at the top of `install.sh` was raised. Raise it in a change that needs
   a restart to take effect — a new Asterisk package or module, the service unit, anything read only
   at start. Everything else is reloaded and calls stay up.
@@ -189,7 +189,7 @@ asked to be split.
 
 ## 📬 Contact & Community
 
-- **Project Creator & Lead**: Mahir Gül ([mhrgl.com](https://mhrgl.com))
+- **Project Creator & Lead**: Mahir Gül ([mhrgl.com](https://mhrgl.com) · [LinkedIn](https://www.linkedin.com/in/mhrgl/))
 - **Privacy Policy**: [https://www.mhrgl.com/privacy](https://www.mhrgl.com/privacy)
 - **GitHub Issues**: [https://github.com/mahirgul/AiPBX/issues](https://github.com/mahirgul/AiPBX/issues)
 - **GitHub Discussions**: [https://github.com/mahirgul/AiPBX/discussions](https://github.com/mahirgul/AiPBX/discussions)

@@ -44,6 +44,11 @@ function portalEnv($key, $default = '') {
 }
 
 define('DB_HOST', portalEnv('DB_HOST', 'localhost'));
+// MariaDB's port is a deployment setting, not a constant: the compose stack
+// publishes it on 127.0.0.1:${AIPBX_DB_PORT} and passes it in as DB_PORT.
+// Assuming 3306 here left the portal unable to connect on any other port,
+// while aipbx-init (which reads DB_PORT) had already migrated the schema fine.
+define('DB_PORT', portalEnv('DB_PORT', '3306'));
 define('DB_NAME', portalEnv('DB_NAME', 'asterisk'));
 define('DB_USER', portalEnv('DB_USER'));          // secret: NO fallback
 define('DB_PASS', portalEnv('DB_PASS'));          // secret: NO fallback
@@ -194,8 +199,8 @@ function getDB() {
     static $pdo = null;
     if ($pdo === null) {
         try {
-            $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
-            if (file_exists('/var/lib/mysql/mysql.sock')) {
+            $dsn = 'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4';
+            if ((DB_HOST === 'localhost' || DB_HOST === '127.0.0.1') && DB_PORT === '3306' && file_exists('/var/lib/mysql/mysql.sock')) {
                 $dsn = 'mysql:unix_socket=/var/lib/mysql/mysql.sock;dbname=' . DB_NAME . ';charset=utf8mb4';
             }
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [
@@ -256,7 +261,9 @@ function setSystemSetting(string $key, string $value): void {
         $db = getDB();
         $stmt = $db->prepare("INSERT INTO sys_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)");
         $stmt->execute([$key, $value]);
-    } catch (\Throwable $e) {}
+    } catch (\Throwable $e) {
+        error_log("setSystemSetting failed for {$key}: " . $e->getMessage());
+    }
 }
 
 /**
@@ -294,7 +301,7 @@ const LANGUAGE_LABELS = [
     'ja' => '日本語 (ja)',
     'ru' => 'Русский (ru)',
     'sv' => 'Svenska (sv)',
-    'pr' => 'Português (pr)',
+    'pt' => 'Português (pt)',
     'pt_BR' => 'Português - Brasil (pt_BR)',
 ];
 
@@ -354,6 +361,29 @@ function verifyLoginPassword(string $input, string $hash): bool
 }
 
 // Rate Limiting & Brute Force Tracker
+/**
+ * Resolves the client IP address. When reverse proxy support is enabled and the
+ * immediate connection (REMOTE_ADDR) is in the trusted proxies list, X-Forwarded-For
+ * or X-Real-IP headers are inspected.
+ */
+function getClientIP(): string {
+    $remote = (string)($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
+    if (!class_exists('ReverseProxyService', false)) {
+        require_once __DIR__ . '/src/services/ReverseProxyService.php';
+    }
+    return ReverseProxyService::resolveClientIp($remote, $_SERVER);
+}
+
+/**
+ * Checks if the incoming request is over HTTPS (directly or via a trusted reverse proxy).
+ */
+function isHttpsRequest(): bool {
+    if (!class_exists('ReverseProxyService', false)) {
+        require_once __DIR__ . '/src/services/ReverseProxyService.php';
+    }
+    return ReverseProxyService::isHttps($_SERVER);
+}
+
 function checkBruteForceLockout($ip, $username) {
     $db = getDB();
 

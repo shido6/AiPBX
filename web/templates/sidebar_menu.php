@@ -62,6 +62,7 @@ return [
         'items' => [
             ['href' => '/trunks', 'icon' => 'fas fa-server', 'label' => 'sidebar.item_trunks', 'show' => $can('trunks'), 'pages' => ['trunks.php']],
             ['href' => '/did-routes', 'icon' => 'fas fa-route', 'label' => 'sidebar.item_did_routes', 'show' => $can('did_routes'), 'pages' => ['did_routes.php']],
+            ['href' => '/blacklist', 'icon' => 'fas fa-ban', 'label' => 'sidebar.item_blacklist', 'show' => $can('did_routes'), 'pages' => ['blacklist.php']],
             ['href' => '/outbound-routes', 'icon' => 'fas fa-sign-out-alt', 'label' => 'sidebar.item_outbound_routes', 'show' => $can('outbound_routes'), 'pages' => ['outbound_routes.php']],
             ['href' => '/dialplan-rules', 'icon' => 'fas fa-sliders-h', 'label' => 'sidebar.item_dialplan_rules', 'show' => $can('outbound_routes'), 'pages' => ['dialplan_rules.php']],
             ['href' => '/dial-permissions', 'icon' => 'fas fa-shield-alt', 'label' => 'sidebar.item_dial_permissions', 'title' => 'sidebar.item_dial_permissions', 'show' => $can('dial_permissions'), 'pages' => ['dial_permissions.php'], 'uri' => '/dial-permissions'],
@@ -76,11 +77,13 @@ return [
             ['href' => '/ring-groups', 'icon' => 'fas fa-users', 'label' => 'sidebar.item_ring_groups', 'show' => $can('ring_groups'), 'pages' => ['ring_groups.php'], 'uri' => '/ring-groups'],
             ['href' => '/queues', 'icon' => 'fas fa-layer-group', 'label' => 'sidebar.item_queues', 'show' => $can('queues'), 'pages' => ['queues.php']],
             ['href' => '/conferences', 'icon' => 'fas fa-users-rectangle', 'label' => 'sidebar.item_conferences', 'show' => $can('conferences'), 'pages' => ['conferences.php'], 'uri' => '/conferences'],
+            ['href' => '/meetings', 'icon' => 'fas fa-video', 'label' => 'sidebar.item_meetings', 'show' => $can('meetings'), 'pages' => ['meetings.php'], 'uri' => '/meetings'],
             ['href' => '/boss-secretary', 'icon' => 'fas fa-user-tie', 'label' => 'sidebar.item_boss_secretary', 'show' => $can('boss_secretary'), 'pages' => ['boss_secretary.php'], 'uri' => '/boss-secretary'],
             ['href' => '/end-call', 'icon' => 'fas fa-phone-slash', 'label' => 'sidebar.item_end_call', 'show' => $can('end_call'), 'pages' => ['end_call.php']],
             ['href' => '/sounds', 'icon' => 'fas fa-music', 'label' => 'sidebar.item_sounds', 'show' => $can('sounds'), 'pages' => ['sounds.php']],
             ['href' => '/feature-codes', 'icon' => 'fas fa-hashtag', 'label' => 'sidebar.item_feature_codes', 'title' => 'sidebar.item_feature_codes_tooltip', 'show' => $can('feature_codes'), 'pages' => ['feature_codes.php']],
             ['href' => '/feature-codes-status', 'icon' => 'fas fa-list-check', 'label' => 'sidebar.item_feature_codes_status', 'show' => $can('feature_codes'), 'pages' => ['feature_codes_status.php']],
+            ['href' => '/custom-dialplan', 'icon' => 'fas fa-code', 'label' => 'sidebar.item_custom_dialplan', 'show' => $can('custom_dialplan'), 'pages' => ['custom_dialplan.php'], 'uri' => '/custom-dialplan'],
         ],
     ],
     [
@@ -90,6 +93,7 @@ return [
         'items' => [
             ['href' => '/network-settings', 'icon' => 'fas fa-network-wired', 'label' => 'sidebar.item_network_settings', 'show' => $isAdmin, 'pages' => ['network_settings.php']],
             ['href' => '/network-services', 'icon' => 'fas fa-ethernet', 'label' => 'sidebar.item_network_services', 'show' => $isAdmin, 'pages' => ['network_services.php']],
+            ['href' => '/reverse-proxy', 'icon' => 'fas fa-shield-alt', 'label' => 'sidebar.item_reverse_proxy', 'show' => $isAdmin, 'pages' => ['reverse_proxy.php'], 'uri' => '/reverse-proxy'],
             ['href' => '/phones', 'icon' => 'fas fa-phone', 'label' => 'sidebar.item_phones', 'show' => $can('phones'), 'pages' => ['phones.php', 'phone_keys.php']],
             ['href' => '/phone-logs', 'icon' => 'fas fa-scroll', 'label' => 'sidebar.item_phone_logs', 'show' => $isAdmin, 'pages' => ['phone_logs.php']],
         ],

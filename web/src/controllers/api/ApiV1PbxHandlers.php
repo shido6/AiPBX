@@ -9,8 +9,12 @@ final class ApiV1PbxHandlers
 {
     // ------------------------------------------------------------------ Extensions
 
-    public static function handleExtensions(string $method, ?string $idStr): never
+    public static function handleExtensions(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
+
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll(
@@ -85,15 +89,15 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Trunks
 
-    public static function handleTrunks(string $method, ?string $idStr, ?string $subAction): never
+    public static function handleTrunks(string $method, ?string $idStr, ?string $subAction = null): never
     {
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_trunks ORDER BY sort_order ASC, id ASC');
             ApiResponse::success(ResourceNormalizer::sanitizeList($rows));
         }
 
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $row = DBHelper::fetchOne('SELECT * FROM pbx_trunks WHERE id = ?', [(int)$idStr]);
             if (!$row) {
@@ -120,7 +124,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $existing = DBHelper::fetchOne('SELECT * FROM pbx_trunks WHERE id = ?', [(int)$idStr]);
             if (!$existing) {
@@ -132,10 +136,14 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if ($method === 'DELETE' && $idStr !== null) {
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $res = TrunkService::deleteTrunk((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
+        }
+
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
         }
 
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/trunks', 405);
@@ -143,15 +151,15 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ DID Routes
 
-    public static function handleDidRoutes(string $method, ?string $idStr, ?string $subAction): never
+    public static function handleDidRoutes(string $method, ?string $idStr, ?string $subAction = null): never
     {
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_dids ORDER BY sort_order ASC, id ASC');
             ApiResponse::success($rows);
         }
 
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $row = DBHelper::fetchOne('SELECT * FROM pbx_dids WHERE id = ?', [(int)$idStr]);
             if (!$row) {
@@ -178,7 +186,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved);
         }
 
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $existing = DBHelper::fetchOne('SELECT * FROM pbx_dids WHERE id = ?', [(int)$idStr]);
             if (!$existing) {
@@ -190,10 +198,14 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved);
         }
 
-        if ($method === 'DELETE' && $idStr !== null) {
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $res = RouteService::deleteDIDRoute((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
+        }
+
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
         }
 
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/did-routes', 405);
@@ -201,15 +213,15 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Outbound Routes
 
-    public static function handleOutboundRoutes(string $method, ?string $idStr, ?string $subAction): never
+    public static function handleOutboundRoutes(string $method, ?string $idStr, ?string $subAction = null): never
     {
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_outbound_routes ORDER BY sort_order ASC, id ASC');
             ApiResponse::success(ResourceNormalizer::sanitizeList($rows));
         }
 
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $row = DBHelper::fetchOne('SELECT * FROM pbx_outbound_routes WHERE id = ?', [(int)$idStr]);
             if (!$row) {
@@ -236,7 +248,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $existing = DBHelper::fetchOne('SELECT * FROM pbx_outbound_routes WHERE id = ?', [(int)$idStr]);
             if (!$existing) {
@@ -248,10 +260,14 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if ($method === 'DELETE' && $idStr !== null) {
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $res = RouteService::deleteOutboundRoute((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
+        }
+
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
         }
 
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/outbound-routes', 405);
@@ -259,9 +275,9 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ IVRs
 
-    public static function handleIvrs(string $method, ?string $idStr, ?string $subAction, ?string $subId): never
+    public static function handleIvrs(string $method, ?string $idStr, ?string $subAction = null, ?string $subId = null): never
     {
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $ivrs = DBHelper::fetchAll('SELECT * FROM pbx_ivrs ORDER BY id ASC');
             $entries = DBHelper::fetchAll('SELECT * FROM pbx_ivr_entries ORDER BY ivr_id ASC, digit ASC');
@@ -275,7 +291,7 @@ final class ApiV1PbxHandlers
             ApiResponse::success($ivrs);
         }
 
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $ivr = DBHelper::fetchOne('SELECT * FROM pbx_ivrs WHERE id = ?', [(int)$idStr]);
             if (!$ivr) {
@@ -296,7 +312,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved, 201);
         }
 
-        if ($method === 'POST' && $subAction === 'entries') {
+        if ($method === 'POST' && $subAction === 'entries' && $subId === null) {
             ApiRequestContext::requireScope('pbx:write');
             $body = ApiRequestContext::jsonBody();
             $body['ivr_id'] = (int)$idStr;
@@ -310,7 +326,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res);
         }
 
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $existing = DBHelper::fetchOne('SELECT * FROM pbx_ivrs WHERE id = ?', [(int)$idStr]);
             if (!$existing) {
@@ -322,10 +338,14 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved);
         }
 
-        if ($method === 'DELETE' && $idStr !== null) {
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $res = IVRService::deleteIVR((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
+        }
+
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
         }
 
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/ivrs', 405);
@@ -333,8 +353,12 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Time Conditions & Groups
 
-    public static function handleTimeConditions(string $method, ?string $idStr, ?string $subAction): never
+    public static function handleTimeConditions(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
+
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_time_conditions ORDER BY id ASC');
@@ -382,8 +406,12 @@ final class ApiV1PbxHandlers
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/time-conditions', 405);
     }
 
-    public static function handleTimeGroups(string $method, ?string $idStr): never
+    public static function handleTimeGroups(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
+
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_time_groups ORDER BY id ASC');
@@ -430,8 +458,12 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Ring Groups, Conferences, Boss-Secretary, Dial Permissions
 
-    public static function handleRingGroups(string $method, ?string $idStr): never
+    public static function handleRingGroups(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
+
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(RingGroupService::getRingGroups());
@@ -469,13 +501,21 @@ final class ApiV1PbxHandlers
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/ring-groups', 405);
     }
 
-    public static function handleConferences(string $method, ?string $idStr): never
+    public static function handleConferences(string $method, ?string $idStr, ?string $subAction = null): never
     {
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(ConferenceService::getConferences());
         }
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === 'members') {
+            ApiRequestContext::requireScope('pbx:read');
+            $row = ConferenceService::getConference((int)$idStr);
+            if (!$row) {
+                ApiResponse::error('NOT_FOUND', 'Conference room not found.', 404);
+            }
+            ApiResponse::success(ConferenceService::getLiveMembers((string)$row['room_number']));
+        }
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:read');
             $row = ConferenceService::getConference((int)$idStr);
             if (!$row) {
@@ -490,7 +530,7 @@ final class ApiV1PbxHandlers
             $res = ConferenceService::saveConference($body);
             ApiResponse::fromServiceResult($res, null, 201);
         }
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $existing = ConferenceService::getConference((int)$idStr);
             if (!$existing) {
@@ -500,16 +540,112 @@ final class ApiV1PbxHandlers
             $res = ConferenceService::saveConference($payload);
             ApiResponse::fromServiceResult($res, ConferenceService::getConference((int)$idStr));
         }
-        if ($method === 'DELETE' && $idStr !== null) {
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('pbx:write');
             $res = ConferenceService::deleteConference((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
         }
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/conferences', 405);
     }
 
-    public static function handleBossSecretary(string $method, ?string $idStr): never
+    public static function handleMeetings(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
+            ApiRequestContext::requireScope('pbx:read');
+            $status = isset($_GET['status']) && is_string($_GET['status']) && $_GET['status'] !== '' ? $_GET['status'] : null;
+            $rows = MeetingService::getMeetings($status);
+            foreach ($rows as &$r) {
+                $r['join_url'] = MeetingService::getMeetingUrl((string)($r['meeting_token'] ?? ''));
+            }
+            unset($r);
+            ApiResponse::success($rows);
+        }
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
+            ApiRequestContext::requireScope('pbx:read');
+            $row = MeetingService::getMeeting($idStr);
+            if (!$row) {
+                ApiResponse::error('NOT_FOUND', 'Meeting not found.', 404);
+            }
+            $row['join_url'] = MeetingService::getMeetingUrl((string)($row['meeting_token'] ?? ''));
+            $row['invites'] = MeetingService::getInvites((int)$row['id']);
+            ApiResponse::success($row);
+        }
+        if ($method === 'POST' && $idStr === null) {
+            ApiRequestContext::requireScope('pbx:write');
+            $body = ApiRequestContext::jsonBody();
+            $body['id'] = 0;
+            $res = MeetingService::saveMeeting($body, isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null);
+            $saved = null;
+            if (!empty($res['success']) && !empty($res['meeting_id'])) {
+                $saved = MeetingService::getMeeting((int)$res['meeting_id']);
+                if ($saved) {
+                    $saved['join_url'] = MeetingService::getMeetingUrl((string)($saved['meeting_token'] ?? ''));
+                    $saved['invites'] = MeetingService::getInvites((int)$saved['id']);
+                }
+            }
+            ApiResponse::fromServiceResult($res, $saved, 201);
+        }
+        if ($method === 'POST' && $subAction === 'invites') {
+            ApiRequestContext::requireScope('pbx:write');
+            $existing = MeetingService::getMeeting($idStr);
+            if (!$existing) {
+                ApiResponse::error('NOT_FOUND', 'Meeting not found.', 404);
+            }
+            $body = ApiRequestContext::jsonBody();
+            $res = MeetingService::addInvite(
+                (int)$existing['id'],
+                (string)($body['email'] ?? ''),
+                (string)($body['name'] ?? '')
+            );
+            $inviteData = null;
+            if (!empty($res['success']) && !empty($res['guest_token'])) {
+                $inviteData = [
+                    'invite_id'   => $res['invite_id'] ?? null,
+                    'guest_token' => $res['guest_token'],
+                    'join_url'    => MeetingService::getMeetingUrl((string)$res['guest_token']),
+                ];
+            }
+            ApiResponse::fromServiceResult($res, $inviteData, 201);
+        }
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
+            ApiRequestContext::requireScope('pbx:write');
+            $existing = MeetingService::getMeeting($idStr);
+            if (!$existing) {
+                ApiResponse::error('NOT_FOUND', 'Meeting not found.', 404);
+            }
+            $payload = array_merge($existing, ApiRequestContext::jsonBody());
+            $payload['id'] = (int)$existing['id'];
+            $res = MeetingService::saveMeeting($payload, isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null);
+            $saved = MeetingService::getMeeting((int)$existing['id']);
+            if ($saved) {
+                $saved['join_url'] = MeetingService::getMeetingUrl((string)($saved['meeting_token'] ?? ''));
+                $saved['invites'] = MeetingService::getInvites((int)$saved['id']);
+            }
+            ApiResponse::fromServiceResult($res, $saved);
+        }
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
+            ApiRequestContext::requireScope('pbx:write');
+            $existing = MeetingService::getMeeting($idStr);
+            if (!$existing) {
+                ApiResponse::error('NOT_FOUND', 'Meeting not found.', 404);
+            }
+            $ok = MeetingService::cancelMeeting((int)$existing['id'], isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : null);
+            ApiResponse::fromServiceResult(['success' => $ok, 'error' => $ok ? null : 'Failed to cancel meeting'], ['id' => (int)$existing['id'], 'status' => 'cancelled']);
+        }
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
+        ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/meetings', 405);
+    }
+
+    public static function handleBossSecretary(string $method, ?string $idStr, ?string $subAction = null): never
+    {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(BossSecretaryService::getGroups());
@@ -539,8 +675,11 @@ final class ApiV1PbxHandlers
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/boss-secretary', 405);
     }
 
-    public static function handleDialPermissions(string $method, ?string $idStr): never
+    public static function handleDialPermissions(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         if ($method === 'GET' && $idStr === null) {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(ResourceNormalizer::sanitizeList(DialPermissionService::getGroups()));
@@ -570,8 +709,11 @@ final class ApiV1PbxHandlers
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/dial-permissions', 405);
     }
 
-    public static function handleFeatureCodes(string $method, ?string $idStr): never
+    public static function handleFeatureCodes(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         if ($method === 'GET') {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(DBHelper::fetchAll('SELECT * FROM pbx_feature_codes ORDER BY id ASC'));
@@ -590,8 +732,11 @@ final class ApiV1PbxHandlers
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/feature-codes', 405);
     }
 
-    public static function handleHangupActions(string $method, ?string $idStr): never
+    public static function handleHangupActions(string $method, ?string $idStr, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         if ($method === 'GET') {
             ApiRequestContext::requireScope('pbx:read');
             ApiResponse::success(DBHelper::fetchAll('SELECT * FROM pbx_hangup_actions ORDER BY id ASC'));
@@ -624,9 +769,9 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Queues
 
-    public static function handleQueues(string $method, ?string $idStr, ?string $subAction): never
+    public static function handleQueues(string $method, ?string $idStr, ?string $subAction = null): never
     {
-        if ($method === 'GET' && $idStr === 'live') {
+        if ($method === 'GET' && $idStr === 'live' && $subAction === null) {
             ApiRequestContext::requireScope('queues:read');
             $queues = ResourceNormalizer::sanitizeList(DBHelper::fetchAll('SELECT * FROM pbx_queues WHERE is_active = 1 ORDER BY id ASC'));
             $cliRes = AsteriskHelper::execCLI('queue show');
@@ -637,13 +782,13 @@ final class ApiV1PbxHandlers
             ]);
         }
 
-        if ($method === 'GET' && $idStr === null) {
+        if ($method === 'GET' && $idStr === null && $subAction === null) {
             ApiRequestContext::requireScope('queues:read');
             $rows = DBHelper::fetchAll('SELECT * FROM pbx_queues ORDER BY id ASC');
             ApiResponse::success(ResourceNormalizer::sanitizeList($rows));
         }
 
-        if ($method === 'GET') {
+        if ($method === 'GET' && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('queues:read');
             $row = DBHelper::fetchOne('SELECT * FROM pbx_queues WHERE id = ? OR queue_name = ? LIMIT 1', [(int)$idStr, $idStr]);
             if (!$row) {
@@ -670,7 +815,7 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null) {
+        if (in_array($method, ['PUT', 'PATCH'], true) && $idStr !== null && $subAction === null) {
             ApiRequestContext::requireScope('queues:write');
             $existing = DBHelper::fetchOne('SELECT * FROM pbx_queues WHERE id = ?', [(int)$idStr]);
             if (!$existing) {
@@ -682,10 +827,14 @@ final class ApiV1PbxHandlers
             ApiResponse::fromServiceResult($res, $saved ? ResourceNormalizer::sanitizeRow($saved) : null);
         }
 
-        if ($method === 'DELETE' && $idStr !== null) {
-            ApiRequestContext::requireScope('queues:write');
+        if ($method === 'DELETE' && $idStr !== null && $subAction === null) {
+            ApiRequestContext::requireScope('pbx:write');
             $res = QueueService::deleteQueue((int)$idStr, ApiRequestContext::csrfToken());
             ApiResponse::fromServiceResult($res);
+        }
+
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
         }
 
         ApiResponse::error('METHOD_NOT_ALLOWED', 'Unsupported method for /api/v1/queues', 405);
@@ -693,8 +842,11 @@ final class ApiV1PbxHandlers
 
     // ------------------------------------------------------------------ Calls, CDR & Voicemail
 
-    public static function handleCalls(string $method, string $sub): never
+    public static function handleCalls(string $method, string $sub, ?string $subAction = null): never
     {
+        if ($subAction !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$subAction}", 404);
+        }
         if ($sub === 'active' && $method === 'GET') {
             ApiRequestContext::requireScope('calls:read');
             $rawRes = AsteriskHelper::execCLI('core show channels concise');
@@ -770,8 +922,11 @@ final class ApiV1PbxHandlers
         ApiResponse::error('NOT_FOUND', "Unknown calls endpoint: /api/v1/calls/{$sub}", 404);
     }
 
-    public static function handleCdr(string $method): never
+    public static function handleCdr(string $method, ?string $sub = null): never
     {
+        if ($sub !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$sub}", 404);
+        }
         if ($method !== 'GET') {
             ApiResponse::error('METHOD_NOT_ALLOWED', 'Only GET is supported for /api/v1/cdr', 405);
         }
@@ -818,8 +973,11 @@ final class ApiV1PbxHandlers
         ]);
     }
 
-    public static function handleVoicemails(string $method): never
+    public static function handleVoicemails(string $method, ?string $sub = null): never
     {
+        if ($sub !== null) {
+            ApiResponse::error('NOT_FOUND', "Sub-resource not found: {$sub}", 404);
+        }
         if ($method !== 'GET') {
             ApiResponse::error('METHOD_NOT_ALLOWED', 'Only GET is supported for /api/v1/voicemails', 405);
         }

@@ -206,6 +206,16 @@ Granular security policies are enforced via the `sys_role_permissions` database 
   - Plugins declare hooks in `plugin.json` (`admin_page`, `sync_domain`, `events`, `auth_provider`, `ai_provider`, `public_endpoints`) and only execute when explicitly enabled in `sys_plugins`.
   - **Fault Isolation & Safe Mode**: `PluginManager` wraps every plugin hook in `try / catch (\Throwable)` and tracks consecutive failures; after 5 errors, the plugin is automatically disabled (**Safe Mode**) so a buggy third-party plugin can never break Asterisk sync or portal pages.
 
+### 4.6 Web Video Meetings & ConfBridge SFU Architecture (Spec 004, v1.60+)
+- **Dual Video Telephony Modes**:
+  - **SFU Mode (`video_mode=sfu`)**: Leverages Asterisk 22 `app_confbridge` Selective Forwarding Unit capabilities. RTP video streams (VP8, VP9, H.264) are forwarded directly between WebRTC endpoints without server-side video transcoding, keeping server CPU utilization minimal and allowing modern browsers to render high-definition gallery grid layouts.
+  - **Follow-Talker Mode (`video_mode=follow_talker`)**: Evaluates active speaker audio levels in real time and routes the dominant speaker's video track to all participants, ensuring compatibility with standard single-stream hardware SIP video phones.
+  - **Bridge Optimization Flags**: Generated ConfBridge profiles automatically configure `video_update_discard=0` for instant keyframe delivery on speaker transition, and REMB bandwidth adaptation (`remb_send_interval=1000`, `remb_behavior=average`).
+  - **WebRTC PJSIP Stream Expansion**: Multi-stream endpoints configure `max_audio_streams=10` and `max_video_streams=10` to support concurrent stream forwarding.
+- **Meeting Scheduler & Public Guest Gateway (`/meetings` & `/meet/{token}`)**:
+  - Internal scheduling interface with calendar integration, RFC 5545 `.ics` MIME generation, and transactional email dispatch via `MailTemplateService` (`meeting_invite`).
+  - Anonymous guest access gateway with zero installation, pre-join camera/mic hardware checks, responsive auto-resizing video grid (1 to 9+ tiles), and screen sharing via `getDisplayMedia`.
+
 ---
 
 ## 5. Android Mobile Application (Kotlin)
@@ -230,10 +240,10 @@ Granular security policies are enforced via the `sys_role_permissions` database 
   - Watchdog race-condition guards preventing spurious `DISCONNECTED` restarts.
   - Foreground Service (`PbxForegroundService`) with ongoing status notification for high-reliability background survival.
   - Firebase Cloud Messaging (FCM) wakeup service with conversation-level notification grouping.
-- **Diagnostics System**: Integrated [`AppLogManager`](android/app/src/main/java/com/mhrgl/aipbx/util/AppLogManager.kt) capturing runtime system parameters and Logcat traces with one-click export/sharing.
+- **Diagnostics System**: Integrated `AppLogManager` capturing runtime system parameters and Logcat traces with one-click export/sharing (see [AiPBX-Android](https://github.com/mahirgul/AiPBX-Android)).
 
 ### 5.2 Android 15 (API 35+) Edge-to-Edge Architectural Standard
-- **Centralized Pattern**: All UI activities strictly extend [`BaseActivity`](android/app/src/main/java/com/mhrgl/aipbx/ui/BaseActivity.kt), which invokes standard `enableEdgeToEdge()` prior to `super.onCreate()`.
+- **Centralized Pattern**: All UI activities strictly extend `BaseActivity` in the [AiPBX-Android repository](https://github.com/mahirgul/AiPBX-Android), which invokes standard `enableEdgeToEdge()` prior to `super.onCreate()`.
 - **Zero Deprecation Guarantee**: Direct calls to `Window.setDecorFitsSystemWindows`, `WindowCompat.setDecorFitsSystemWindows`, `setStatusBarColor`, `setNavigationBarColor`, or custom `SystemBarStyle` parameters are strictly forbidden.
 - **Window Insets Management**: Layout roots dynamically dispatch insets with `applyEdgeToEdgeInsets(view, consumeIme)` to preserve padding against status/navigation bars, display cutouts, and IME soft keyboards.
 - **Automated Guardrails**: `EdgeToEdgeComplianceTest` (JUnit) and `android/bin/edge_to_edge_audit.sh` run on every build to halt builds upon any violation.

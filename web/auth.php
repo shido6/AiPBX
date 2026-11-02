@@ -116,6 +116,7 @@ function getModuleKeyForPage($page = null) {
         'chat.php'              => 'chat',
         'trunks.php'            => 'trunks',
         'did_routes.php'        => 'did_routes',
+        'blacklist.php'         => 'did_routes',
         'outbound_routes.php'   => 'outbound_routes',
         'dialplan_rules.php'    => 'outbound_routes',
         'dial_permissions.php' => 'dial_permissions',
@@ -129,9 +130,11 @@ function getModuleKeyForPage($page = null) {
         // DHCP/TFTP for desk phones: admin-only like the Phones page.
         'network_services.php'  => 'phones',
         'network_settings.php'  => 'phones',
+        'reverse_proxy.php'     => 'phones',
         'phone_logs.php'        => 'phones',
         'ring_groups.php'       => 'ring_groups',
         'conferences.php'       => 'conferences',
+        'meetings.php'          => 'meetings',
         'boss_secretary.php'    => 'boss_secretary',
         'users.php'             => 'system_users',
         'queues.php'            => 'queues',
@@ -256,7 +259,7 @@ function hasModulePermission($module_key, $action = 'access') {
     // 'ai_cloud': holds the API keys of paid cloud AI services.
     // 'ai_apps': an application's lookup URL is requested by the server itself.
     // Keep in sync with RoleRepository::modulesDefinition() 'admin_only' (RbacTest checks it).
-    if (in_array($module_key, ['roles', 'system_users', 'firewall', 'fail2ban', 'mail_settings', 'system_update', 'scheduled_tasks', 'certificates', 'privacy', 'plugins', 'api_keys', 'webhooks', 'external_dbs', 'google_integration', 'phones', 'web_widgets', 'file_storage', 'ai_models', 'ai_cloud', 'ai_apps', 'echo', 'ai_voip_engineer', 'assistant', 'health', 'call_quality'], true)) {
+    if (in_array($module_key, ['roles', 'system_users', 'firewall', 'fail2ban', 'mail_settings', 'system_update', 'scheduled_tasks', 'certificates', 'privacy', 'plugins', 'api_keys', 'webhooks', 'external_dbs', 'google_integration', 'phones', 'web_widgets', 'file_storage', 'ai_models', 'ai_cloud', 'ai_apps', 'echo', 'ai_voip_engineer', 'assistant', 'health', 'call_quality', 'custom_dialplan'], true)) {
         return $role === 'admin';
     }
 
@@ -318,13 +321,13 @@ function hasModulePermission($module_key, $action = 'access') {
  */
 function isPostDeleteRequest(): bool {
     foreach ($_POST as $k => $v) {
-        if (str_starts_with($k, 'delete_') || str_starts_with($k, 'remove_') || $k === 'delete') {
+        if (str_starts_with($k, 'delete_') || str_starts_with($k, 'remove_') || str_starts_with($k, 'cancel_') || $k === 'delete') {
             return true;
         }
     }
     $req_action = $_POST['action'] ?? $_GET['action'] ?? '';
     if ($req_action !== '') {
-        if (str_starts_with($req_action, 'delete_') || str_starts_with($req_action, 'remove_') || $req_action === 'delete') {
+        if (str_starts_with($req_action, 'delete_') || str_starts_with($req_action, 'remove_') || str_starts_with($req_action, 'cancel_') || $req_action === 'delete') {
             return true;
         }
     }

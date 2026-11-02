@@ -19,6 +19,7 @@ class CertificateService
     public const STAGE_DIR = '/var/lib/aipbx/cert-stage';
     public const STATUS_FILE = '/var/lib/aipbx/cert-status.json';
     public const CERTBOT = '/usr/bin/certbot';
+    public const CF_CRED = '/etc/letsencrypt/cloudflare.ini';
     /** Let's Encrypt renews 30 days before expiry; warn when that did not happen. */
     public const WARN_DAYS = 21;
     public const MAX_UPLOAD = 65536;
@@ -352,6 +353,7 @@ class CertificateService
             'copies' => $copies,
             'le_possible' => self::letsEncryptPossible($domain),
             'certbot' => is_file(self::CERTBOT),
+            'cf_configured' => is_file(self::CF_CRED),
             'le_lineage' => $domain !== '' && is_file('/etc/letsencrypt/renewal/' . $domain . '.conf'),
             'next_renewal_check' => self::timerNext(),
             'last' => self::lastResult(),
@@ -382,7 +384,7 @@ class CertificateService
     // ------------------------------------------------------------------
 
     /** Let's Encrypt: test (staging) or get a certificate for the portal domain. */
-    public static function letsEncrypt(bool $dryRun, string $email): array
+    public static function letsEncrypt(bool $dryRun, string $email, string $method = 'http01', string $cfApiToken = '', bool $wildcard = false): array
     {
         $domain = self::domain();
         if (!self::letsEncryptPossible($domain)) {
@@ -399,7 +401,38 @@ class CertificateService
             }
             array_push($args, '--email', $email);
         }
-        return self::runPriv($args, $dryRun ? null : 'Let\'s Encrypt certificate requested');
+
+        if ($method === 'dns_cloudflare') {
+            $token = trim($cfApiToken);
+            if ($token !== '') {
+                if (!preg_match('/^[A-Za-z0-9_-]{20,100}$/', $token)) {
+                    return ['success' => false, 'error' => t('certificates.err_invalid_cf_token')];
+                }
+                if (!is_dir(self::STAGE_DIR) && !@mkdir(self::STAGE_DIR, 0700, true)) {
+                    return ['success' => false, 'error' => t('certificates.err_stage_failed')];
+                }
+                @chmod(self::STAGE_DIR, 0700);
+                $stageFile = self::STAGE_DIR . '/cloudflare.ini';
+                $content = "dns_cloudflare_api_token = " . $token . "\n";
+                $old = umask(0077);
+                $written = @file_put_contents($stageFile, $content) !== false;
+                umask($old);
+                if (!$written) {
+                    return ['success' => false, 'error' => t('certificates.err_stage_failed')];
+                }
+                @chmod($stageFile, 0600);
+            } elseif (!is_file(self::CF_CRED)) {
+                return ['success' => false, 'error' => t('certificates.err_invalid_cf_token')];
+            }
+            $args[] = '--dns-cloudflare';
+            if ($wildcard) {
+                $args[] = '--wildcard';
+            }
+        }
+
+        $res = self::runPriv($args, $dryRun ? null : 'Let\'s Encrypt certificate requested');
+        @unlink(self::STAGE_DIR . '/cloudflare.ini');
+        return $res;
     }
 
     public static function renew(bool $dryRun): array

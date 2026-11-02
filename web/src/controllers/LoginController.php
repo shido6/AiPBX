@@ -1,6 +1,8 @@
 <?php
 require_once __DIR__ . '/../services/LoginService.php';
 require_once __DIR__ . '/../services/GoogleAuthService.php';
+require_once __DIR__ . '/../services/OidcAuthService.php';
+require_once __DIR__ . '/../services/SamlAuthService.php';
 
 /**
  * Sign-in page (/login), public: password with a small sum captcha, Google and passkey
@@ -13,7 +15,7 @@ class LoginController extends BaseController
     public static function index(): void
     {
         $error = '';
-        $client_ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        $client_ip = function_exists('getClientIP') ? getClientIP() : ($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1');
 
         // Generate Math Captcha if not present
         if (empty($_SESSION['captcha_num1']) || empty($_SESSION['captcha_num2'])) {
@@ -47,6 +49,10 @@ class LoginController extends BaseController
         $site_logo_wide = $site_logo_type === 'image' && !empty($site_logo_image) && getSystemSetting('site_logo_style', 'square') === 'wide';
         $site_favicon_url = getSystemSetting('site_favicon_url', '');
         $googleLoginEnabled = GoogleAuthService::isEnabled();
+        $oidcLoginEnabled = OidcAuthService::isEnabled();
+        $oidcPublicSettings = $oidcLoginEnabled ? OidcAuthService::getPublicSettings() : [];
+        $samlLoginEnabled = SamlAuthService::isEnabled();
+        $samlPublicSettings = $samlLoginEnabled ? SamlAuthService::getPublicSettings() : [];
 
         static::renderAuthPage('login/index', [
             'error' => $error,
@@ -63,6 +69,10 @@ class LoginController extends BaseController
             'site_logo_wide' => $site_logo_wide,
             'site_favicon_url' => $site_favicon_url,
             'googleLoginEnabled' => $googleLoginEnabled,
+            'oidcLoginEnabled' => $oidcLoginEnabled,
+            'oidcPublicSettings' => $oidcPublicSettings,
+            'samlLoginEnabled' => $samlLoginEnabled,
+            'samlPublicSettings' => $samlPublicSettings,
         ], ['title' => t('login.page_title'), 'inline_lang_switch' => true]);
     }
 }

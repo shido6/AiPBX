@@ -5,215 +5,359 @@ the git tag message and the GitHub Release notes, and installations show it as
 "What's new" on the **System Update** page. To update an installation:
 `sudo aipbx-update` (or portal → System → System Update).
 
-## Unreleased
+## 1.60.4
 
-Remote monitoring and operations:
+- **SAML 2.0 sign-in bypass fixed (security, update if the SAML plugin is on):**
+  - Anyone with an account at the Identity Provider could sign in as any other user, administrators included, by adding an unsigned NameID inside an extra `ds:Signature` element. The signature check now accepts one signature only and reads only the signed content.
+  - A response must answer a sign-in started in the same browser and is accepted once. **Sign-ins started from the Identity Provider's own portal (IdP-initiated) are no longer accepted:** start from the AiPBX login page.
+  - The bearer subject confirmation, its expiry and the audience are now required; only the transforms and algorithms of the SSO profile are accepted; a DOCTYPE is refused.
+  - A disabled SAML plugin no longer accepts responses through its stored certificate.
+  - Fixed: mobile SAML sign-in fell back to a web session, because the Lax session cookie is not sent with the Identity Provider's POST (the request now has its own short-lived cookie). Fixed: valid responses were refused when namespaces were declared on the Response element.
+- **Video meetings: guests reach only their own meeting (security):**
+  - Every `/meet` page shares one SIP password, with which anyone holding a meeting link could enter every active conference room without a PIN. Each call now carries the page's token and Asterisk checks it (`[app-meeting-guest]`): it must belong to this room and the meeting must be open.
+  - Fails closed: a failed check refuses the call. A meeting without guests no longer accepts its link at SIP level either; signed-in users and invited guests still join.
+- **Video meetings: join window and limit are enforced:** from 30 minutes before the start until one hour after the end, with clear pages outside of it; existing links of past meetings stop working. `max_participants` is enforced for browser participants. A browser that disappears without hanging up frees its seat after 30 seconds without media.
+- **Video meetings no longer take over conference rooms:** scheduling a meeting on an existing room number replaced that room's title and PINs, and cancelling the meeting deactivated the room. Such a number is now refused.
+- **Custom dialplan:** `#include`/`#exec` directives and extending reserved contexts (`[from-internal-pbx-ortak](+)`) are refused. The supervisor listen/whisper and DISA templates now carry a random PIN; the DISA template had `1234`. **Review recipes you already inserted from these templates:** existing entries are not changed.
+- **Reverse proxy:** the default list of trusted proxies is now this host only. With private networks in it, any device on the LAN could spoof `X-Forwarded-For` and avoid sign-in lockouts. A saved list is not changed: **if yours holds whole private networks, reduce it to your proxy's address.**
+- **Docs:** turning MPTCP off reduces exposure to CVE-2026-98432; the fix is the distribution's kernel update.
 
-- **Cloud AI: two providers instead of one point of failure**: *AI → Cloud services* now recommends
-  configuring at least two different language-model providers. When a free tier runs out of tokens, a key is
-  revoked or a provider has an outage, the Assistant and Greg (with the System AI brain) try the
-  next configured provider in list order and only the provider that answers is counted in this
-  month's use; when every account fails the error names the providers rather than one key. The
-  prompt goes to whichever provider answers, so the page says plainly to add only accounts the
-  business is willing to send that data to. Speech engines still switch manually.
-- **Two engineers can split a problem, not only review it**: on a multi-part question, the
-  engineer on duty now divides the work into at most three sections and hands some to the relief
-  engineer. Each investigates their own section, the on-duty engineer writes one answer from both
-  sets of findings, and the chat shows a quiet line naming the split. Simple questions are not split;
-  a broken plan or a colleague with nothing to report falls back to the ordinary single answer. On
-  by default under *AI → VoIP Engineer → Relief engineer*; up to three extra model calls on a
-  question that is actually split.
-- **Several engineers, one AI account — without colliding**: *AI → Cloud services* now shows
-  whether the configured language-model providers allow parallel sessions or only one request at a
-  time. Free plans impose both a rate limit and a concurrency limit, so each free-tier provider gets
-  a per-provider turnstile: a second engineer's request waits up to 15 seconds instead of racing the
-  first into a 429, and then gets a clear busy message. Providers with concurrent sessions are not
-  serialized; the page turns to **Parallel sessions** as soon as one is configured. Each engineer
-  keeps their own Greg conversation, and the Dialplan editor now takes a short per-target lock while
-  it captures the before-value and applies a change, so two engineers editing the same extension,
-  group or queue take turns instead of both capturing the same old state (different targets never
-  wait). Every change keeps its audit row and undo. True parallel work still needs a paid plan — the
-  portal cannot tell a free key from a paid one.
-- **Observability coverage: the more Greg can see, the better he diagnoses**: `/ai-voip-engineer`
-  now shows a gauge (0–100, as a pie and a temperature bar) built from what is actually installed —
-  HEP capture on this PBX, HOMER, VoIPmonitor, a local heplify-server, Sipfront keys with Echo on,
-  local RTCP reports, and opencode's own log for self-diagnosis. A configured but unreachable
-  collector earns little; a missing one earns
-  nothing and is named. The same map goes into Greg's prompt, so he cites what he can read, says
-  plainly when a collector is configured but not queryable, and asks for a Call-ID instead of
-  inventing a SIP ladder. opencode's log is read only to explain a missing, slow or refused answer —
-  never as call evidence — and tokens are redacted before it reaches a page or the prompt.
-  Detection is passive: saved settings, the last stored health check and
-  fixed install paths — no scan, no login, no shell. This gauge is separate from the handover
-  temperature: one is what he was told, the other is what he can see. A next-step list under the
-  gauge names each source still short of full, the points it would add, and the one action that
-  earns them.
-- **opencode traffic ledger (admin only)**: when Greg's opencode brain or the workshop uses a
-  remote model, the exact prompt handed to the CLI, the final answer or error, the provider and
-  model, duration and the administrator who asked are now recorded on AI → Echo. Payloads are
-  encrypted with the installation's settings key before they touch the database, so a dump alone
-  does not reveal what a customer told Greg; only metadata, sizes and hashes stay readable. Local
-  providers (`ollama`, `lmstudio`, `llamacpp`, …) are not recorded because nothing leaves the
-  server. The page is admin-only, states that it records the application-level prompt and final
-  text (not provider TLS), keeps 90 days, and has a deliberate "delete all records" action that is
-  itself written to the audit log.
-- **Greg watches and helps set up HOMER and VoIPmonitor**: the Health page now has a **SIP
-  correlation collector** check (every 15 minutes) that follows Echo's target — HOMER, VoIPmonitor,
-  an external collector, or both — and asks the collector's own web UI for an answer. A sign-in
-  redirect or 401 is healthy, a 5xx is a warning, no answer is a failure and sends the normal
-  health alarm; without a UI address only a TCP listener can be proven, so a UDP-only collector is
-  reported as information instead of a false alarm. Echo shows the stored result, and Greg quotes
-  it and can walk an administrator through installation and the VoIPmonitor HEP settings using the
-  same commands the page shows — he cannot run them or change the remote collector.
-- **Cloud connector** (`aipbx-agent`, [docs/connector.md](docs/connector.md)): this installation can
-  register as a node of an EchoGuard-compatible portal and be seen and operated from there.
-  Outbound-only (no inbound port, no port forwarding), four allowlisted operations — `snapshot`,
-  `diagnose`, `reload`, `module_reload` — checked both in the agent and in the op executor. `reload`
-  runs the portal's own apply path, so a remote change gets the same config rollback and the same
-  audit-log record as pressing **Apply**; `module_reload` accepts `core` and `pjsip` only and refuses
-  FreePBX-only module names (`ivr`, `queues`, …) with a reason instead of reporting success. No
-  sudoers entry and no new privileged helper. Off until `/etc/aipbx/agent.conf` is written.
-- **Greg: optional add-on — a face and a voice (Anam.ai)** ([howtos/greg-anam-avatar.md](howtos/greg-anam-avatar.md)):
-  an administrator can create a persona in Anam and give Greg a video avatar that speaks his
-  answers in the chat. Off, and without a persona, until one is configured — none ships with the
-  code and the API key is stored encrypted with the installation's settings key. The browser only
-  ever receives a short-lived session token minted by `web/api/anam.php`; each session carries a
-  hard length (`maxSessionLengthSeconds`, 180 s by default, 30–3600), the face starts only on a
-  click, and leaving the page ends it. The Anam JavaScript SDK is vendored, so no CDN is needed on
-  an on-premise server. An optional listening mode opens the microphone for a two-way conversation
-  (the persona then answers with its own model), and the same card can send the persona into a
-  Google Meet, Zoom or Teams call through Anam's Meetings API — now or up to seven days ahead,
-  group calls waiting to be addressed by name. The card links to anam.ai/pricing and states how a
-  minute is counted, because the avatar is billed separately from the PBX. Sessions also carry
-  Anam's AI-avatar disclosure (`sessionOptions.showAIAvatarDisclosure`), bound to the session token
-  so the browser cannot drop it, and the video stage itself is labelled *AI avatar*.
-- **Greg: the onboarding brief** (`web/src/services/GregBrief.php`): Greg now asks, once, on the
-  first answer of a conversation, for the one document a VoIP engineer would want on their first
-  morning — what the business does, who calls, which numbers matter, the carriers, the call flows
-  that must not break, who to wake at 3 a.m. — as a **single markdown file**. It is added under
-  *AI → VoIP Engineer*, either uploaded (`.md`, `.markdown`, `.txt`) or pasted, with a template to
-  download that lists the questions. Stored as `/var/lib/aipbx/greg/BRIEF.md`, outside the git
-  checkout, so an update never overwrites it; read before every answer, so the brief's facts are
-  part of what he reasons from. Missing, the ask appears on the first answer and never again until
-  the next conversation; present, he is told to say which of the two looks stale when the file
-  disagrees with live data, and never to quote secrets from it. Admin-only page and downloads, the
-  120,000-character limit refused rather than truncated, and saves and removals audited without
-  the content.
-- **Greg: onboarding as a conversation** (`web/src/services/GregOnboardingService.php`): when no
-  handover document exists, saying "onboard me" — or the *Onboard him in chat* button — starts the
-  six questions a new engineer asks: the business, hours and the line that matters, flows that must
-  not break, carriers, people, and what good looks like. One at a time, and each answer is written
-  into the same `BRIEF.md` as it arrives, in a marked section: closing the tab loses nothing, a
-  second answer replaces the block instead of copying it, and the file can still be downloaded and
-  handed to a human engineer. A real question mid-interview is answered normally and the interview
-  waits; "skip" passes, "later" stops and keeps what was written, and running it again asks only
-  what is missing. Admin-only, audited with counts rather than answers, and the card shows how many
-  of the six the file already holds.
-- **Greg: the relief engineer — quiet-hours handoff** (`web/src/services/GregHandoffService.php`):
-  Greg sleeps inside his quiet hours, and a relief engineer — **Mahir Gul** by default — takes the
-  phones. The handoff is a real event: the last ten handoffs are kept in `AGENTS.md`, each is written
-  to the captain's log and audited, and it is recorded once rather than on every message. Both
-  engineers read the same brief, notes and log, but each has his own model source, so the night can
-  run on a different provider with its own credentials — the same source shares Greg's key, and its
-  blind spots. The relief engineer has his own persona (the night shift, a second pair of eyes that
-  says when it disagrees with what was written), and the phones can be handed over or taken back
-  manually until the next edge of the quiet window. Configured under *AI → VoIP Engineer → Relief
-  engineer*; the chat greeting names whoever is on duty.
-- **Greg: the two engineers agree before anyone hears an answer** (`web/src/services/GregCouncilService.php`):
-  an answer is no longer one model's opinion. The engineer on duty drafts it; the other reads the
-  question, the draft and the same working context — health, CDRs, RTCP evidence, brief, notes — and
-  either agrees or says what is wrong. A disagreement is settled by the on-duty engineer in one more
-  pass, so the administrator hears one engineer, never two. If the reviewer is unavailable or cannot
-  follow the review format, the draft still goes out and is marked unreviewed; if the settling pass
-  fails, the reviewer's correction is used rather than a draft it called wrong. Chat shows a quiet
-  line when both stand behind the answer and when it took a reconciliation, and the latter (plus any
-  unsettled answer) is audited without its content. One extra model call per reply, on by default and
-  switchable under *AI → VoIP Engineer → Relief engineer* — no relief engineer, no second reader.
-- **Greg: how ready is he — the handover gauge** (`web/src/services/GregReadinessService.php`,
-  `web/src/services/GregSystems.php`): the model is not the bottleneck; what it has been told is.
-  The *AI → VoIP Engineer* page now opens with a 0–100 temperature — a percentage, a bar and a
-  cold/cool/warm/hot reading — that names exactly what is missing: the business brief (who calls,
-  what the business does, when it is open, where it operates, why customers stay) and the systems
-  map (carriers and trunks, the CRM behind them, monitoring and alerting, ownership, and what is
-  deliberately out of scope). The business side comes from the six onboarding answers or an
-  uploaded brief; the systems side is a second markdown document, with its own template, download,
-  upload and editor, and it is read into Greg's prompt before every answer once it exists. The
-  score is computed locally from the files — no model call, nothing written on a page view — so a
-  good model with neither map is told plainly that it is guessing, and an administrator sees the
-  gap in Greg's chat too until both maps exist.
-- **Greg: the Asterisk reference, fetched from upstream** (`web/src/services/AsteriskDocsService.php`):
-  the two maps describe this installation; they should not have to explain what PJSIP is. A new card
-  under *AI → VoIP Engineer* downloads 26 curated pages of the official documentation
-  (`asterisk/documentation`: PJSIP, NAT, dialplan, CDRs, AMI/ARI, queues, hangup causes, logging,
-  troubleshooting) into `/var/lib/aipbx/greg/asterisk-docs`, where an offline box keeps them.
-  Nothing is fetched on a page view or a chat message: the administrator downloads or refreshes it,
-  a page that fails keeps its previous copy, and a refresh that reaches nothing leaves the cache
-  untouched. Greg gets at most three cited excerpts (about 4 KB), and only when the question shares
-  words with the manual — a Turkish "tek yönlü ses" is mapped to RTP/media/NAT terms, so the English
-  docs are still reachable — and every excerpt names its source URL. Content stays CC BY-SA 3.0 US,
-  credited in the card and in the prompt. The reference is deliberately excluded from the readiness
-  percentage: upstream knowledge is not a substitute for the two maps, it just stops Greg from
-  asking the administrator to explain Asterisk.
-- **Greg: HOMER or VoIPmonitor as correlation assistance** (`web/src/services/ai/HepSettingsService.php`):
-  the HEP card under *AI → Echo* now offers **VoIPmonitor** beside **HOMER** as the place Asterisk
-  sends SIP/RTCP, with a neutral correlation UI address Greg quotes when a Call-ID needs a call flow.
-  VoIPmonitor's sniffer must enable HEP (`hep = yes`, `hep_bind_ip`, `hep_bind_port = 9060`); the
-  page shows that snippet, keeps HOMER's one-command setup, and states both licensing facts — the
-  sniffer is GPL, the web GUI is licensed per channel. HEP over UDP is still unencrypted. The old
-  `hep.homer_url` setting is migrated to `hep.ui_url` on the next save. Greg does not query either
-  tool: his prompt names the chosen assistant and tells him to point the administrator to it
-  instead of claiming he looked. The systems-map template now asks for the correlation tool, its
-  UI address and its retention.
-- **Greg: HOMER *and* VoIPmonitor at the same time** (`web/src/services/ai/HepSettingsService.php`,
-  `signaling/aipbx_signaling/forward.py`): Asterisk has one `capture_address`, so choosing **both**
-  points it at the built-in daemon and the daemon forwards an unchanged copy of every HEPv3
-  datagram to HOMER (9060) and VoIPmonitor (9062). The list lives in
-  `/var/lib/aipbx/signaling/forward.json`, is re-read within a second without a restart, and is
-  removed when the target changes — no stale copies keep flowing. Both collectors must already be
-  running and need distinct UDP ports; local rows are still written, so Greg's own call counts and
-  SIP errors keep working. The card shows a host, port and UI address for each, opens either UI,
-  and tells Greg both are in use and that he cannot query them. It also states the cost — each
-  collector processes the full stream, roughly doubling their CPU/RAM/disk use — and that one or
-  both may run on another host, leaving only forwarding on the PBX. Before the picker, the card
-  measures this host's cores, one-minute load, available RAM and free data-disk space (including a
-  cgroup quota when containerised) and gives separate one-collector and both-collector verdicts;
-  the thresholds are planning gates from HOMER's and VoIPmonitor's published sizing, not a
-  benchmark. Greg receives the same measured capacity, so he does not recommend both locally when
-  the host is below the floor.
-- **A centralized collector needs SSH keys, not passwords**: when HOMER or VoIPmonitor runs on
-  another host, Greg now asks for key-only SSH before walking through the install — `ssh-keygen`,
-  `ssh-copy-id`, a login with `PasswordAuthentication=no` — and never asks for or suggests a
-  password. A new *SSH key-only login* health check (daily) reads `sshd -T` and warns while
-  password or keyboard-interactive login is accepted, fails if public keys are refused, and reports
-  information when only root may use a key or the configuration cannot be read. It never edits
-  `sshd`; the installer's warning now fires for any password login, not only root's, and
-  [docs/security.md](docs/security.md#ssh) carries the drop-in and the lockout-safe order. Keys are
-  recommended for every installation and required for a central host.
-- **Greg senses a call going bad — from RTCP, not from audio**: the signaling daemon now keeps the
-  packet-loss and jitter counters of every RTCP Sender/Receiver Report
-  (`rtcp_fraction_lost`, `rtcp_lost`, `rtcp_jitter`, `rtcp_ssrc`). A call is *poor* after two
-  reports at 5 %+ loss, *fair* above 1 %; one spike is not enough. A new **Call quality (RTCP)**
-  health check warns (and fails when the loss is widespread), Greg quotes the bad calls in his
-  prompt and is told plainly that he did not hear them, and a five-minute quality cron makes the
-  one safe automatic change: a lossy trunk whose media peer matches `pbx_trunks.ip_address` moves
-  to the end of its outbound route chain for **new calls only** — live calls keep their channel.
-  The move is audited, announced, limited to once per trunk per six hours, skipped while another
-  outbound change waits for Apply, rolled back if the dialplan reload fails, and can be switched
-  off under *AI → VoIP Engineer*. Local phones, Wi-Fi and a carrier that is bad on every trunk
-  become a notice for a human instead. No audio is captured or analysed. Sensing needs the
-  built-in capture (`builtin` or `both`); with a remote collector the check says so.
-- **Greg keeps the proof, not just the conclusion**: each quality incident is copied to
-  `pbx_quality_evidence` with its RTCP samples, the peer and time window, the thresholds, the
-  trunk match and the action taken, and a dedupe key so one incident is one record. Notices and
-  alarm e-mails cite `Evidence #N`; Greg's prompt carries the last five trails and requires him to
-  name the evidence id, source, peer, window and report count before he summarizes. The source is
-  written down as `res_hep_rtcp -> aipbx-signaling -> pbx_signaling_events (proto='rtcp')`, and
-  `aipbx_quality.php --report=24` / `--evidence=N` print the day's incidents or one full record.
-  Evidence survives the raw rows' shorter retention (180 days by default, 7–3650 via
-  `call_quality.evidence_days`). With the automatic fix switched off he still keeps the evidence and
-  raises the notice; he just leaves the route alone.
-- **SIP signalling capture (HEP)** (`signaling/`): stores HEPv3 signalling events in
-  `pbx_signaling_events` and can forward them to the same portal. Off by default.
+## 1.60.3
+
+- **Security & RBAC Authorization Enforcement:**
+  - Enforced strict module permissions (`meetings:edit`, `meetings:delete`) inside `MeetingController` POST action dispatchers (`save_meeting`, `cancel_meeting`, `add_invite`), preventing unauthorized meeting creation, modification, or cancellation.
+- **Audit Logging Alignment:**
+  - Corrected parameter ordering in `MeetingService::saveMeeting` and `cancelMeeting` so that entity IDs are logged to `entity_id` and action strings to `action`.
+- **Chat Service Concurrency & Sync Hardening:**
+  - Fixed read/delivered marker initialization in `AddGroupMembers`: newly added group participants inherit the conversation's `MAX(id)`, preventing spurious unread counts and read receipt regression.
+  - Wrapped `UpdateGroupMemberRole` in a database transaction with `FOR UPDATE` row locking to prevent race conditions during concurrent admin role changes.
+  - Eliminated data races in `hub.go` by copying message instances before concurrent broadcasts and preserving delivery statuses.
+  - Secured attachment cleanup in `message_delete.go` by safely retaining files upon transient database connection failures.
+- **Engine Diagnostic Resilience:**
+  - Fixed `aipbx_engine check` false-positive failure on newly provisioned systems without existing log lines.
+- **AI Service Robustness & Stability:**
+  - Ensured atomic rollback in model catalog and manager if `DiskLimit` is reached during model installation.
+  - Aligned call disposition recording in `VoiceRequestsCall` to reflect `"hangup"` when callers disconnect during playback.
+  - Hardened Vosk/Whisper `pcm16_from_wav` audio decoding against empty or unaligned byte payloads.
+
+## 1.60.2
+
+- **WebRTC Meeting Lobby & Asset Path Fix:**
+  - Fixed runtime fatal error in `/meet/{token}` lobby view caused by undefined `currentLang()` call; switched to system-standard `getUserLanguage()`.
+  - Corrected FontAwesome CSS asset path to `/assets/css/fontawesome.min.css`.
+- **REST API v1 Sub-Action Routing & 404 Guards:**
+  - Enforced strict sub-action validation across PBX resource handlers (`/api/v1/extensions`, `/api/v1/trunks`, `/api/v1/conferences`, `/api/v1/ring-groups`, `/api/v1/time-conditions`, `/api/v1/time-groups`, `/api/v1/boss-secretary`, `/api/v1/dial-permissions`, `/api/v1/hangup-actions`).
+  - Prevented unsupported sub-action calls from falling through to single-entity handlers, returning HTTP 404 (`NOT_FOUND`) as expected by REST specifications.
+- **Database Test Fixture Isolation:**
+  - Added `pbx_conferences`, `pbx_meetings`, `pbx_meeting_invites`, `pbx_ring_groups`, and `pbx_ai_apps` to `Fixtures::TABLES` cleanup list, preventing cross-test data pollution.
+- **Regression Test Suite:**
+  - Added automated tests for clean lobby view rendering and API v1 sub-action 404 responses.
+
+## 1.60.1
+
+- **Conference Voice Quick Dial & Interactive Join (`#9` / `*9`):**
+  - Added configurable conference feature code (`#9` default, customizable to `*9` or custom code) for dialing conference rooms directly from mobile apps and desk phones (`#9<room_number>`).
+  - Added interactive prompt extension (`#9` without room number) prompting callers to enter their target room.
+  - Implemented dynamic ConfBridge routing context (`[app-confbridge-dispatch]`) with security guards preventing unauthorized guest creation.
+- **REST API v1 Video Meetings & Conference Telemetry:**
+  - Added `/api/v1/meetings` endpoints (`GET`, `POST`, `GET /id`, `PATCH /id`, `DELETE /id`, and `POST /id/invites`) to manage video meetings and dispatch invitations programmatically.
+  - Added `/api/v1/conferences/{id}/members` endpoint for live participant telemetry.
+  - Updated OpenAPI 3.1 schema specification (`/api/v1/openapi.json`).
+- **Mobile API Conference Room Directory:**
+  - Enhanced `GET / POST /api/mobile/features.php` to return active conference rooms and dial numbers alongside `conference_prefix`.
+- **Internal Number Conflict & Room Protection:**
+  - Enforced `internalNumberOwner()` conflict checks when scheduling video meetings to prevent collisions with existing extensions, queues, IVRs, or ring groups.
+  - Added protection preventing deletion of conference rooms actively in use by scheduled meetings or PBX routing.
+- **RBAC Matrix & Permission Enforcement:**
+  - Registered `meetings` module in `RoleRepository` with dedicated Phinx migration and localized role matrix labels across all 22 languages.
+  - Enforced fine-grained permissions (`can_access`, `can_edit`, `can_delete`) across `MeetingController`, `ConferenceController`, and views.
+  - Extended `bin/smoke.php` RBAC audit coverage to newly added administrator-only routes.
+- **Asterisk Sync & PHP 8.5 Compatibility Hardening:**
+  - Included `helpers.php` dependency in CLI `asterisk_sync.php` ensuring seamless unattended updates.
+  - Resolved PHP 8.5 deprecation and notice warnings in CSV processing and conference service.
+
+## 1.60.0
+
+- **Web Video Meetings & Guest Conference Scheduling System (`/meetings`) (Spec 004):**
+  - **Calendar & Meeting Scheduler (`/meetings`):**
+    - Schedule ad-hoc or planned video conferences with date/time pickers, topic, agenda, participant limits, and PIN protection.
+    - Video architecture mode selection: **SFU (Selective Forwarding Unit)** multi-stream WebRTC gallery grid vs **Follow-Talker** active-speaker switching for SIP video phones.
+    - Automatic ConfBridge room creation and dialplan synchronization via `SyncConferences.php` and `internal_numbers`.
+    - Real-time meeting status badges (Scheduled, Live Now, Ended, Cancelled).
+    - One-click .ics calendar file download and invite link copying.
+  - **Public Guest Magic Link Gateway (`/meet/{token}`):**
+    - Anonymous, zero-install, zero-registration browser portal for clients, partners, and external guests.
+    - Interactive Pre-Join Lobby: camera preview check, microphone level inspection, device mute/camera toggles, display name input, and room PIN verification.
+    - Live WebRTC Conference Room (`assets/js/meeting_room.js`):
+      - Responsive CSS gallery video grid with dynamic layout resizing (`tiles-1` to `tiles-9`).
+      - Local self-view with camera toggle and mute controls.
+      - Screen sharing via `navigator.mediaDevices.getDisplayMedia`.
+      - JsSIP WebSocket integration to Asterisk ConfBridge WSS endpoints.
+      - Elapsed meeting timer and leave meeting dialog.
+  - **ConfBridge SFU & Follow-Talker Dynamic Bridge Profiles (`SyncConferences.php`):**
+    - Asterisk `app_confbridge` bridge profiles with `CONFBRIDGE(bridge,video_mode)=sfu|follow_talker`.
+    - Keyframe and bandwidth optimization flags: `video_update_discard=0`, `remb_send_interval=1000`, `remb_behavior=average`.
+    - Expanded WebRTC PJSIP endpoint streams (`max_audio_streams=10`, `max_video_streams=10` in `SyncExtensions.php`).
+    - Standard Conference management (`/conferences`) now supports configuring Video Mode (`sfu`, `follow_talker`, `none`) and Max Video Streams directly from the admin panel.
+  - **Email Invitations & ICS Calendar Attachments (`MailTemplateService.php`):**
+    - Dedicated `meeting_invite` branded email template with host name, schedule, topic, PIN, and one-click magic join button.
+    - RFC 5545 `.ics` iCalendar MIME attachment with VCALENDAR, VEVENT, UID, and join URL.
+  - **Quality Gates, Tests & i18n:**
+    - Comprehensive unit tests in `MeetingServiceTest.php` and `SyncConferencesCoverageTest.php`.
+    - 100% translation key parity across all 22 languages (5,703 / 5,703 strings, 0 problems).
+    - Full PHPStan analysis clean (0 errors across 381 files), and clean smoke test verification (`php bin/smoke.php`).
+
+## 1.50.37
+
+- **Configuration Directory Structure Consolidation (`conf/asterisk/`):**
+  - Consolidated all static Asterisk 22 configuration files and seed dialplans from the legacy `asterisk-config/` root directory into `conf/asterisk/`.
+  - Updated `install.sh`, systemd service scripts, provisioning templates, and test harnesses with backward-compatible fallbacks.
+  - Enhanced `scripts/asterisk-restart-needed.sh` to recognize pure Git `R100` directory rename events between `asterisk-config/` and `conf/asterisk/`, ensuring seamless updates without unnecessary Asterisk daemon restarts or in-flight call drops.
+- **Repository Decoupling & Mobile Directory Cleanup:**
+  - Removed deprecated `android/` and `ios/` root stubs from the core PBX repository in favor of their dedicated standalone repositories ([`AiPBX-Android`](https://github.com/mahirgul/AiPBX-Android) and [`AiPBX-ios`](https://github.com/mahirgul/AiPBX-ios)).
+  - Cleaned up obsolete build, packaging, and CI scope rules in `.gitignore`, `.github/workflows/pr-scope.yml`, `scripts/release.sh`, and system documentation.
+- **Documentation & Specifications:**
+  - Published Specification 003 ([`docs/specs/003-reverse-proxy.md`](docs/specs/003-reverse-proxy.md)) covering reverse proxy architecture, network firewall port matrix, and Cloudflare DNS-01 validation.
+  - Updated living specification index (`docs/specs/README.md`), roadmap (`docs/roadmap.md`), system map (`docs/system-map.md`), and main `README.md`.
+
+## 1.50.36
+
+- **Reverse Proxy Architecture & Management (`/reverse-proxy`) (#148):**
+  - Dedicated management interface under **Network → Reverse Proxy** for configuring external FQDN, TLS termination modes (Edge TLS Termination, Re-encrypt TLS, No TLS), and trusted proxy CIDR ranges.
+  - Spoof-proof client IP resolution (`ReverseProxyService::resolveClientIp` & global `getClientIP()`): traverses `X-Forwarded-For` right-to-left only when incoming packets originate from trusted CIDRs (`127.0.0.1`, `::1`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), falling back to `X-Real-IP`. Direct untrusted connections never honor forwarded headers.
+  - Live reverse proxy configuration generator producing production-ready snippets for **Nginx**, **Caddy**, **Traefik**, **HAProxy**, and **Apache 2.4** with WebRTC WebSocket (`/ws` and `/chat/ws`) pass-through.
+  - Interactive Network Ports & Firewall Matrix detailing public VoIP bypass ports (SIP 5060/5061, RTP 10000-20000 UDP, STUN/TURNS 3478/5349) vs proxied HTTP/HTTPS web ports, with copyable shell setups for **UFW**, **firewalld**, and **iptables**.
+  - Real-time HTTP header diagnostic inspector verifying incoming client IP, proxy trust status, forwarded proto, host, and port.
+- **Let's Encrypt Cloudflare DNS-01 Validation & Wildcards (#148):**
+  - Added Cloudflare DNS-01 challenge support in **System → Certificates** (`/certificates`) and `conf/sbin/aipbx-cert` via `certbot-dns-cloudflare`.
+  - Enables SSL/TLS issuance for internal/private servers without public port 80 exposure.
+  - One-click wildcard certificate support (`*.<domain>`).
+  - Hardened staging mechanism with restricted permissions (`0600`) and private temp directories (`mktemp -d`), preserving saved tokens across test dry-runs and live issue requests.
+- **Security Hardening & SSO Callback Improvements:**
+  - Integrated `ReverseProxyService::isHttps()` and `isHttpsRequest()` across Web Chat session cookies, OIDC redirect URIs, and SAML metadata generators to automatically detect `X-Forwarded-Proto: https` behind Edge TLS terminators.
+  - Unified `getClientIP()` across all authentication surfaces (2FA challenge, Forgot Password, Google OAuth, OIDC, SAML SSO, WebAuthn Passkeys, QR Login, and Mobile API), preventing reverse proxy IP lockouts during brute-force mitigation.
+  - Hardened Apache port 80 virtual host in `install.sh` to prevent redirect loops when reverse proxy terminates TLS at edge, and enabled `/ws` and `/chat/*` reverse proxying on port 80.
+- **Internationalization & Testing:**
+  - 100% translation key parity across all 22 supported languages (5,632 / 5,632 strings, 0 problems).
+  - Comprehensive unit test suite in `ReverseProxyTest.php` covering CIDR parsing (IPv4/IPv6), spoofing protection, HTTPS detection, and configuration generators.
+  - 1,045 PHPUnit tests passing with 0 errors, 0 PHPStan issues, and clean smoke test verification.
+
+## 1.50.35
+
+- **Custom Asterisk Dialplan Contexts & Code Injection (`/custom-dialplan`):**
+  - Dedicated management interface under **PBX → Custom Dialplan** for creating, editing, and organizing custom Asterisk dialplan contexts.
+  - Live Asterisk dialplan syntax validator checking bracket balance, variable expansions, and directive formatting before persisting.
+  - Automatic compilation into `/etc/asterisk/pbx/extensions_custom.conf` with seamless Asterisk reload and rollback protection (`writeConfWithRollback`).
+  - Internal Aggregator Context (`[custom-dialplan-pbx]`): entries flagged with "Include in internal dialplan" are automatically included into `[from-internal-pbx-ortak]`, making custom codes dialable from all registered desk phones, softphones, and mobile apps.
+  - Standalone contexts for custom inbound trunk filters, IVR subroutines, AGI scripts, and CRM notifications.
+- **Built-in Telephony Recipe Templates & Feature Codes:**
+  - One-click recipe insert library in the custom dialplan editor:
+    - *1-to-1 Intercom / Auto-Answer (`*80<ext>`)* with SIP `Alert-Info` and `Call-Info` headers.
+    - *Supervisor Direct Listen (`*55<ext>`) & Whisper Coaching (`*56<ext>`) via ChanSpy*.
+    - *Broadcast Audio Paging Group (`*700`)* using Asterisk `Page()`.
+    - *Non-Blocking CRM Webhook Trigger* sending asynchronous HTTP curl POST on call arrival.
+    - *Inbound VIP Caller Priority Routing Hook* with Caller ID name tagging.
+    - *PIN-Protected DISA (Direct Inward System Access)* for secure remote trunk calling.
+- **Security & Access Control:**
+  - Administrative circuit breaker enforcement: strictly locked to `admin` role in `RoleRepository` and `auth.php` (`hasModulePermission`).
+  - Full audit logging for create, edit, toggle, and delete operations in `sys_audit_log`.
+- **Internationalization & Testing:**
+  - 100% translation key parity across all 22 supported languages (5,573 / 5,573 strings, 0 problems).
+  - Comprehensive unit test coverage in `CustomDialplanTest.php` and full green verification on `smoke.php` and PHPStan.
+
+## 1.50.34
+
+- **Inbound Caller ID Blacklist & Spam Blocker (`/blacklist`) (#148):**
+  - Dedicated management interface under **Telephony → Inbound Blacklist** with RBAC (`did_routes` module permissions).
+  - Sub-microsecond caller ID lookups via Asterisk internal AstDB (`blacklist/<clean_number>` and `blacklist_action/<clean_number>`).
+  - Supports both specific phone numbers (E.164 / local) and dialplan wildcard patterns (`_X.`, `_0850.`, `_0900.`).
+  - Four customizable call blocking actions: Busy tone (`Hangup 17`), Congestion / Out-of-service (`Hangup 34`), Silent drop (`Hangup 16`), and Spoken announcement (`Playback ss-noservice`).
+  - Automatic CDR tagging with `SPAM_BLOCKED` and `Blacklist: <action>`.
+  - Batch CSV import with delimiter autodetection and last-caller fast lookup per extension.
+- **RFC 6442 & RFC 6443 Emergency Call Geolocation Support:**
+  - Added `geolocation_uri` and `geolocation_routing` fields to Outbound Routes.
+  - Automatically appends SIP `Geolocation` and `Geolocation-Routing` headers to outbound emergency INVITE requests via `sub-callee-jb`.
+  - Configurable system-wide default emergency location URI with per-route overriding.
+- **Security Architecture & Threat Model Documentation:**
+  - Published comprehensive [Security Architecture & Threat Model](docs/threat-model.md) covering SIP exposure boundaries, Port 443 ALPN stream multiplexing, WebRTC DTLS-SRTP media encryption, ephemeral TURN tokens, mobile push token minimization, and AI assistant Least Privilege execution sandboxing.
+- **Disaster Recovery & Automated Upgrade Rollback Documentation:**
+  - Published [Backups, Disaster Recovery & Upgrade Rollback](docs/backup-and-rollback.md) guide detailing daily reproducible backups (`aipbx-backup`), step-by-step restoration commands, and the automated atomic rollback safeguard in `aipbx-update`.
+- **Expanded Multi-OS & Multi-Architecture Verification:**
+  - Formally validated single-command turnkey installation across Ubuntu 26.04 LTS+, Debian 13 (Trixie)+, 64-bit Raspberry Pi OS, and 64-bit Armbian on both x86_64 and ARM64 (`aarch64`).
+- **Fixes & Code Hardening:**
+  - Standardized RBAC access control in `InboundBlacklistController` using `BaseController::requireModule('did_routes', 'access')`.
+  - Improved CSV row parsing and type safety in blacklist imports.
+
+## 1.50.32
+
+- **64-Bit ARM (`aarch64` / `arm64`) Architecture Support (#147):**
+  - Officially enabled full support for 64-bit ARM architectures in `install.sh`, allowing seamless single-command installation on Raspberry Pi 4, Raspberry Pi 5, AWS Graviton, and Ampere Altra servers.
+  - Added strict 64-bit architecture validation during installation; immediately catches and stops unsupported 32-bit platforms (`armv7l`, `i686`) with a clear advisory to install a 64-bit OS.
+  - Native ARM64 binary compilation for the Go chat microservice (`aipbx-chat`) and full compatibility with existing Asterisk 22, Apache, and MariaDB package ecosystems.
+- **Expanded Operating System Support (Debian Family):**
+  - Broadened `install.sh` system verification beyond Ubuntu 26.04 LTS to officially support Debian 13 (Trixie)+, 64-bit Raspberry Pi OS, and 64-bit Armbian.
+  - Added automatic detection for pre-existing PHP >= 8.4 environments on Debian-family installations (e.g. Debian 12 / Bookworm with Surý PPA).
+- **Cleanup:**
+  - Removed unused partial `docker/` first-boot init script directory.
+
+## 1.50.31
+
+- **Security Hardening (CVE-2026-98432 & Go 1.24+ MPTCP Defense-in-Depth):**
+  - **Linux Kernel MPTCP Disabling (`/etc/sysctl.d/99-aipbx.conf`):** Added `net.mptcp.enabled = 0` to kernel sysctl tuning in `install.sh` and `aipbx-update`. This completely shuts down MultiPath TCP at the kernel level across all processes and network listeners on the system, definitively neutralizing the remote UAF attack vector identified in CVE-2026-98432.
+  - **Compile-Time Go Module Hardening (`chat/go.mod`):** Configured build directive `godebug multipathtcp=0`, embedding `multipathtcp=0` directly into the binary's `DefaultGODEBUG` so `aipbx-chat` rejects MPTCP listeners by default even in the absence of explicit environment flags.
+  - **Chat Systemd Unit Hardening (`aipbx-chat.service`):** Injected `Environment="GODEBUG=multipathtcp=0"` into `/etc/systemd/system/aipbx-chat.service` for runtime service isolation.
+
+## 1.50.30
+
+- **SSO Role Mapping, Session Integrity & Plugin Detail Hardening:**
+  - Standardized `default_role` options in `oidc-auth` and `saml-auth` manifests to match valid system roles in `sys_roles` (`user`, `admin`, `cc_manager`, `cc_agent`, `read_only_admin`), preventing database foreign key constraint violations during JIT auto-provisioning.
+  - Added role validation fallback in `OidcAuthService::autoProvisionUser` ensuring unmatched or deprecated roles gracefully fallback to `'user'`.
+  - Harmonized SAML web session keys in `SamlAuthService::loginUserSession` by setting `user_role` (alongside `role`), `ui_language`, login attempt audit logging, and routing authenticated users to their respective `roleHomePath`.
+  - Hardened select field rendering in `web/templates/views/plugins/detail.php` to seamlessly support both key-value dictionaries and indexed `{value, label}` option formats.
+
+## 1.50.29
+
+- **Official SAML 2.0 Corporate Single Sign-On (SSO) Plugin (`saml-auth`) (#146):**
+  - Added official built-in plugin `plugins/saml-auth/` providing complete SAML 2.0 Web Browser SSO Profile support (Service Provider - SP role) and auto-provisioning.
+  - Compatible out of the box with major enterprise identity providers: Microsoft Entra ID (Azure AD Enterprise Applications SAML), Okta SAML 2.0, Keycloak, Authentik, Active Directory Federation Services (ADFS), Google Workspace, and PingFederate.
+  - **Service Provider (SP) Metadata & Endpoints:** Automatic generation of SP EntityDescriptor XML at `/auth/saml/metadata` with HTTP-POST binding, NameID formats (`emailAddress`, `persistent`, `transient`), and dedicated Assertion Consumer Service (ACS) at `/auth/saml/acs`.
+  - **Quick Setup IdP Metadata XML Importer:** Built-in admin parser that accepts federation metadata XML from Entra ID, Okta, Keycloak, or ADFS to auto-populate Entity ID, SingleSignOnService URL, and X.509 Certificate with one click.
+  - **Cryptographic XML-DSig Verification:** Enforces digital signature and digest verification (SHA-256 and SHA-1) using IdP X.509 public certificates over Response or Assertion elements, with enveloped signature canonicalization (`C14N`).
+  - **Enterprise Security & Replay Mitigation:** Enforces temporal validity (`NotBefore` and `NotOnOrAfter` with 120-second clock skew tolerance), AudienceRestriction, Destination matching, and cryptographically random RelayState state tokens against CSRF and replay attacks.
+  - **Just-In-Time (JIT) Auto-Provisioning & Role Mapping:** Automatically provisions new users in `sys_users` on first sign-in with claim-based username extraction, collision resolution, email domain allowlisting, and customizable role attribute mapping.
+  - **Login Portal & Mobile Deep-Linking:** Dynamic SAML SSO button on the login screen with customizable label and icon, plus mobile client authentication callback support (`aipbx://auth?success=1&code=...`).
+  - **Unit Test Coverage:** 10 new unit tests with 41 assertions in `web/tests/unit/SamlAuthTest.php`, full role matrix integration, and zero-defect plugin validation.
+
+## 1.50.28
+
+- **Official OpenID Connect (OIDC) & Corporate SSO Plugin (`oidc-auth`) (#146):**
+  - Added official built-in plugin `plugins/oidc-auth/` providing standard OpenID Connect (OIDC Core 1.0) Single Sign-On and auto-provisioning.
+  - Compatible out of the box with any OpenID Provider (OP): Keycloak, Microsoft Entra ID (Azure AD), Authentik, Okta, Google Workspace, and PingFederate.
+  - **Dynamic OpenID Discovery & Caching:** Discovers authorization, token, and userinfo endpoints automatically from `/.well-known/openid-configuration` with persistent KV caching via `sys_plugin_kv`.
+  - **Interactive Admin Discovery Tester & Setup Guides:** Dedicated admin panel with a copyable redirect URI (`/auth/oidc/callback`), a real-time discovery validation tool, and setup guides for major identity providers.
+  - **Zero-Trust Security & Token Exchange:** State and nonce verification against CSRF and replay attacks, secure token code exchange, and client secret encryption at rest via `SecretBox`.
+  - **Just-In-Time (JIT) Auto-Provisioning:** Seamless user account creation on first sign-in with automatic username extraction from claims (`preferred_username` / `email`), unique collision handling, and secure randomized passwords.
+  - **Claim-Based Role Mapping & Domain Restrictions:** Flexible claim paths for role resolution (e.g. `roles`, `groups`), configurable default role assignment (`admin`, `manager`, `user`), and email domain allowlist enforcement (`allowed_domains`).
+  - **Login Portal Integration & Deep Linking:** Dynamic SSO button on the web login interface with customizable button label/icon, plus mobile client authentication callback support (`aipbx://auth?success=1&code=...`).
+  - **Comprehensive Test Suite:** 9 new unit tests with 38 assertions (`web/tests/unit/OidcAuthTest.php`), full role matrix registration, and plugin schema verification.
+
+## 1.50.27
+
+- **Linux Kernel & Network Sysctl Optimization:**
+  - Added dedicated `/etc/sysctl.d/99-aipbx.conf` kernel tuning in `install.sh` applied automatically on both fresh installations and upgrades (`aipbx-update`):
+    - `net.core.rmem_max` & `wmem_max = 16777216` (16 MB buffer limits to absorb massive UDP burst traffic without dropped packets).
+    - `net.core.netdev_max_backlog = 10000` (deep interface queue to withstand simultaneous VoIP invite bursts).
+    - `net.core.somaxconn = 4096` (connection listen backlog for high-density WebRTC/WSS signaling).
+    - `vm.swappiness = 10`, `vm.dirty_ratio = 10`, `vm.dirty_background_ratio = 5` (preserves RAM for media processing and eliminates disk write stalls).
+- **Systemd Priority & Memory Protection:**
+  - Configured Asterisk systemd unit drop-in in `/etc/systemd/system/asterisk.service.d/aipbx.conf` with:
+    - `Nice=-10` (elevated CPU scheduling priority to ensure real-time audio packet dispatch under host load).
+    - `OOMScoreAdjust=-500` (protects Asterisk from Linux Out-Of-Memory killer termination during high memory load or AI inference).
+  - Bumped `ASTERISK_RESTART_EPOCH` from 1 to 2 in `install.sh` so `aipbx-update` restarts Asterisk and immediately activates the new systemd scheduling and OOM parameters.
+- **VoIP & WebRTC Media Integrity:**
+  - Blacklisted and dynamically unloaded kernel SIP ALG modules (`nf_conntrack_sip`, `nf_nat_sip`) in `/etc/modprobe.d/aipbx-blacklist-sip.conf` to prevent kernel-level mangling of SIP headers and WebRTC SDP payloads.
+  - Added `rtpkeepalive = 5` in `asterisk-config/rtp.conf` and `web/src/sync/SyncRtpSettings.php` to prevent stateful NAT routers and firewalls from dropping inactive RTP audio streams.
+- **Config & Security Hardening (Phase 1 Audit):**
+  - Corrected Portuguese ISO code typo (`'pr'` -> `'pt'`) in `web/config.php` `LANGUAGE_LABELS`.
+  - Added explicit error logging in `setSystemSetting` (`web/config.php`) when database writes fail, preventing silent suppression of critical configuration updates.
+  - Added regression test `testLanguageLabelsIncludesPortuguesePt()` in `web/tests/unit/PbxFineTuningTest.php`.
+
+## 1.50.26
+
+- **Asterisk Core & High-Concurrency Performance Tuning:**
+  - Resolved taskprocessor queue backlog warnings (`stasis/pool-control reached 500 tasks`) during mass reloads by increasing Stasis threadpool capacity in `asterisk-config/stasis.conf` (`max_size = 500`, `initial_size = 10`, `idle_timeout_sec = 60`).
+  - Raised Asterisk process open files limit from the Linux default 1024 to 65,536 files via `asterisk-config/asterisk.conf` (`maxfiles = 65536`) and systemd service override `LimitNOFILE=65536` in `install.sh`, preventing `socket(): Too many open files` errors under high concurrent call volume.
+  - Enabled asynchronous managed DNS lookups in `asterisk-config/dnsmgr.conf` (`enable = yes`, `refreshinterval = 300`) to prevent temporary DNS resolution stalls from blocking PJSIP distributor threads.
+  - Scaled PJSIP threadpool capacity to 500 threads in `web/src/sync/SyncTransports.php` `[system]` section (`threadpool_max_size = 500`, `threadpool_initial_size = 10`), avoiding SIP registration timeouts during burst registrations.
+  - Expanded Asterisk database connection pool in `asterisk-config/res_odbc.conf` (`max_connections => 30` for `[asterisk]`, `50` for `[general]`), eliminating CDR and queue log write contention on busy call centers.
+- **Log Rotation & Disk Protection Policy:**
+  - Integrated hardened Asterisk logrotate configuration in `install.sh` (`/etc/logrotate.d/asterisk`) with daily rotation, 50MB ceiling (`maxsize 50M`), 14-day history retention, and automatic gzip compression, preventing `security.log` and `messages.log` from exhausting disk space.
+
+## 1.50.25
+
+- **Admin Documentation & Markdown Engine Hardening:**
+  - Fixed UTF-8 multibyte line-splitting flaw in `DocsService`: standard PCRE `\R` without `/u` treated byte `0x85` (the second byte of Greek upsilon `υ` / `\xCF\x85` and similar multibyte characters) as an isolated newline (NEL), inadvertently splitting words across lines. Switched to CommonMark-compliant `/\r\n|\r|\n/`.
+  - Prevented infinite loop in `DocsService::render()` when encountering non-table text starting with pipe (`|`) characters by guaranteeing paragraph loop consumption on the first line.
+  - Added regression test suite in `web/tests/unit/DocsServiceTest.php` verifying multibyte Greek characters and non-table pipes render correctly without stalling.
+- **Database Port Customization & Socket Fallback:**
+  - Added support for reading custom database ports via `DB_PORT` in `phinx.php`, `web/config.php`, and `PluginManager.php` (#142).
+  - Hardened local Unix socket fallback in `web/config.php` so custom ports (e.g. 3307 or forwarded ports) and remote hosts are not mistakenly forced to `/var/lib/mysql/mysql.sock`.
+- **Installer & Minimal Environment Robustness:**
+  - Added missing `curl` and `cron` package requirements to `install.sh` for minimal Linux installations, and enabled the `cron` service automatically (#141).
+  - Added `docker/web/aipbx-init.sh` first-boot provisioning script (#141).
+- **Internationalization (i18n) & Translation Standards:**
+  - Standardized Greek translations in `web/lang/el.php` for `provisioning` across discovery and phones management to `παραμετροποίηση` (#138).
+  - Added canonical terminology guide to `docs/translating.md` defining standardized terms across all 22 supported languages for core telephony concepts (`provisioning`, `discovery`, `extension`, `trunk`) (#140).
+
+## 1.50.24
+
+- **CDR Reports & Multi-Language Support (i18n Compliance):**
+  - Standardized `cdrs` SQL view (`web/db/migrations/20261029010000_standardize_cdrs_view_labels.php`) to generate canonical machine tokens (`fax_in`, `fax_out`, `internal`, `queue_call`, `did:...`) instead of hardcoded Turkish strings.
+  - Added `CdrReportRepository::formatRouteLabel()` to dynamically localize route and queue labels in the user's active language across all 23 supported languages in both the web portal and CSV exports, with full backwards compatibility for existing installations.
+- **Security & SecretBox Concurrency Hardening:**
+  - Implemented atomic file locking (`flock(LOCK_EX)`) during encryption key initialization in `web/src/secret_box.php`, eliminating race conditions when multiple processes start concurrently on uninitialized systems.
+  - Hardened Apache HTTP routing configuration in `install.sh` and `web/etc/apache2/aipbx-routing.conf.example` to deny direct access to developer files (`composer.*`, `phpunit.xml`, `phinx.php`, `phpstan.neon`, `.env*`) and the `tests/` directory.
+  - Strengthened system Content Security Policy (CSP) header with `base-uri 'self'` and `object-src 'none'`.
+- **System Scripts & Linter Polish:**
+  - Eliminated ShellCheck warnings and improved robustness in `install.sh`, `conf/sbin/aipbx-sounds`, `conf/sbin/aipbx-update`, `web/bin/process_incoming_fax.sh`, `web/bin/process_outgoing_fax_result.sh`, and `scripts/e2e/` scripts.
+  - Enhanced `web/bin/setup-test-db.sh` with automatic `sudo` and environment credential fallback for seamless local test runs.
+  - Removed lingering diagnostic `console.log` statements from the production WebRTC header softphone (`web/assets/js/header_phone.js`).
+- **Documentation & Navigation Polish:**
+  - Fixed 22 broken relative links in root `ROADMAP.md` and repaired links in `.github/pull_request_template.md`.
+  - Updated `ARCHITECTURE.md`, `AGENTS.md`, and `docs/translating.md` to cleanly point to decoupled native client repositories ([AiPBX-Android](https://github.com/mahirgul/AiPBX-Android) and [AiPBX-iOS](https://github.com/mahirgul/AiPBX-iOS)).
+
+## 1.50.23
+
+- **Core Stability, Linter Acceleration & Test Automation:**
+  - Optimized `web/bin/smoke.php` syntax checker to exclude `.phpstan-cache/` and `.phpunit.cache/` directories, preventing thousands of temporary cache files from being repeatedly scanned and reducing smoke lint execution time from minutes to under 3 seconds.
+  - Hardened `SecretBox` credential management to verify write permissions before attempting to write `/var/lib/aipbx/settings.key`, providing an in-memory encryption key fallback for non-root CLI processes, CI environments, and automated test runners without throwing unhandled exceptions or PHP warnings.
+- **Background Workers Logging & Hardening:**
+  - Added explicit error logging in `web/bin/webhook_worker.php` for CDR and fax event sweep cycles to surface database disconnects and transient polling failures.
+  - Enforced shell argument escaping (`escapeshellarg`) for task IDs and triggers in `web/bin/task_dispatcher.php` as part of defense-in-depth background task invocation.
+- **UI & Repository Navigation:**
+  - Updated web portal persistent footer bar to directly link to the official [AiPBX GitHub Repository](https://github.com/mahirgul/AiPBX).
+  - Integrated UpCloud cloud infrastructure partnership recommendations and \$250 promo credits across project documentation.
+  - Added project maintainer LinkedIn connectivity.
+
+## 1.50.22
+
+- **Mobile Clients Decoupling & Independent Repositories:**
+  - Separated Android and iOS native mobile clients into dedicated standalone repositories ([AiPBX-Android](https://github.com/mahirgul/AiPBX-Android) and [AiPBX-ios](https://github.com/mahirgul/AiPBX-ios)) with independent CI/CD build automation.
+  - Removed heavy mobile workflows (`android-build.yml`, `ios-build.yml`, `mobile-lang.yml`) from the core repository, accelerating core CI runs and eliminating redundant mobile builds on server releases.
+  - Audited all repositories to guarantee zero secrets, keystores, or private signing credentials in git history.
+- **Native Plugin Contract & Manifest Validator (`scripts/check_plugins.py`):**
+  - Added standalone plugin layout and manifest validator enforcing `plugin.json` contracts, hooks, and scopes across official and community plugins.
+  - Added static code analysis ensuring plugin PHP code does not read undeclared settings keys.
+  - Enforced `schema.sql` database security rules (`plg_*` table prefix sandbox and rejection of destructive DDL).
+  - Added 22 unit tests (`scripts/test_check_plugins.py`) and integrated into `Web & Chat CI` pipeline.
+- **Language Files & Translation Parity Cleanup:**
+  - Removed 46 orphan and unused external AI keys across all 23 language files (`web/lang/*.php`).
+  - Preserved 100% key parity across all 22 localized languages (5405/5405 keys aligned).
+
+## 1.50.21
+
+- **PJSIP TLS Settings in Admin UI & Config Sync:**
+  - Added configurable TLS port (`pjsip_tls_port`, default 5061), TLS SIP domain/FQDN (`pjsip_tls_domain`), and TLS protocol method selection (`pjsip_tls_method`, supporting `tlsv1_2`, `tlsv1_2,tlsv1_3`, and `tlsv1_3`) in PBX Settings -> Asterisk Settings (PJSIP tab).
+  - Synchronized TLS transport directives into `pjsip_transports.conf` (`domain=` and `method=`) so TLS registrations cleanly bind to the TLS transport.
+  - Mirrored TLS transport values into `pjsipsettings` (`tls_bindport`, `tls_domain`, `tls_method`) and aligned provisioning services.
+  - Added full multi-language translations across all 22 supported locales.
+  - Added test coverage in `PjsipTransportTest`.
+- **Installer SSH advisory fault tolerance (`install.sh`):**
+  - Made the post-installation SSH configuration advisory non-fatal (`sshd -T 2>/dev/null || true`), preventing aborted installs on containerized or minimal cloud environments without `sshd` or host keys.
+  - Added automated test case in `scripts/test_install_watchdog.sh`.
+- **Cisco CallManager firmware documentation i18n:**
+  - Completed `phones.cisco_loads_help` guidance across all 18 locales explaining automatic TFTP provisioning and firmware reboot handling.
+- **Unit test suite isolation:**
+  - Added database settings cleanup in `VoicemailPolicyTest` and `MyPhoneVoicemailSettingsTest` tearDown to prevent test state leakage across full test suite runs.
+
+## 1.50.20
+
+- **Duplicate extension row stability in PJSIP and Voicemail sync:**
+  - Added deterministic deduplication (`ORDER BY extension ASC, id ASC`) in `SyncExtensions` and `SyncVoicemail` when multiple user rows share the same extension number (e.g. following CSV imports).
+  - Keeps the first created user and logs collisions, preventing Asterisk PJSIP duplicate object errors (`configuration contains a duplicate object`) that caused full endpoint registration drops.
+  - Added duplicate extension unit test in `SyncGeneratorTest`.
+- **Cisco CallManager firmware translation alignment:**
+  - Aligned Turkish `phones.cisco_loads_help` guidance with English documentation, explaining local server TFTP verification and firmware application upon phone reboot.
 
 ## 1.50.19
 

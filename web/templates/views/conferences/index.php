@@ -27,6 +27,7 @@
         <h4><i class="fas fa-info-circle"></i> <?php echo t('conferences.help_title'); ?></h4>
         <p><?php echo t('conferences.help_body'); ?></p>
         <ul>
+            <li><strong><?php echo t('conferences.help_quick_dial'); ?></strong> <?php $p = htmlspecialchars($confPrefix ?? '#9'); echo sprintf(t('conferences.help_quick_dial_desc'), $p, $p); ?></li>
             <li><strong><?php echo t('conferences.help_pins'); ?></strong> <?php echo t('conferences.help_pins_desc'); ?></li>
             <li><strong><?php echo t('conferences.help_wait_leader'); ?></strong> <?php echo t('conferences.help_wait_leader_desc'); ?></li>
             <li><strong><?php echo t('conferences.help_live_ctrl'); ?></strong> <?php echo t('conferences.help_live_ctrl_desc'); ?></li>
@@ -53,7 +54,12 @@
                 <?php else: ?>
                     <?php foreach ($conferences as $cf): ?>
                         <tr>
-                            <td><span class="badge badge-info u-fs-13"><i class="fas fa-hashtag"></i> <?php echo htmlspecialchars($cf['room_number']); ?></span></td>
+                            <td>
+                                <div style="display: flex; flex-direction: column; gap: 3px;">
+                                    <span class="badge badge-info u-fs-13"><i class="fas fa-hashtag"></i> <?php echo htmlspecialchars($cf['room_number']); ?></span>
+                                    <span class="badge badge-secondary u-fs-11" title="<?php echo t('conferences.quick_dial'); ?>" style="font-family: monospace; letter-spacing: 0.5px;"><?php echo htmlspecialchars(($confPrefix ?? '#9') . $cf['room_number']); ?></span>
+                                </div>
+                            </td>
                             <td class="u-strong"><?php echo htmlspecialchars($cf['title']); ?></td>
                             <td>
                                 <div style="display: flex; gap: 4px; flex-wrap: wrap; font-size: 11px;">
@@ -77,6 +83,9 @@
                                     <?php endif; ?>
                                     <?php if ((int)$cf['announce_join_leave'] === 1): ?>
                                         <span class="badge badge-info" title="<?php echo t('conferences.announce_t'); ?>"><i class="fas fa-volume-up"></i> <?php echo t('conferences.announce'); ?></span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($cf['video_mode']) && $cf['video_mode'] !== 'none'): ?>
+                                        <span class="badge badge-purple" title="<?php echo t('conferences.video_mode'); ?>: <?php echo htmlspecialchars($cf['video_mode']); ?>"><i class="fas fa-video"></i> <?php echo strtoupper($cf['video_mode'] === 'follow_talker' ? 'talker' : $cf['video_mode']); ?></span>
                                     <?php endif; ?>
                                 </div>
                             </td>
@@ -104,6 +113,8 @@
                                         <button type="button" class="btn btn-secondary btn-sm" onclick='openEditConfModal(<?php echo jsArg($cf); ?>)' title="<?php echo t('common.edit'); ?>">
                                             <i class="fas fa-edit"></i>
                                         </button>
+                                    <?php endif; ?>
+                                    <?php if (hasModulePermission('conferences', 'delete')): ?>
                                         <form method="POST" class="u-inline" onsubmit="return confirm(<?php echo htmlspecialchars(json_encode(t('conferences.confirm_delete')), ENT_QUOTES); ?>);">
                                             <input type="hidden" name="csrf_token" value="<?php echo getCSRFToken(); ?>">
                                             <input type="hidden" name="delete_conference" value="1">
@@ -162,7 +173,10 @@
                 <div style="display: grid; grid-template-columns: 1fr 2fr; gap: 16px;">
                     <div class="form-group">
                         <label class="form-label"><?php echo t('conferences.room_number'); ?></label>
-                        <input type="text" name="room_number" id="modal_conf_number" class="form-control" placeholder="<?php echo t('common.eg'); ?> 6000" pattern="[0-9]{3,6}" required>
+                        <input type="text" name="room_number" id="modal_conf_number" class="form-control" placeholder="<?php echo t('common.eg'); ?> 1001" pattern="[0-9]{3,6}" required oninput="updateConfDialPreview(this.value)">
+                        <small class="u-muted" style="display: block; margin-top: 4px; font-size: 11px;">
+                            <?php echo t('conferences.quick_dial'); ?>: <strong class="u-primary"><?php echo htmlspecialchars($confPrefix ?? '#9'); ?><span id="modal_conf_number_preview">1001</span></strong>
+                        </small>
                     </div>
 
                     <div class="form-group">
@@ -192,6 +206,22 @@
                     <div class="form-group">
                         <label class="form-label"><?php echo t('conferences.moh_class'); ?></label>
                         <input type="text" name="music_on_hold" id="modal_conf_moh" class="form-control" value="default" placeholder="default">
+                    </div>
+                </div>
+
+                <div class="u-grid-2">
+                    <div class="form-group">
+                        <label class="form-label"><i class="fas fa-video text-primary"></i> <?php echo t('conferences.video_mode'); ?></label>
+                        <select name="video_mode" id="modal_conf_video_mode" class="form-control">
+                            <option value="none"><?php echo t('conferences.video_mode_none'); ?></option>
+                            <option value="sfu"><?php echo t('conferences.video_mode_sfu'); ?></option>
+                            <option value="follow_talker"><?php echo t('conferences.video_mode_talker'); ?></option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label"><?php echo t('conferences.max_video_streams'); ?></label>
+                        <input type="number" name="max_video_streams" id="modal_conf_max_video_streams" class="form-control" value="10" min="1" max="20">
                     </div>
                 </div>
 

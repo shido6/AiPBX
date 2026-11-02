@@ -2,7 +2,7 @@
 
 # AiPBX Documentation
 
-Administrator documentation for AiPBX on Ubuntu 26.04 LTS. Start with the
+Administrator documentation for AiPBX on 64-bit Linux (Ubuntu 26.04 LTS+, Debian 13+, Raspberry Pi OS 64-bit, and Armbian on x86_64 & ARM64). Start with the
 [installation guide](../INSTALL.md), then use the pages below while configuring the system.
 
 > 💡 **Quick Diagnosis:** When something does not work, start with the 🗺️ [system map](system-map.md) (where everything is) and 🛠️ [troubleshooting](troubleshooting.md) (symptom → fix).
@@ -15,6 +15,7 @@ Administrator documentation for AiPBX on Ubuntu 26.04 LTS. Start with the
 | 📺 [Video: Installation](https://www.youtube.com/@aipbx) | Step-by-step setup on YouTube: [English](https://www.youtube.com/watch?v=lH1-k_z5jFE) · [Türkçe](https://www.youtube.com/watch?v=eDHHHW6ZcvQ) · [Deutsch](https://www.youtube.com/watch?v=1QuOM6Rtcbg) |
 | 📺 [Video: Menu tour](https://www.youtube.com/@aipbx) | Every screen of the portal on YouTube: [English](https://www.youtube.com/watch?v=xU0BYN6AKE4) · [Türkçe](https://www.youtube.com/watch?v=Teol14NgXbY) · [Deutsch](https://www.youtube.com/watch?v=8whV_DY3ZqQ) |
 | 🖥️ [Portal basics](portal.md) | The *Apply* workflow, edit dialogs, ordering lists, copying records |
+| 💾 [Backups, recovery & rollback](backup-and-rollback.md) | Reproducible daily backups (`aipbx-backup`), disaster recovery restore commands, and zero-downtime automated upgrade rollback (`aipbx-update`) |
 | 🏗️ [Architecture](../ARCHITECTURE.md) | Components, traffic flow, security model |
 
 ## 📞 Telephony
@@ -22,12 +23,15 @@ Administrator documentation for AiPBX on Ubuntu 26.04 LTS. Start with the
 | Page | What it covers |
 |------|----------------|
 | 🌐 [Trunks](trunks.md) | Connection modes, inbound DID trimming, transit routing, outbound caller ID normalization, copy / rename / order |
-| 📤 [Outbound routes](outbound-routes.md) | Dial patterns, number manipulation, trunk failover, route groups, multiple PBXes with different number formats |
+| 🚫 [Blacklist & Spam blocker](blacklist.md) | Inbound spam blocking, AstDB sub-microsecond lookup, wildcards/patterns, drop/busy/congestion/announcement actions |
+| 📤 [Outbound routes](outbound-routes.md) | Dial patterns, number manipulation, trunk failover, route groups, RFC 6442 / RFC 6443 Geolocation emergency headers |
 | 🎛️ [Call normalization](call-normalization.md) | Pre-filter rules per client origin (Mobile, Desk, Web), E.164 normalization, trunk prefix stripping |
 | 📥 [Inbound routes (DIDs)](inbound-routes.md) | DID matching, destinations, fax DIDs |
+| 💻 [Custom Dialplan](custom-dialplan.md) | Custom Asterisk context injection, syntax validator, internal aggregator, recipe templates (Intercom, Spy, Paging, DISA) |
 | ☎️ [Desk phones](phones.md) | Provisioning Yealink, Grandstream, Fanvil, Snom, Cisco SPA and Poly phones over HTTPS, CSV import, waiting phones, phones found on the network, key layouts (BLF, speed dial, park), re-provision |
 | 🔵 [Cisco 7900 / 8800 series](cisco-callmanager.md) | Cisco's enterprise phones (CallManager firmware): the `SEP<MAC>.cnf.xml` AiPBX writes, the firmware, the usecallmanager.nz Asterisk patch and the shared files you provide |
 | 🖧 [Network settings](network-settings.md) | The server's addresses, the addresses desk phones get, and moving everything after an IP change in one step |
+| 🛡️ [Reverse proxy setup](reverse-proxy.md) | Deploying behind Nginx, Caddy, Traefik, HAProxy, Apache; WebRTC WebSocket proxying, trusted proxies, and SIP/RTP bypass |
 | 📡 [Network services](network-services.md) | DHCP (option 66/150/160) TFTP and read-only FTP for desk phones on a phone network or VLAN, leases, the options for your own DHCP server, an NTP server and phone logs (syslog) by IP or MAC |
 | 🩺 [Health checks](health.md) | The server watches itself (services, trunks, disk, certificate, backup …), alarm e-mails, the daily summary with yesterday's calls, `aipbx-selftest` |
 | 🎙️ [Call recordings](recordings.md) | Where recordings live, automatic MP3 conversion, playback |
@@ -38,6 +42,7 @@ Administrator documentation for AiPBX on Ubuntu 26.04 LTS. Start with the
 | 🎧 [WebRTC, NAT and TURN](webrtc-nat.md) | Browser and app audio across NAT, external IP, TURNS on 443, troubleshooting silent calls |
 | 🗄️ [External databases & IVR data steps](external-databases.md) | Read-only MySQL/PostgreSQL connections, encrypted credentials, real-time IVR caller/DTMF data lookups and call branching |
 | 🎚️ [PBX fine tuning & maintenance](pbx-tuning.md) | Jitter buffer, SIP protocol timers (T1, B, Max-Forwards), 10-minute SIP debug, safe night restart window, spoken status messages |
+| 🐧 [Linux OS & kernel tuning](linux-tuning.md) | Network sysctl (RTP buffers, MPTCP disable), SIP ALG blacklist, real-time CPU scheduling, OOM protection, needrestart shielding |
 
 ## 🔐 Users and security
 
@@ -45,6 +50,8 @@ Administrator documentation for AiPBX on Ubuntu 26.04 LTS. Start with the
 |------|----------------|
 | 👥 [Users & roles](users-and-roles.md) | Built-in roles, landing pages, permissions, *My Phone* |
 | 🛡️ [Security](security.md) | Firewall, fail2ban, the `aipbx-priv` root helper, Apache sandbox |
+| 🖧 [Network ports & firewall](network-ports.md) | Complete matrix of all TCP/UDP ports, public vs LAN scopes, NAT guidelines, UFW/firewalld/iptables recipes |
+| 🛡️ [Threat model & attack surface](threat-model.md) | Security architecture, SIP exposure boundaries, WebRTC/TURNS credentials, recording retention, mobile push tokens, and AI least privilege guardrails |
 | ⚖️ [GDPR, KVKK & data privacy](privacy.md) | Optional regulatory presets (KVKK, GDPR, CCPA/FCC, HIPAA, PCI-DSS, LGPD), pre-call opt-in/opt-out, periodic beep, retention purge, SAR export, Right to Erasure, and Cloud AI lock |
 | 📜 [Certificates](certificates.md) | One certificate for portal, TURNS and SIP-TLS; Let's Encrypt, upload, renewals |
 | 💡 [Busy lamps (BLF)](blf.md) | Desk phone keys for colleagues, do-not-disturb, forwarding and queue login; pickup; voicemail lamp |
@@ -61,6 +68,7 @@ Optional applications and integrations bundled with AiPBX (`plugins/`: official 
 | Page | Plugin slug | What it covers |
 |------|-------------|----------------|
 | 🧩 [Plugin system & developer guide](plugin-development.md) | — | The bundled plugin catalog (`plugins/`), `plg_*` database tables, enabling/disabling integrations (`google-auth`, `ms-teams`, …), and building custom `.zip` plugins |
+| 🔑 [Corporate SSO: OpenID Connect & SAML 2.0 (Plugins)](sso.md) | `oidc-auth`, `saml-auth` | Enterprise Single Sign-On (SSO) with Microsoft Entra ID (Azure AD), Okta, Keycloak, Authentik, Google Workspace, and ADFS with JIT auto-provisioning |
 | 🤖 [Auto dialer & AMD campaigns (Plugin)](auto-dialer.md) | `auto-dialer` | Automated outbound calling campaigns with Answering Machine Detection (`AMD`), queue free-agent pacing, voicemail drop, and CSV call results |
 | 🌐 [Website call widget (Plugin)](web-widgets.md) | `web-widgets` | "Call us" button for websites (WebRTC in the browser), call-back form, allowed websites and limits, WordPress plugin |
 | ☁️ [Cloud AI services (Plugin)](cloud-ai.md) | `ai-cloud`, `ai-voicemail` | Accounts of cloud AI providers (Gemini/Gemma, OpenAI, Azure, Deepgram, Groq, NVIDIA NIM, Qwen, any OpenAI-compatible service), cloud speech to text, language models, voicemail transcription |
@@ -79,7 +87,12 @@ The 🤖 **Android** and 🍎 **iOS** apps are built by GitHub Actions and attac
 username and password (plus 2FA when enabled), by scanning the QR code on *My Phone*, or with the
 link in their invitation e-mail.
 
-## 🗺️ Roadmap
+## 🗺️ Roadmap & Specifications
+
+| Page | What it covers |
+|------|----------------|
+| 📜 [SDD Guide & Constitution](specs/README.md) | Specification-Driven Development (SDD) guide, core architectural rules (zero regressions, circuit breakers, pure generators), and living specifications index (Specs 001, 002, 003) |
+| 🗺️ [Roadmap](roadmap.md) | Planned work across future waves with detailed requirements and milestone criteria |
 
 Planned work (website call widget, chat message deletion, S3 storage, video calls, local AI models,
 busy lamps on desk phones, phone provisioning, DHCP/TFTP …) with a short explanation of each: [Roadmap](roadmap.md).

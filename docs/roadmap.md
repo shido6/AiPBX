@@ -117,18 +117,55 @@ checks.
 
 ### Wave 3: large projects
 
-#### 3.1 Multi-tenant
+#### 3.1 Modular Containerization (Decoupled Docker Compose)
 
-One AiPBX per tenant in its own LXD/Incus system container, running the normal installer, plus a
-separate control panel: create, suspend, update, back up, quotas, health, and an audited "log in as".
-Tenants share the server's IP with their own port blocks (SIP 5060 + 10·N, an RTP slice, own TURN
-ports, the same port inside and outside so SDP needs no rewriting); web and WSS go through the host's
-nginx by host name; extra IPs are used when the server has them. No Kamailio. A soft limit of about 20
-tenants per server (a warning that can be overridden). Before it: remove the places that assume port
-5060 (QR login, firewall service, installer firewall/fail2ban/coturn, the My phone page, NEC phone
-templates).
+**Goal.** Provide a turnkey, zero-downtime container deployment for AiPBX without sacrificing telecommunications-grade performance or reliability.
 
-#### 3.2 Group voice call from chat
+**Architecture: Decoupled Services vs. Monolithic "Fat Container".**
+An all-in-one container running `systemd`, Asterisk, MariaDB, Web, Cron, and AI in a single image is deliberately rejected because:
+1. **Zero-Call-Downtime Web Updates:** Rebuilding or restarting an all-in-one container drops all active phone calls. In decoupled services, `aipbx-web` restarts in seconds while `aipbx-asterisk` keeps running with zero interruption to ongoing calls.
+2. **RTP Performance:** Bridging 10,000 UDP RTP ports (`10000-20000/udp`) through Docker proxy creates high jitter and latency. Decoupled Asterisk runs with `network_mode: host` for wire-speed media forwarding.
+3. **Hardware & Resource Segregation:** Neural AI models (Whisper STT, Kokoro/Piper TTS) can be isolated to GPU-enabled nodes or scaled independently from the realtime PBX core.
+
+```
+                      ┌────────────────────────────────────────────────────────┐
+                      │                       HOST                             │
+                      │                                                        │
+                      │   ┌──────────────┐   ┌──────────────┐   ┌──────────┐   │
+                      │   │  aipbx-web   │   │   aipbx-db   │   │ aipbx-ai │   │
+ HTTP / HTTPS / API ──┼──>│  (PHP/Nginx) │──>│  (MariaDB)   │   │ (Python) │   │
+                      │   └──────┬───────┘   └──────────────┘   └────┬─────┘   │
+                      │          │ Shared Volume / Unix Socket       │ Audio   │
+                      │          ▼                                   ▼ Socket  │
+                      │   ┌────────────────────────────────────────────────┐   │
+ SIP / RTP (UDP) ─────┼──>│ aipbx-asterisk (Host Network: 5060 + 10k-20k)  │   │
+                      │   └────────────────────────────────────────────────┘   │
+                      └────────────────────────────────────────────────────────┘
+```
+
+**Services in the stack:**
+- **`aipbx-asterisk`**: Realtime Asterisk engine with host networking (`network_mode: host`), zero-NAT overhead, and independent lifecycle.
+- **`aipbx-web`**: PHP 8.2+ with Nginx, handling HTTP, WebSocket, and REST API calls. Can be updated and deployed independently.
+- **`aipbx-db`**: Official MariaDB container with dedicated persistent named volumes (`aipbx_db_data`).
+- **`aipbx-ai`**: Python FastAPI container housing Whisper STT, Kokoro/Piper TTS, and audio socket integrations.
+- **`aipbx-signaling`**: Lightweight daemon capturing Homer/HEPv3 signaling packets.
+
+---
+
+#### 3.2 True Multi-Tenant Cloud PBX (SaaS Architecture)
+
+**Goal.** Enable cloud telecom providers to offer isolated, branded PBX instances to multiple business customers (tenants) from a centralized control plane.
+
+**Design Principles:**
+Asterisk is a single-process engine; logical context partitioning alone is not safe against tenant-level crashes or transcoding CPU spikes. The enterprise cloud solution consists of:
+- **Central Control Plane:** Unified billing, tenant lifecycle management (create, suspend, quota, backup), audit logging, and domain routing.
+- **Edge SIP Proxy / Session Border Controller (SBC):** An edge proxy (Kamailio / OpenSIPS) routing incoming SIP INVITEs based on domain/tenant tags (`tenant1.aipbx.bid`, `tenant2.aipbx.bid`).
+- **Isolated Per-Tenant Asterisk Pods:** Each tenant runs an independent, lightweight Asterisk node with dedicated memory and RTP slices. A failure or misconfiguration in Tenant A never impacts Tenant B.
+- **Zero-Trust Multi-Tenancy:** Each tenant's call recordings, voicemail, CDR, and credentials live in isolated storage buckets and database schemas.
+
+---
+
+#### 3.3 Group voice call from chat
 
 A conference room per chat group (hidden number), started from the mobile app; membership is checked
 before joining; the group gets a "call started — join" message and a push notification, members join
@@ -153,9 +190,9 @@ Also waiting: per-domain apply of pending changes (#120).
 | 1 | [Website call widget](#1-website-call-widget) and WordPress plugin | [#14](https://github.com/mahirgul/AiPBX/issues/14) | large |
 | 2 | [Delete chat messages and attachments](#2-delete-chat-messages-and-attachments) | [#15](https://github.com/mahirgul/AiPBX/issues/15) | medium |
 | 3 | [S3 storage for chat attachments](#3-s3-storage-for-chat-attachments): done, see [File storage](file-storage.md) | [#15](https://github.com/mahirgul/AiPBX/issues/15) | done |
-| 4 | [Video calls](#4-video-calls): web phone, Android and desk video phones done (1.22), see [Video calls](video-calls.md); iOS open | [#15](https://github.com/mahirgul/AiPBX/issues/15) | large |
+| 4 | [Video calls](#4-video-calls): web phone, Android, iOS and desk video phones done (1.22/1.50), see [Video calls](video-calls.md) | [#15](https://github.com/mahirgul/AiPBX/issues/15) | done |
 | 5 | [Local AI models](#5-local-ai-models-embeddinggemma-2-ema-lightning) (EmbeddingGemma 2, EMA Lightning): steps 0–1 in [Local AI models](local-ai.md) | | large, in steps |
-| 6 | [iOS app: same features as Android 1.0.54](#6-ios-app-same-features-as-android-1054) | | small |
+| 6 | [iOS app parity](#6-ios-app-parity): same features as Android (swipe remove calls, notification reply, own message deletion, in-app image viewer) | | done |
 | 7 | [Dialplan pattern clean-up](#7-dialplan-pattern-clean-up) | | small |
 | 8 | [Busy lamps (BLF) and voicemail lamp on desk phones](#8-busy-lamps-blf-and-voicemail-lamp-on-desk-phones): watching 10–100 colleagues on multi-key phones | | medium |
 | 9 | [Phone provisioning page](#9-phone-provisioning-page) | | large |
@@ -241,11 +278,9 @@ MinIO, Wasabi, Backblaze B2 …) would keep large files off the PBX: bucket, key
 admin page, a connection test, and a one-time move of existing files. Downloads keep going through
 the chat service, so access rules stay the same.
 
-## 4. Video calls
+## 4. Video calls *(done in 1.60.0: Asterisk ConfBridge SFU multi-screen WebRTC gallery, Follow-Talker for SIP video phones, /meetings scheduler, /meet/{token} zero-install public guest lobby, .ics calendar invitations)*
 
-The server already allows the VP8 and H.264 codecs for WebRTC, but the web phone and the apps send
-audio only. Needed: camera handling and a video view in the web phone and the apps, switching
-between audio and video during a call, and sensible bandwidth limits for mobile networks.
+The server allows VP8, VP9, and H.264 codecs for WebRTC. Asterisk ConfBridge SFU forwards RTP video streams directly without server-side transcoding, enabling responsive multi-party gallery grid video conferences in browsers, while Follow-Talker mode supports hardware SIP video phones. Includes pre-join device check lobby, screen sharing, email invitations, and Outlook/Google Calendar `.ics` attachments.
 
 ## 5. Local AI models (EmbeddingGemma 2, EMA Lightning)
 
@@ -388,11 +423,16 @@ recording and CDR stay here; (2) transcripts of call recordings in the CDR, sear
 to a person when unsure); (4) appointments with a calendar and outbound confirmation calls;
 (5) several assistants with hand-over. Not scheduled yet.
 
-## 6. iOS app: same features as Android 1.0.54
+## 6. iOS app parity — done
 
-Android 1.0.54 added removing calls from the call history (swipe, clear all) and replying to a
-chat notification. The iOS app needs the same two; full-screen incoming calls already come from
-CallKit there.
+The native iOS app ([AiPBX-ios](https://github.com/mahirgul/AiPBX-ios)) maintains full feature parity with the Android app:
+- Removing calls from call history (swipe with Undo, and full "Clear all" confirmation).
+- Replying directly to incoming chat notifications without opening the app (`UNTextInputNotificationAction`).
+- Deleting own chat messages and attachments for everyone in the room.
+- Native in-app full-screen photo viewer with pinch-to-zoom (`ImageViewerOverlay`), pan, double-tap zoom, and iOS share sheet.
+- WebRTC video calls with CallKit integration.
+- 23-language UI localization (`.lproj`).
+- Unified release version `1.50.35` (build 75).
 
 ## 7. Dialplan pattern clean-up
 
@@ -585,4 +625,14 @@ pages. Proposed groups:
 
 Old addresses keep working (the routes do not change, only the menu). The role matrix and the
 module keys stay as they are.
+
+## 15. Reverse proxy architecture & Cloudflare DNS-01 validation
+
+**Done in 1.50.36** (*Network → Reverse Proxy* & *Security → Certificates*). Planned for issue [#148](https://github.com/mahirgul/AiPBX/issues/148) and delivered under [Spec 003](specs/003-reverse-proxy.md):
+
+- Dedicated management page under **Network → Reverse Proxy** (`/reverse-proxy`) with trusted CIDR proxy configuration, TLS termination modes, and live HTTP header inspection.
+- Production-ready reverse proxy config snippet generation for Nginx, Caddy, Traefik, HAProxy, and Apache 2.4 with WebRTC `/ws` and `/chat/ws` pass-through.
+- Interactive Network Ports & Firewall Matrix with copyable bash setup commands for UFW, firewalld, and iptables.
+- Cloudflare DNS-01 challenge support with wildcard certificates (`*.<domain>`) in `/certificates` and `conf/sbin/aipbx-cert`, enabling SSL/TLS issuance on private/internal PBX installations without public port 80 exposure.
+
 

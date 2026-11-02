@@ -153,6 +153,36 @@ final class SyncConferencesCoverageTest extends TestCase
         $this->assertStringContainsString("same => n(cf_enter_{$id}),ConfBridge(7925)", $section);
     }
 
+    public function testConferenceVideoModeSfuAndTalker(): void
+    {
+        $id1 = 7927;
+        $id2 = 7928;
+        $this->createdConfIds[] = $id1;
+        $this->createdConfIds[] = $id2;
+
+        $stmt = $this->db->prepare(
+            "INSERT INTO pbx_conferences (id, room_number, title, video_mode, is_active)
+             VALUES (?, ?, ?, ?, 1)"
+        );
+        $stmt->execute([$id1, '7927', 'zz_cov_conf_7927', 'sfu']);
+        $stmt->execute([$id2, '7928', 'zz_cov_conf_7928', 'follow_talker']);
+
+        syncConferences();
+
+        $conf = (string)file_get_contents(ASTERISK_PBX_DIR . '/extensions_conferences.conf');
+
+        // SFU room check
+        $this->assertStringContainsString("[app-confbridge-{$id1}]", $conf);
+        $this->assertStringContainsString('same => n,Set(CONFBRIDGE(bridge,video_mode)=sfu)', $conf);
+        $this->assertStringContainsString('same => n,Set(CONFBRIDGE(bridge,video_update_discard)=0)', $conf);
+        $this->assertStringContainsString('same => n,Set(CONFBRIDGE(bridge,remb_send_interval)=1000)', $conf);
+        $this->assertStringContainsString('same => n,Set(CONFBRIDGE(bridge,remb_behavior)=average)', $conf);
+
+        // Follow-talker room check
+        $this->assertStringContainsString("[app-confbridge-{$id2}]", $conf);
+        $this->assertStringContainsString('same => n,Set(CONFBRIDGE(bridge,video_mode)=follow_talker)', $conf);
+    }
+
     public function testInactiveConferenceOmittedFromDialplan(): void
     {
         $id = 7926;
@@ -203,5 +233,67 @@ final class SyncConferencesCoverageTest extends TestCase
 
         // Music on hold stripped of malicious characters
         $this->assertStringContainsString('Set(CONFBRIDGE(user,music_on_hold_class)=mohSystemevil)', $conf);
+    }
+
+    public function testAppConfbridgeDispatchContextAndDynamicFallback(): void
+    {
+        $id = 7928;
+        $this->createdConfIds[] = $id;
+
+        $stmt = $this->db->prepare(
+            "INSERT INTO pbx_conferences (id, room_number, title, is_active)
+             VALUES (?, '7928', 'zz_cov_dispatch_7928', 1)"
+        );
+        $stmt->execute([$id]);
+
+        $this->assertTrue(syncConferences());
+
+        $file = ASTERISK_PBX_DIR . '/extensions_conferences.conf';
+        $this->assertFileExists($file);
+        $conf = (string)file_get_contents($file);
+
+        // Check dispatch context and routing
+        $this->assertStringContainsString('[app-confbridge-dispatch]', $conf);
+        $this->assertStringContainsString("exten => 7928,1,Goto(app-confbridge-{$id},s,1)", $conf);
+        $this->assertStringContainsString('exten => _.,1,NoOp(Dynamic/Ad-hoc Conference Room ${EXTEN}', $conf);
+        $this->assertStringContainsString('same => n,ConfBridge(${EXTEN})', $conf);
+    }
+
+    public function testConferencePrefixHelperAndFeatureCodeDialplan(): void
+    {
+        require_once dirname(__DIR__, 2) . '/src/sync/SyncFeatureCodes.php';
+        require_once dirname(__DIR__, 2) . '/src/helpers.php';
+
+        // Check helper function
+        $prefix = getConferencePrefix();
+        $this->assertContains($prefix, ['#9', '*9']);
+
+        // Check feature codes dialplan generation
+        syncFeatureCodes();
+        $file = ASTERISK_PBX_DIR . '/extensions_featurecodes.conf';
+        $this->assertFileExists($file);
+        $conf = (string)file_get_contents($file);
+
+        // Should include interactive room prompt and direct room dialplan for conference_join
+        $this->assertStringContainsString('conference_join', $conf);
+        $this->assertStringContainsString('Goto(app-confbridge-dispatch,${CONF_TARGET},1)', $conf);
+        $this->assertStringContainsString('Read(CONF_TARGET,conf-getchannel', $conf);
+    }
+
+    public function testMeetingGuestContextChecksTheTokenAndFailsClosed(): void
+    {
+        $src = (string)file_get_contents(dirname(__DIR__, 2) . '/src/sync/SyncConferences.php');
+        $this->assertStringContainsString('[app-meeting-guest]', $src);
+        $this->assertStringContainsString('PJSIP_HEADER(read,X-Meeting-Token)', $src);
+        $this->assertStringContainsString('api/meeting_join_check.php', $src);
+        $this->assertStringContainsString('n(deny),Hangup(21)', $src);
+        $this->assertStringContainsString('MEET_CHECK:0:5', $src, 'digits in an error page must not pass for a limit');
+
+        $install = (string)file_get_contents(dirname(__DIR__, 3) . '/install.sh');
+        $this->assertStringContainsString('meeting_join_check', $install, 'the loopback call must not get the HTTPS redirect');
+
+        $ext = (string)file_get_contents(dirname(__DIR__, 2) . '/src/sync/SyncExtensions.php');
+        $this->assertStringContainsString('context=app-meeting-guest', $ext);
+        $this->assertStringNotContainsString('context=app-confbridge-dispatch', $ext);
     }
 }

@@ -1,6 +1,6 @@
 # AI PBX — Installation & Deployment Guide
 
-This guide covers installing and configuring **AI PBX** on **Ubuntu 26.04 LTS**.
+This guide covers installing and configuring **AI PBX** on **Ubuntu 26.04 LTS+**, **Debian 13+**, and **64-bit Raspberry Pi OS / Armbian** (x86_64 & aarch64/ARM64).
 
 > 📺 **Prefer to watch?** The installation step by step, narrated and subtitled:
 > [English](https://www.youtube.com/watch?v=lH1-k_z5jFE) · [Türkçe](https://www.youtube.com/watch?v=eDHHHW6ZcvQ) ·
@@ -10,11 +10,14 @@ This guide covers installing and configuring **AI PBX** on **Ubuntu 26.04 LTS**.
 
 ## System Requirements
 
-- **Operating System**: Clean Ubuntu Server (26.04 LTS x86_64)
+- **Operating System**: Clean 64-bit OS: Ubuntu Server (26.04 LTS+), Debian 13 (Trixie)+, 64-bit Raspberry Pi OS, or Armbian
+- **Supported Architectures**: `x86_64` (amd64) and `aarch64` (arm64 — e.g. Raspberry Pi 4/5, AWS Graviton, Ampere)
 - **Minimum Specs**: 2 GB RAM, 2 vCPU, 15 GB SSD storage
 - **Recommended Specs (Production)**: 4 GB+ RAM, 4 vCPU, 40 GB+ NVMe SSD
 - **Network**: Static Public IPv4 and/or configured FQDN (e.g. `pbx.company.com`)
 - **Privileges**: Root access (`sudo -i`)
+
+> ☁️ **Need a Cloud Server?** We recommend **[UpCloud](https://signup.upcloud.com/?promo=affiliate-aipbx250&amp;utm_source=aipbx&amp;utm_medium=affiliate&amp;utm_campaign=affiliate-aipbx250)** for low VoIP jitter and enterprise-grade MaxIOPS storage. Sign up with promo code `affiliate-aipbx250` for **$250 in free cloud credits**.
 
 ---
 
@@ -25,6 +28,14 @@ the Go chat service and the security tooling in one command. It installs the **l
 release** (see [CHANGELOG.md](CHANGELOG.md)).
 
 ```bash
+# Ultra-fast one-liner installation
+curl -fsSL aipbx.bid/i | sudo bash
+```
+
+Or via direct GitHub raw URL:
+
+```bash
+# Alternative direct GitHub script
 curl -fsSL https://raw.githubusercontent.com/mahirgul/AiPBX/main/install.sh | sudo bash
 ```
 

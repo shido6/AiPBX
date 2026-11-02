@@ -143,3 +143,39 @@ class PBXHelper {
     }
 }
 
+/**
+ * Quick conference dial prefix (e.g. '#9' or '*9').
+ * Reads from pbx_feature_codes (feature_key='conference_join'), falling back to '#9'.
+ */
+function getConferencePrefix(): string {
+    static $cached = null;
+    if ($cached !== null) {
+        return $cached;
+    }
+    try {
+        $code = DBHelper::fetchColumn("SELECT code FROM pbx_feature_codes WHERE feature_key = 'conference_join' AND is_active = 1 LIMIT 1");
+        if (!empty($code)) {
+            $cleaned = rtrim(ltrim((string)$code, '_'), '.X');
+            if ($cleaned !== '') {
+                $cached = $cleaned;
+                return $cached;
+            }
+        }
+    } catch (\Throwable $e) {}
+    $cached = '#9';
+    return $cached;
+}
+
+/**
+ * Deterministic SIP secret for the isolated [meeting-guest] WebRTC endpoint.
+ * Used by browser participants joining a conference via /meet/{token}.
+ */
+function getMeetingGuestSipSecret(): string {
+    $seed = (defined('TURN_SECRET') && TURN_SECRET !== '')
+        ? (string)TURN_SECRET
+        : (defined('DB_PASS') ? (string)DB_PASS : 'aipbx-meeting-guest');
+    return substr(hash_hmac('sha256', 'aipbx-webrtc-meeting-guest-v1', $seed), 0, 32);
+}
+
+
+

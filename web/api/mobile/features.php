@@ -4,10 +4,29 @@ mobileApiStart('GET, POST, OPTIONS');
 
 require_once __DIR__ . '/../../src/core/BaseRepository.php';
 require_once __DIR__ . '/../../src/repositories/MyPhoneRepository.php';
+require_once __DIR__ . '/../../src/helpers.php';
 require_once __DIR__ . '/../../src/asterisk_sync.php';
 
 $user = requireMobileAuth();
 $userId = (int)$user['id'];
+
+function mobileConferenceRooms(): array {
+    $prefix = getConferencePrefix();
+    $rows = getDB()->query("SELECT id, room_number, title, user_pin, video_mode FROM pbx_conferences WHERE is_active = 1 ORDER BY room_number ASC")->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    $rooms = [];
+    foreach ($rows as $r) {
+        $num = (string)($r['room_number'] ?? '');
+        $rooms[] = [
+            'id' => (int)$r['id'],
+            'room_number' => $num,
+            'dial_number' => $prefix . $num,
+            'title' => (string)($r['title'] ?? ''),
+            'has_pin' => !empty($r['user_pin']),
+            'video_mode' => (string)($r['video_mode'] ?? 'none'),
+        ];
+    }
+    return $rooms;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $json = mobileInput();
@@ -97,7 +116,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'cf_noanswer_number' => $updated['cf_noanswer_number'] ?? '',
             'cf_noanswer_timeout' => (int)($updated['cf_noanswer_timeout'] ?? 20),
             'allowed_phone_mode' => $updated['allowed_phone_mode'] ?? 'both',
-            'video' => mobileVideoSettings($updated['allowed_phone_mode'] ?? 'both')
+            'video' => mobileVideoSettings($updated['allowed_phone_mode'] ?? 'both'),
+            'conference_prefix' => getConferencePrefix(),
+            'conference_rooms' => mobileConferenceRooms()
         ]
     ]);
 }
@@ -115,6 +136,8 @@ mobileJson([
         'cf_noanswer_number' => $details['cf_noanswer_number'] ?? '',
         'cf_noanswer_timeout' => (int)($details['cf_noanswer_timeout'] ?? 20),
         'allowed_phone_mode' => $details['allowed_phone_mode'] ?? 'both',
-        'video' => mobileVideoSettings($details['allowed_phone_mode'] ?? 'both')
+        'video' => mobileVideoSettings($details['allowed_phone_mode'] ?? 'both'),
+        'conference_prefix' => getConferencePrefix(),
+        'conference_rooms' => mobileConferenceRooms()
     ]
 ]);

@@ -257,13 +257,11 @@ function headerPhoneClear() {
 
 function initHeaderWebRTCPhone() {
     if (window.HEADER_WEBRTC_INITIALIZED || headerSipRegistered) {
-        console.log("JsSIP Phone already initialized. Skipping duplicate init.");
         return;
     }
 
     const extFallback = window.CURRENT_USER_EXT || "";
     if (!extFallback) {
-        console.log("No extension assigned to current user. WebRTC softphone disabled.");
         return;
     }
 
@@ -378,7 +376,6 @@ function initHeaderJsSIPPhone(ext, webrtcUsername, pass) {
         });
 
         headerJsSipUA.on("connected", () => {
-            console.log("JsSIP: Connected to Asterisk WebSocket.");
         });
 
         headerJsSipUA.on("disconnected", () => {
@@ -388,7 +385,6 @@ function initHeaderJsSIPPhone(ext, webrtcUsername, pass) {
 
         headerJsSipUA.on("registered", () => {
             headerSipRegistered = true;
-            console.log("JsSIP: Registered successfully as " + webrtcUsername);
             updateHeaderPhoneStatus("online", "var(--success)");
             const videoBtn = document.getElementById("header-video-call-btn");
             if (videoBtn) videoBtn.style.display = headerVideoAllowed() ? "" : "none";
