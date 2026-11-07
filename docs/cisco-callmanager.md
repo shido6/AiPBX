@@ -175,10 +175,7 @@ untested here: UDP is the path that works out of the box.
 Measured on a **CP-8851** (`sip88xx.14-0-1-0101-145`). Everything below is a gap in the generated file, or in
 what the phone does with it — not a repeat of sections 1–5.
 
-### The transport value is the 7900 numbering
-
-`CiscoCallManagerTemplate` writes `transportLayerProtocol` as `$tls ? 2 : 1`, with the comment
-*"1 = UDP, 2 = TCP/TLS"*. That is the 7900 mapping. On the **8800** the values are:
+### The transport value differs by series
 
 | Value | 8800 means | 7900 means |
 |---|---|---|
@@ -186,18 +183,20 @@ what the phone does with it — not a repeat of sections 1–5.
 | `2` | UDP | TCP |
 | `3` | TLS | TLS |
 
-So an 8800 provisioned for plain SIP is told to use **TCP**, and one provisioned for TLS is told **UDP**. A phone
-speaking TCP to a UDP-only port registers nowhere and looks bricked; this was reproduced. The element needs to
-branch on the model series, not just on `$tls`.
+AiPBX branches on the series and writes `2` for a UDP 8800, `1` for a UDP 7900, and `3` for TLS on either. Builds
+before this change used the 7900 numbering for both, so a plain-SIP 8800 was told to use **TCP** — a phone
+speaking TCP to a UDP-only port registers nowhere and looks bricked.
 
 ### Elements the template never writes
 
 | Element | What it is for | What the phone expects |
 |---|---|---|
 | `deviceSecurityMode` | line security | `1` = insecure, `2` = authenticated, `3` = encrypted; `0` is not a defined 8800 value |
-| `versionStamp` | cache-buster for the file | any value that changes when the file changes; without it a phone can keep using its stored copy |
 | `logServer` / `remoteLog` | remote logging | CUCM product-specific fields inside `<vendorConfig>`: `<logServer>address:port@@base=7;pfs=1</logServer>` and `<remoteLog>1</remoteLog>` — **unverified** on this firmware, see below |
 | `directoryURL` | phone's Contacts list | written empty today; a `CiscoIPPhoneDirectory` XML over HTTP fills it |
+
+`versionStamp` **is** written, as a hash of the file body: unchanged config keeps the same stamp, and any change
+produces a new one, so the phone refreshes exactly when it has a reason to.
 
 Two values that are written correctly but easy to misread when hand-editing: `webAccess 0` means **enabled** on
 the 8800 (`1` disables it), and `callWaiting` must be `0`/`1` — the `3` used by the 7900 is rejected.

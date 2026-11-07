@@ -209,14 +209,37 @@ final class CiscoCallManagerTemplateTest extends TestCase
         $this->assertStringContainsString('<callLogBlfEnabled>1</callLogBlfEnabled>', $eight);
     }
 
-    public function testTlsChangesTheTransportAndThePort(): void
+    public function testTransportUsesEachSeriesOwnNumbering(): void
     {
-        $tls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context());
-        $this->assertStringContainsString('<transportLayerProtocol>2</transportLayerProtocol>', $tls);
-        $this->assertStringContainsString('<sipPort>5061</sipPort>', $tls);
-        $this->assertStringContainsString('<securedSipPort>5061</securedSipPort>', $tls);
-        $udp = $this->tpl->render($this->context());
-        $this->assertStringContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $udp);
+        // 7900: 1 = UDP, 2 = TCP, 3 = TLS. 8800: 1 = TCP, 2 = UDP, 3 = TLS.
+        $sevenUdp = $this->tpl->render($this->context('cisco-cm-7975g'));
+        $this->assertStringContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $sevenUdp);
+        $sevenTls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context('cisco-cm-7975g'));
+        $this->assertStringContainsString('<transportLayerProtocol>3</transportLayerProtocol>', $sevenTls);
+
+        $eightUdp = $this->tpl->render($this->context('cisco-cm-8861'));
+        $this->assertStringContainsString('<transportLayerProtocol>2</transportLayerProtocol>', $eightUdp);
+        $this->assertStringNotContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $eightUdp);
+        $eightTls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context('cisco-cm-8861'));
+        $this->assertStringContainsString('<transportLayerProtocol>3</transportLayerProtocol>', $eightTls);
+        $this->assertStringContainsString('<sipPort>5061</sipPort>', $eightTls);
+        $this->assertStringContainsString('<securedSipPort>5061</securedSipPort>', $eightTls);
+    }
+
+    public function testVersionStampChangesOnlyWithTheContent(): void
+    {
+        $a = $this->tpl->render($this->context());
+        $same = $this->tpl->render($this->context());
+        $other = $this->tpl->render(['extension' => '7663', 'sip_password' => 'another-secret'] + $this->context());
+        $this->assertMatchesRegularExpression('/<versionStamp>[0-9a-f]{16}<\/versionStamp>/', $a);
+        $this->assertSame($this->stamp($a), $this->stamp($same), 'an unchanged config must not churn the stamp');
+        $this->assertNotSame($this->stamp($a), $this->stamp($other), 'a changed config must get a new stamp');
+    }
+
+    private function stamp(string $xml): string
+    {
+        preg_match('/<versionStamp>([^<]+)<\/versionStamp>/', $xml, $m);
+        return $m[1] ?? '';
     }
 
     public function testAnOffsetWithNoNameGetsTheNearestOne(): void
