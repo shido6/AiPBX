@@ -37,6 +37,7 @@ final class CiscoCallManagerTemplateTest extends TestCase
     {
         return [
             'mac' => '001565aabbcc', 'model' => $model, 'extension' => self::EXT,
+            'sip_endpoint' => self::EXT . '-sip',
             // A display name built to break a careless template: a newline and
             // an XML tag, exactly what a user's full name could contain.
             'display_name' => "Ali\nBak <script>", 'sip_password' => self::SECRET,
@@ -104,7 +105,9 @@ final class CiscoCallManagerTemplateTest extends TestCase
         // The keyword, not a host name: it points at the callManager member above.
         $this->assertStringContainsString('<proxy>USECALLMANAGER</proxy>', $xml);
         $this->assertMatchesRegularExpression('/<line button="1" lineIndex="1">\s*<featureID>9<\/featureID>/', $xml);
-        $this->assertStringContainsString('<name>' . self::EXT . '</name>', $xml);
+        // The From/contact user is the PJSIP endpoint; the digest user is the extension.
+        $this->assertStringContainsString('<name>' . self::EXT . '-sip</name>', $xml);
+        $this->assertStringContainsString('<contact>' . self::EXT . '-sip</contact>', $xml);
         $this->assertStringContainsString('<authName>' . self::EXT . '</authName>', $xml);
         $this->assertStringContainsString('<authPassword>' . htmlspecialchars(self::SECRET, ENT_XML1 | ENT_QUOTES, 'UTF-8') . '</authPassword>', $xml);
         $this->assertStringContainsString('<messagesNumber>*97</messagesNumber>', $xml);
@@ -212,11 +215,38 @@ final class CiscoCallManagerTemplateTest extends TestCase
     public function testTlsChangesTheTransportAndThePort(): void
     {
         $tls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context());
-        $this->assertStringContainsString('<transportLayerProtocol>2</transportLayerProtocol>', $tls);
+        $this->assertStringContainsString('<transportLayerProtocol>3</transportLayerProtocol>', $tls);
         $this->assertStringContainsString('<sipPort>5061</sipPort>', $tls);
         $this->assertStringContainsString('<securedSipPort>5061</securedSipPort>', $tls);
         $udp = $this->tpl->render($this->context());
         $this->assertStringContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $udp);
+    }
+
+    public function testTransportUsesEachSeriesOwnNumbering(): void
+    {
+        // 7900: 1 = UDP, 2 = TCP, 3 = TLS. 8800: 1 = TCP, 2 = UDP, 3 = TLS.
+        $sevenUdp = $this->tpl->render($this->context('cisco-cm-7975g'));
+        $this->assertStringContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $sevenUdp);
+        $sevenTls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context('cisco-cm-7975g'));
+        $this->assertStringContainsString('<transportLayerProtocol>3</transportLayerProtocol>', $sevenTls);
+
+        $eightUdp = $this->tpl->render($this->context('cisco-cm-8861'));
+        $this->assertStringContainsString('<transportLayerProtocol>2</transportLayerProtocol>', $eightUdp);
+        $this->assertStringNotContainsString('<transportLayerProtocol>1</transportLayerProtocol>', $eightUdp);
+        $eightTls = $this->tpl->render(['transport' => 'tls', 'port' => 5061] + $this->context('cisco-cm-8861'));
+        $this->assertStringContainsString('<transportLayerProtocol>3</transportLayerProtocol>', $eightTls);
+        $this->assertStringContainsString('<sipPort>5061</sipPort>', $eightTls);
+        $this->assertStringContainsString('<securedSipPort>5061</securedSipPort>', $eightTls);
+    }
+
+    public function testSshAccessIsDisabledBecauseNoCredentialsAreWritten(): void
+    {
+        foreach (['cisco-cm-7975g', 'cisco-cm-8861'] as $model) {
+            $xml = $this->tpl->render($this->context($model));
+            $this->assertStringContainsString('<sshAccess>1</sshAccess>', $xml);
+            $this->assertStringNotContainsString('<sshUserId>', $xml);
+            $this->assertStringNotContainsString('<sshPassword>', $xml);
+        }
     }
 
     public function testAnOffsetWithNoNameGetsTheNearestOne(): void

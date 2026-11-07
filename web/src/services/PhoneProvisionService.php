@@ -797,6 +797,8 @@ class PhoneProvisionService
             'mac' => $phone['mac'],
             'model' => $phone['model'],
             'extension' => $ext,
+            // The endpoint the line must name; the digest user stays the extension.
+            'sip_endpoint' => $ext . '-sip',
             'display_name' => toCleanAscii((string) $user['full_name']) ?: $ext,
             'sip_password' => $secret,
             'server' => (string) ($region['sip_server'] ?? '') ?: self::sipServer(),

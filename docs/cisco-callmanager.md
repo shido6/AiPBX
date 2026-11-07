@@ -148,13 +148,21 @@ NOTIFY that reboots them, and they restart by themselves when the new configurat
 ## 5. What AiPBX writes, and what you do on the phone
 
 The generated file sets the server and SIP port (UDP 5060, or TLS 5061 from the transport setting), the
-extension with its SIP password as `name`/`authName`/`authPassword`, the display name, `remotePartyID` (so a
+PJSIP endpoint (`<extension>-sip`) as `name`/`contact`, the bare extension as `authName` with the SIP password, the display name, `remotePartyID` (so a
 connected line update works), NTP, the time zone for the phone's own time zone list, the messages key
 (`*97`) so the voicemail lamp works, G.722 on or off, and the key layout above.
 
 The **web admin password** AiPBX generates per phone is *not* written to these models: Cisco only accepts
 `adminPassword` from the file on the 8821, so a 79xx/88xx keeps its own. Change it on the phone itself
 (Settings → Administration → Password) if the factory default is unacceptable.
+
+AiPBX writes `<sshAccess>1</sshAccess>` (disabled) because it writes no SSH user or password.
+On the 8800, `0` enables SSH and `1` disables it (the 7900 uses the same values). To use the
+debug shell, set `0` and add both credentials on the phone, then re-provision; do not enable
+one without the other.
+
+The 7900 and 8800 number `transportLayerProtocol` differently: 7900 `1` = UDP, `2` = TCP,
+`3` = TLS; 8800 `1` = TCP, `2` = UDP, `3` = TLS. AiPBX writes the series' own value.
 
 SIP-TLS on these phones also needs a certificate the phone trusts (the ITL/LSC dance in the
 `usecallmanager.nz` secure-provisioning chapter). The transport setting is written, but treat TLS as
@@ -168,8 +176,10 @@ untested here: UDP is the path that works out of the box.
 | A 7900 sits at *Upgrading* | It is asking for a firmware file the server does not have (a load from the single field is not checked): `aipbx_cisco_firmware.php` lists what the per-model list needs. Copy the rest of that release's package into the TFTP folder — do not rename the files, and do not use another model's package (the loads are signed per model). |
 | It has a name but no extension | The file was not fetched: DHCP option 150, or the TFTP folder's owner and the allowed networks. `Provisioning → Phone logs → TFTP/FTP` shows every fetch the PBX answered. |
 | It fetched the file and stayed on the old settings | The `loadInformation` you set may be a load you do not have. Clear it and re-provision (↻). |
+| It registers nowhere with `No matching endpoint` | The line's `<name>` and `<contact>` must be the PJSIP endpoint (`<extension>-sip`), not the bare extension; `<authName>` stays the bare extension. |
 | The lamp of a BLF key never changes | A hint in the dialplan and the usecallmanager Asterisk patch — both are outside AiPBX's file. |
 | It asks for `Softkeys.xml` / `DialTemplate.xml` and logs a 404 | Harmless (the phone uses its defaults), but copy the shared files in and re-provision to get the intended soft keys. |
 
-Tested against: AiPBX 1.50.x, generated files verified structurally; not yet on physical 7900/8800 hardware
+Tested against: generated files verified structurally; the 8800 UDP path and SSH behavior were verified on a
+CP-8851 (`sip88xx.14-0-1-0101-145`). The 7900 and TLS paths were not physically tested.
 — see the [desk phones](phones.md) page for the rest of the provisioning system.

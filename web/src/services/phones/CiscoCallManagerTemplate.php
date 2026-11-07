@@ -252,7 +252,10 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
         $xml .= "    <handsetWidebandUIControl>1</handsetWidebandUIControl>\n";
         $xml .= "    <headsetWidebandUIControl>1</headsetWidebandUIControl>\n";
         $xml .= "    <webAccess>0</webAccess>\n";
-        $xml .= "    <sshAccess>0</sshAccess>\n";
+        // 7900 and 8800 read 0 = enabled, 1 = disabled here. AiPBX writes no
+        // <sshUserId>/<sshPassword>, so leave SSH off rather than expose a port
+        // with no account configured.
+        $xml .= "    <sshAccess>1</sshAccess>\n";
         $xml .= "    <peerFirmwareSharing>0</peerFirmwareSharing>\n";
         $xml .= "  </vendorConfig>\n";
         if ($load !== '') {
@@ -277,8 +280,10 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
         $xml .= "  <informationURL></informationURL>\n";
         $xml .= "  <messagesURL></messagesURL>\n";
         $xml .= "  <servicesURL></servicesURL>\n";
-        // 1 = UDP, 2 = TCP/TLS.
-        $xml .= '  <transportLayerProtocol>' . ($tls ? 2 : 1) . "</transportLayerProtocol>\n";
+        // 8800: 1 = TCP, 2 = UDP, 3 = TLS. 7900: 1 = UDP, 2 = TCP, 3 = TLS.
+        // Getting this wrong makes a plain-SIP 8800 speak TCP to a UDP port.
+        $transport = $series === '8800' ? ($tls ? 3 : 2) : ($tls ? 3 : 1);
+        $xml .= "  <transportLayerProtocol>{$transport}</transportLayerProtocol>\n";
         $xml .= "  <autoCallPickupEnable>false</autoCallPickupEnable>\n";
         $xml .= "  <advertiseG722Codec>" . (in_array('g722', (array) $ctx['codecs'], true) ? 1 : 0) . "</advertiseG722Codec>\n";
         $xml .= "  <dndCallAlert>5</dndCallAlert>\n";
@@ -295,8 +300,11 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
     private function lines(array $ctx, int $keys, int $port, int $callWaiting, int $maxCalls): string
     {
         $xml = "    <sipLines>\n";
+        // PJSIP identifies the phone by endpoint name ("1000-sip"); the digest
+        // user is the plain extension, so the line needs both.
+        $endpoint = (string) ($ctx['sip_endpoint'] ?? $ctx['extension']);
         if (empty($ctx['keys'])) {
-            return $xml . $this->line(1, 1, self::FEATURE_LINE, '', (string) $ctx['display_name'], '', '', $port, $callWaiting, $maxCalls, (string) $ctx['voicemail'], (string) $ctx['sip_password'], (string) $ctx['extension']) . "    </sipLines>\n";
+            return $xml . $this->line(1, 1, self::FEATURE_LINE, '', (string) $ctx['display_name'], '', '', $port, $callWaiting, $maxCalls, (string) $ctx['voicemail'], (string) $ctx['sip_password'], (string) $ctx['extension'], $endpoint) . "    </sipLines>\n";
         }
         $lineIndex = 0;
         foreach (self::keysByPage((array) $ctx['keys'], 0) as $position => $key) {
@@ -309,7 +317,7 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
                 $lineIndex++;
                 $xml .= $this->line($position, $lineIndex, self::FEATURE_LINE, (string) $key['label'],
                     (string) $ctx['display_name'], '', '', $port, $callWaiting, $maxCalls,
-                    (string) $ctx['voicemail'], (string) $ctx['sip_password'], (string) $ctx['extension']);
+                    (string) $ctx['voicemail'], (string) $ctx['sip_password'], (string) $ctx['extension'], $endpoint);
                 continue;
             }
             // A park key dials its slot (the same thing the phone would send when
@@ -324,7 +332,7 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
             }
             $target = self::xml((string) $key['target']);
             $xml .= $this->line($position, 0, $feature, (string) $key['label'], '', $target, $target, $port,
-                $callWaiting, $maxCalls, '', '', '');
+                $callWaiting, $maxCalls, '', '', '', '');
         }
         return $xml . "    </sipLines>\n";
     }
@@ -332,7 +340,7 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
     /** One key definition. Values differ by feature: only a line registers. */
     private function line(int $button, int $index, int $feature, string $label, string $displayName,
                           string $speedDial, string $contact, int $port, int $callWaiting, int $maxCalls,
-                          string $voicemail, string $password, string $extension): string
+                          string $voicemail, string $password, string $extension, string $endpoint): string
     {
         $attrs = 'button="' . $button . '"' . ($index > 0 ? ' lineIndex="' . $index . '"' : '');
         $xml = "      <line {$attrs}>\n";
@@ -345,12 +353,12 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
         $xml .= "        <proxy>USECALLMANAGER</proxy>\n";
         $xml .= "        <port>{$port}</port>\n";
         if ($feature === self::FEATURE_LINE) {
-            $xml .= '        <name>' . self::xml($extension, 30) . "</name>\n";
+            $xml .= '        <name>' . self::xml($endpoint, 30) . "</name>\n";
             $xml .= '        <displayName>' . self::xml($displayName, 30) . "</displayName>\n";
             $xml .= "        <autoAnswer>\n          <autoAnswerEnabled>0</autoAnswerEnabled>\n        </autoAnswer>\n";
             $xml .= '        <authName>' . self::xml($extension, 30) . "</authName>\n";
             $xml .= '        <authPassword>' . self::xml($password, 128) . "</authPassword>\n";
-            $xml .= '        <contact>' . self::xml($extension, 30) . "</contact>\n";
+            $xml .= '        <contact>' . self::xml($endpoint, 30) . "</contact>\n";
         }
         if ($contact !== '' && $feature === self::FEATURE_BLF) {
             $xml .= "        <contact>{$contact}</contact>\n";
