@@ -170,5 +170,85 @@ untested here: UDP is the path that works out of the box.
 | The lamp of a BLF key never changes | A hint in the dialplan and the usecallmanager Asterisk patch — both are outside AiPBX's file. |
 | It asks for `Softkeys.xml` / `DialTemplate.xml` and logs a 404 | Harmless (the phone uses its defaults), but copy the shared files in and re-provision to get the intended soft keys. |
 
-Tested against: AiPBX 1.50.x, generated files verified structurally; not yet on physical 7900/8800 hardware
-— see the [desk phones](phones.md) page for the rest of the provisioning system.
+## 6. Provisioning notes the template does not cover
+
+Measured on a **CP-8851** (`sip88xx.14-0-1-0101-145`). Everything below is a gap in the generated file, or in
+what the phone does with it — not a repeat of sections 1–5.
+
+### The transport value is the 7900 numbering
+
+`CiscoCallManagerTemplate` writes `transportLayerProtocol` as `$tls ? 2 : 1`, with the comment
+*"1 = UDP, 2 = TCP/TLS"*. That is the 7900 mapping. On the **8800** the values are:
+
+| Value | 8800 means | 7900 means |
+|---|---|---|
+| `1` | TCP | UDP |
+| `2` | UDP | TCP |
+| `3` | TLS | TLS |
+
+So an 8800 provisioned for plain SIP is told to use **TCP**, and one provisioned for TLS is told **UDP**. A phone
+speaking TCP to a UDP-only port registers nowhere and looks bricked; this was reproduced. The element needs to
+branch on the model series, not just on `$tls`.
+
+### Elements the template never writes
+
+| Element | What it is for | What the phone expects |
+|---|---|---|
+| `deviceSecurityMode` | line security | `1` = insecure, `2` = authenticated, `3` = encrypted; `0` is not a defined 8800 value |
+| `versionStamp` | cache-buster for the file | any value that changes when the file changes; without it a phone can keep using its stored copy |
+| `logServer` / `remoteLog` | remote logging | CUCM product-specific fields inside `<vendorConfig>`: `<logServer>address:port@@base=7;pfs=1</logServer>` and `<remoteLog>1</remoteLog>` — **unverified** on this firmware, see below |
+| `directoryURL` | phone's Contacts list | written empty today; a `CiscoIPPhoneDirectory` XML over HTTP fills it |
+
+Two values that are written correctly but easy to misread when hand-editing: `webAccess 0` means **enabled** on
+the 8800 (`1` disables it), and `callWaiting` must be `0`/`1` — the `3` used by the 7900 is rejected.
+
+### The file is read once, at boot
+
+- `check-sync` needs an event type in `pjsip_notify.conf` (`[check-sync]` → `Event => check-sync`) **and** the
+  handset's own "Allow SIP NOTIFY" setting. With the setting off, Asterisk reports the NOTIFY as sent and the
+  phone does nothing. A power cycle (or PoE bounce) is the only reliable trigger; there is no reboot NOTIFY for
+  these models.
+- `fullConfig true` is only safe when the TFTP/FTP folder can serve **every** file the configuration names.
+  A partial root produces a partial apply, not a clean failure.
+- `sipPort` in the file can be ignored: with `rewrite_contact` the registered contact carries the phone's true
+  source port, so the contact is the address that matters.
+- `in.tftpd --secure` refuses a file the TFTP user cannot read. Request logging (`--verbose`) is the only
+  trustworthy "did it fetch?" signal — file atime does not update on every mount.
+
+### Deployment: the Via, and the generated files
+
+The 8800 replies **to the Via**, not to the packet's source address. On a containerised PBX whose Via carries
+the bridge address, Docker rewrites the source to the host's LAN address but the phone sends its reply to the
+bridge address, which nothing on the LAN can route. Registration can succeed while qualify reads `Unavail` and
+inbound INVITEs never arrive; handsets that honour `rport` hide the problem, so it looks model-specific.
+
+The shape that works: publish the SIP port as the **same** port the container binds, set the external
+signalling address to the host's LAN address, and clear `localnet` for the phone subnet — otherwise PJSIP treats
+the phones as local and keeps using the bridge address.
+
+`pjsip_transports.conf` and `rtp.conf` are generated from the portal's settings (`SyncTransports.php`,
+`SyncRtpSettings.php`); editing them by hand is overwritten on the next Apply. The same applies to media: the
+published RTP range must equal `rtp_start`/`rtp_end`, or a call negotiates a port with no mapping and fails
+silently.
+
+### Remote logging is still unproven
+
+The enterprise SEP file has no syslog element. The `<logServer>`/`<remoteLog>` pair above is the CUCM
+product-specific shape and is the only documented route; it was staged but never observed working on this load.
+If no packets arrive after a full boot, these names are not honoured and the honest alternatives are the phone's
+SSH debug shell or pulling its local log — not another invented element.
+
+### Verify in this order
+
+1. `pjsip show contacts` — the AOR must read `Avail`, not merely exist.
+2. `journalctl -u tftpd-hpa --since '-10 min' | grep RRQ` — did the phone actually fetch the file?
+3. The `directoryURL` returns `200` before blaming the phone for an empty Contacts list.
+4. `channel originate PJSIP/<endpoint> application Wait 3` reaches `Ringing`.
+5. A call in each direction, with `rtp set debug on` showing a port inside the published range.
+
+The per-phone file contains the extension's SIP password: keep the TFTP/FTP allowed networks to the phone
+network, and never serve that folder from a public interface.
+
+Tested against: AiPBX 1.50.x, generated files verified structurally and against a physical **CP-8851**
+(`sip88xx.14-0-1-0101-145`). The `<logServer>`/`<remoteLog>` pair in section 6 remains unverified on this
+load; see the [desk phones](phones.md) page for the rest of the provisioning system.
