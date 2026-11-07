@@ -277,11 +277,17 @@ final class CiscoCallManagerTemplate extends PhoneTemplate
         $xml .= "  <informationURL></informationURL>\n";
         $xml .= "  <messagesURL></messagesURL>\n";
         $xml .= "  <servicesURL></servicesURL>\n";
-        // 1 = UDP, 2 = TCP/TLS.
-        $xml .= '  <transportLayerProtocol>' . ($tls ? 2 : 1) . "</transportLayerProtocol>\n";
+        // 8800: 1 = TCP, 2 = UDP, 3 = TLS. 7900: 1 = UDP, 2 = TCP, 3 = TLS.
+        // Getting this wrong makes a plain-SIP 8800 speak TCP to a UDP port.
+        $transport = $series === '8800' ? ($tls ? 3 : 2) : ($tls ? 3 : 1);
+        $xml .= "  <transportLayerProtocol>{$transport}</transportLayerProtocol>\n";
         $xml .= "  <autoCallPickupEnable>false</autoCallPickupEnable>\n";
         $xml .= "  <advertiseG722Codec>" . (in_array('g722', (array) $ctx['codecs'], true) ? 1 : 0) . "</advertiseG722Codec>\n";
         $xml .= "  <dndCallAlert>5</dndCallAlert>\n";
+        // A phone keeps its stored copy unless this changes; hash the body so
+        // an unchanged config does not cause a needless refresh either.
+        $stamp = substr(sha1($xml), 0, 16);
+        $xml = str_replace("<device>\n", "<device>\n  <versionStamp>{$stamp}</versionStamp>\n", $xml);
         return $xml . "</device>\n";
     }
 
